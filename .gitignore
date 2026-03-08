@@ -1,0 +1,17 @@
+﻿.godot/
+.import/
+.mono/
+.vscode/
+.vs/
+bin/
+obj/
+export/
+*.import
+*.uid
+*.tmp
+*.user
+*.suo
+*.pdb
+mono_crash.*
+.DS_Store
+Thumbs.db

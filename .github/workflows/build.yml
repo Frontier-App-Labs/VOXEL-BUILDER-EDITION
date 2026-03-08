@@ -1,0 +1,20 @@
+﻿name: BuildAndTest
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  dotnet:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Restore
+        run: dotnet restore VoxelSiege.sln
+      - name: Build
+        run: dotnet build VoxelSiege.sln --configuration Release --no-restore
+      - name: Test
+        run: dotnet test VoxelSiege.sln --configuration Release --no-build

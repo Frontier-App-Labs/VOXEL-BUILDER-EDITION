@@ -1,0 +1,470 @@
+using Godot;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using VoxelSiege.Core;
+using VoxelSiege.Voxel;
+using VoxelValue = VoxelSiege.Voxel.Voxel;
+
+namespace VoxelSiege.Building;
+
+internal sealed class BuildAction
+{
+    public required PlayerSlot Player { get; init; }
+    public required List<Vector3I> Positions { get; init; }
+    public required List<VoxelValue> Before { get; init; }
+    public required List<VoxelValue> After { get; init; }
+    public required int BudgetDelta { get; init; }
+}
+
+public partial class BuildSystem : Node
+{
+    private readonly BuildValidator _validator = new BuildValidator();
+    private readonly SymmetryTool _symmetryTool = new SymmetryTool();
+    private readonly Stack<BuildAction> _undoStack = new Stack<BuildAction>();
+    private readonly Stack<BuildAction> _redoStack = new Stack<BuildAction>();
+
+    [Export]
+    public NodePath? GameManagerPath { get; set; }
+
+    [Export]
+    public NodePath? VoxelWorldPath { get; set; }
+
+    public BuildToolMode CurrentToolMode { get; set; } = BuildToolMode.Single;
+    public VoxelMaterialType CurrentMaterial { get; set; } = VoxelMaterialType.Stone;
+    public BuildSymmetryMode SymmetryMode
+    {
+        get => _symmetryTool.Mode;
+        set => _symmetryTool.Mode = value;
+    }
+
+    public bool HollowBoxMode { get; set; }
+
+    public bool TryApply(PlayerSlot playerSlot, BuildZone zone, Vector3I startBuildUnit, Vector3I endBuildUnit, out string failureReason)
+    {
+        failureReason = string.Empty;
+        GameManager? gameManager = ResolveGameManager();
+        VoxelWorld? world = ResolveWorld();
+        if (gameManager == null || world == null)
+        {
+            failureReason = "Build system is not connected to the game world.";
+            return false;
+        }
+
+        PlayerData? player = gameManager.GetPlayer(playerSlot);
+        if (player == null)
+        {
+            failureReason = "Player data not found.";
+            return false;
+        }
+
+        BuildStamp stamp = CreateStamp(zone, startBuildUnit, endBuildUnit);
+        BuildValidationResult validation = _validator.ValidateStamp(world, player, zone, stamp, CurrentMaterial);
+        if (!validation.Success)
+        {
+            failureReason = validation.Reason;
+            return false;
+        }
+
+        BuildAction action = CreateBuildAction(playerSlot, world, stamp, validation.BudgetDelta);
+        if (stamp.IsEraseOperation)
+        {
+            action = action.WithBudgetDelta(CalculateRefund(world, stamp));
+        }
+
+        if (!ApplyBudgetDelta(player, action.BudgetDelta))
+        {
+            failureReason = "Budget application failed.";
+            return false;
+        }
+
+        ApplyBuildAction(world, action, true);
+        _undoStack.Push(action);
+        _redoStack.Clear();
+        EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(player.Slot, player.Budget, action.BudgetDelta));
+        return true;
+    }
+
+    public bool UndoLast(PlayerSlot playerSlot)
+    {
+        if (_undoStack.Count == 0)
+        {
+            return false;
+        }
+
+        BuildAction action = _undoStack.Pop();
+        if (action.Player != playerSlot)
+        {
+            _undoStack.Push(action);
+            return false;
+        }
+
+        GameManager? gameManager = ResolveGameManager();
+        VoxelWorld? world = ResolveWorld();
+        PlayerData? player = gameManager?.GetPlayer(playerSlot);
+        if (world == null || player == null)
+        {
+            return false;
+        }
+
+        ApplyBudgetDelta(player, -action.BudgetDelta);
+        ApplyBuildAction(world, action, false);
+        _redoStack.Push(action);
+        EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(player.Slot, player.Budget, -action.BudgetDelta));
+        return true;
+    }
+
+    public bool RedoLast(PlayerSlot playerSlot)
+    {
+        if (_redoStack.Count == 0)
+        {
+            return false;
+        }
+
+        BuildAction action = _redoStack.Pop();
+        if (action.Player != playerSlot)
+        {
+            _redoStack.Push(action);
+            return false;
+        }
+
+        GameManager? gameManager = ResolveGameManager();
+        VoxelWorld? world = ResolveWorld();
+        PlayerData? player = gameManager?.GetPlayer(playerSlot);
+        if (world == null || player == null)
+        {
+            return false;
+        }
+
+        if (!ApplyBudgetDelta(player, action.BudgetDelta))
+        {
+            _redoStack.Push(action);
+            return false;
+        }
+
+        ApplyBuildAction(world, action, true);
+        _undoStack.Push(action);
+        EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(player.Slot, player.Budget, action.BudgetDelta));
+        return true;
+    }
+
+    private BuildStamp CreateStamp(BuildZone zone, Vector3I startBuildUnit, Vector3I endBuildUnit)
+    {
+        HashSet<Vector3I> buildUnits = _symmetryTool.Apply(zone, GenerateBuildUnitCells(CurrentToolMode, startBuildUnit, endBuildUnit, HollowBoxMode));
+        HashSet<Vector3I> microvoxels = new HashSet<Vector3I>();
+        foreach (Vector3I buildUnit in buildUnits)
+        {
+            foreach (Vector3I micro in ExpandBuildUnit(buildUnit, CurrentToolMode, startBuildUnit, endBuildUnit))
+            {
+                microvoxels.Add(micro);
+            }
+        }
+
+        BuildStamp stamp = new BuildStamp
+        {
+            IsEraseOperation = CurrentToolMode == BuildToolMode.Eraser,
+        };
+        stamp.BuildUnits.UnionWith(buildUnits);
+        stamp.Microvoxels.UnionWith(microvoxels);
+        return stamp;
+    }
+
+    private BuildAction CreateBuildAction(PlayerSlot playerSlot, VoxelWorld world, BuildStamp stamp, int budgetDelta)
+    {
+        List<Vector3I> positions = stamp.Microvoxels.OrderBy(static p => p.X).ThenBy(static p => p.Y).ThenBy(static p => p.Z).ToList();
+        List<VoxelValue> before = new List<VoxelValue>(positions.Count);
+        List<VoxelValue> after = new List<VoxelValue>(positions.Count);
+        foreach (Vector3I position in positions)
+        {
+            VoxelValue current = world.GetVoxel(position);
+            before.Add(current);
+            after.Add(stamp.IsEraseOperation ? VoxelValue.Air : VoxelValue.Create(CurrentMaterial));
+        }
+
+        return new BuildAction
+        {
+            Player = playerSlot,
+            Positions = positions,
+            Before = before,
+            After = after,
+            BudgetDelta = budgetDelta,
+        };
+    }
+
+    private static void ApplyBuildAction(VoxelWorld world, BuildAction action, bool useAfter)
+    {
+        for (int index = 0; index < action.Positions.Count; index++)
+        {
+            world.SetVoxel(action.Positions[index], useAfter ? action.After[index] : action.Before[index], action.Player);
+        }
+    }
+
+    private static bool ApplyBudgetDelta(PlayerData player, int budgetDelta)
+    {
+        if (budgetDelta < 0)
+        {
+            return player.TrySpend(-budgetDelta);
+        }
+
+        if (budgetDelta > 0)
+        {
+            player.Refund(budgetDelta);
+        }
+
+        return true;
+    }
+
+    private int CalculateRefund(VoxelWorld world, BuildStamp stamp)
+    {
+        int refund = 0;
+        foreach (Vector3I buildUnit in stamp.BuildUnits)
+        {
+            VoxelMaterialType material = SampleBuildUnitMaterial(world, buildUnit);
+            refund += VoxelMaterials.GetDefinition(material).Cost;
+        }
+
+        return refund;
+    }
+
+    private static VoxelMaterialType SampleBuildUnitMaterial(VoxelWorld world, Vector3I buildUnit)
+    {
+        foreach (Vector3I micro in ExpandUniformBuildUnit(buildUnit))
+        {
+            VoxelValue voxel = world.GetVoxel(micro);
+            if (!voxel.IsAir)
+            {
+                return voxel.Material;
+            }
+        }
+
+        return VoxelMaterialType.Air;
+    }
+
+    private static IEnumerable<Vector3I> GenerateBuildUnitCells(BuildToolMode toolMode, Vector3I start, Vector3I end, bool hollowBox)
+    {
+        Vector3I min = new Vector3I(Math.Min(start.X, end.X), Math.Min(start.Y, end.Y), Math.Min(start.Z, end.Z));
+        Vector3I max = new Vector3I(Math.Max(start.X, end.X), Math.Max(start.Y, end.Y), Math.Max(start.Z, end.Z));
+        switch (toolMode)
+        {
+            case BuildToolMode.Single:
+            case BuildToolMode.Eraser:
+                yield return start;
+                break;
+            case BuildToolMode.Line:
+                foreach (Vector3I point in TraceLine(start, end))
+                {
+                    yield return point;
+                }
+
+                break;
+            case BuildToolMode.Wall:
+                foreach (Vector3I point in GenerateWall(min, max))
+                {
+                    yield return point;
+                }
+
+                break;
+            case BuildToolMode.Box:
+                foreach (Vector3I point in GenerateBox(min, max, hollowBox))
+                {
+                    yield return point;
+                }
+
+                break;
+            case BuildToolMode.Floor:
+                for (int z = min.Z; z <= max.Z; z++)
+                {
+                    for (int x = min.X; x <= max.X; x++)
+                    {
+                        yield return new Vector3I(x, start.Y, z);
+                    }
+                }
+
+                break;
+            case BuildToolMode.Ramp:
+                foreach (Vector3I point in GenerateRamp(start, end))
+                {
+                    yield return point;
+                }
+
+                break;
+            default:
+                foreach (Vector3I point in GenerateBox(min, max, false))
+                {
+                    yield return point;
+                }
+
+                break;
+        }
+    }
+
+    private static IEnumerable<Vector3I> TraceLine(Vector3I start, Vector3I end)
+    {
+        int dx = end.X - start.X;
+        int dy = end.Y - start.Y;
+        int dz = end.Z - start.Z;
+        int steps = Math.Max(Math.Abs(dx), Math.Max(Math.Abs(dy), Math.Abs(dz)));
+        if (steps == 0)
+        {
+            yield return start;
+            yield break;
+        }
+
+        for (int step = 0; step <= steps; step++)
+        {
+            float t = step / (float)steps;
+            yield return new Vector3I(
+                Mathf.RoundToInt(Mathf.Lerp(start.X, end.X, t)),
+                Mathf.RoundToInt(Mathf.Lerp(start.Y, end.Y, t)),
+                Mathf.RoundToInt(Mathf.Lerp(start.Z, end.Z, t)));
+        }
+    }
+
+    private static IEnumerable<Vector3I> GenerateWall(Vector3I min, Vector3I max)
+    {
+        int sizeX = max.X - min.X;
+        int sizeY = max.Y - min.Y;
+        int sizeZ = max.Z - min.Z;
+        if (sizeX <= sizeZ)
+        {
+            int x = min.X;
+            for (int z = min.Z; z <= max.Z; z++)
+            {
+                for (int y = min.Y; y <= max.Y; y++)
+                {
+                    yield return new Vector3I(x, y, z);
+                }
+            }
+
+            yield break;
+        }
+
+        int zFixed = min.Z;
+        for (int x = min.X; x <= max.X; x++)
+        {
+            for (int y = min.Y; y <= max.Y; y++)
+            {
+                yield return new Vector3I(x, y, zFixed);
+            }
+        }
+    }
+
+    private static IEnumerable<Vector3I> GenerateBox(Vector3I min, Vector3I max, bool hollow)
+    {
+        for (int z = min.Z; z <= max.Z; z++)
+        {
+            for (int y = min.Y; y <= max.Y; y++)
+            {
+                for (int x = min.X; x <= max.X; x++)
+                {
+                    bool isShell = x == min.X || x == max.X || y == min.Y || y == max.Y || z == min.Z || z == max.Z;
+                    if (!hollow || isShell)
+                    {
+                        yield return new Vector3I(x, y, z);
+                    }
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<Vector3I> GenerateRamp(Vector3I start, Vector3I end)
+    {
+        int horizontalSteps = Math.Max(Math.Abs(end.X - start.X), Math.Abs(end.Z - start.Z));
+        horizontalSteps = Math.Max(1, horizontalSteps);
+        for (int step = 0; step <= horizontalSteps; step++)
+        {
+            float t = step / (float)horizontalSteps;
+            int x = Mathf.RoundToInt(Mathf.Lerp(start.X, end.X, t));
+            int z = Mathf.RoundToInt(Mathf.Lerp(start.Z, end.Z, t));
+            int y = Mathf.RoundToInt(Mathf.Lerp(start.Y, end.Y, t));
+            yield return new Vector3I(x, y, z);
+            if (y > start.Y)
+            {
+                for (int fillY = start.Y; fillY < y; fillY++)
+                {
+                    yield return new Vector3I(x, fillY, z);
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<Vector3I> ExpandBuildUnit(Vector3I buildUnit, BuildToolMode toolMode, Vector3I start, Vector3I end)
+    {
+        if (toolMode == BuildToolMode.Ramp)
+        {
+            foreach (Vector3I micro in ExpandRampBuildUnit(buildUnit, start, end))
+            {
+                yield return micro;
+            }
+
+            yield break;
+        }
+
+        foreach (Vector3I micro in ExpandUniformBuildUnit(buildUnit))
+        {
+            yield return micro;
+        }
+    }
+
+    private static IEnumerable<Vector3I> ExpandUniformBuildUnit(Vector3I buildUnit)
+    {
+        Vector3I microBase = buildUnit * GameConfig.MicrovoxelsPerBuildUnit;
+        for (int z = 0; z < GameConfig.MicrovoxelsPerBuildUnit; z++)
+        {
+            for (int y = 0; y < GameConfig.MicrovoxelsPerBuildUnit; y++)
+            {
+                for (int x = 0; x < GameConfig.MicrovoxelsPerBuildUnit; x++)
+                {
+                    yield return microBase + new Vector3I(x, y, z);
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<Vector3I> ExpandRampBuildUnit(Vector3I buildUnit, Vector3I start, Vector3I end)
+    {
+        Vector3I microBase = buildUnit * GameConfig.MicrovoxelsPerBuildUnit;
+        int riseDirection = Math.Sign(end.Y - start.Y);
+        if (riseDirection == 0)
+        {
+            riseDirection = 1;
+        }
+
+        for (int z = 0; z < GameConfig.MicrovoxelsPerBuildUnit; z++)
+        {
+            for (int x = 0; x < GameConfig.MicrovoxelsPerBuildUnit; x++)
+            {
+                int height = riseDirection > 0 ? Math.Max(1, x + 1) : Math.Max(1, GameConfig.MicrovoxelsPerBuildUnit - x);
+                for (int y = 0; y < height; y++)
+                {
+                    yield return microBase + new Vector3I(x, y, z);
+                }
+            }
+        }
+    }
+
+    private GameManager? ResolveGameManager()
+    {
+        return GameManagerPath is null ? GetTree().Root.GetNodeOrNull<GameManager>("Main") : GetNodeOrNull<GameManager>(GameManagerPath);
+    }
+
+    private VoxelWorld? ResolveWorld()
+    {
+        return VoxelWorldPath is null ? GetTree().Root.GetNodeOrNull<VoxelWorld>("Main/GameWorld") : GetNodeOrNull<VoxelWorld>(VoxelWorldPath);
+    }
+}
+
+internal static class BuildActionExtensions
+{
+    public static BuildAction WithBudgetDelta(this BuildAction action, int budgetDelta)
+    {
+        return new BuildAction
+        {
+            Player = action.Player,
+            Positions = action.Positions,
+            Before = action.Before,
+            After = action.After,
+            BudgetDelta = budgetDelta,
+        };
+    }
+}

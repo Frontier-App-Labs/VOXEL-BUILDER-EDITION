@@ -1,0 +1,33 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VoxelSiege", "VoxelSiege.csproj", "{789EBDCA-C30A-4F92-AFDD-6BE030BE135F}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{A26C73B4-567C-4038-AE97-5CC3B6BF4B81}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VoxelSiege.Tests", "tests\VoxelSiege.Tests\VoxelSiege.Tests.csproj", "{5BA050A3-6D03-48F6-B23B-F1057D7C10E6}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{789EBDCA-C30A-4F92-AFDD-6BE030BE135F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{789EBDCA-C30A-4F92-AFDD-6BE030BE135F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{789EBDCA-C30A-4F92-AFDD-6BE030BE135F}.Release|Any CPU.ActiveCfg = Debug|Any CPU
+		{789EBDCA-C30A-4F92-AFDD-6BE030BE135F}.Release|Any CPU.Build.0 = Debug|Any CPU
+		{5BA050A3-6D03-48F6-B23B-F1057D7C10E6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5BA050A3-6D03-48F6-B23B-F1057D7C10E6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5BA050A3-6D03-48F6-B23B-F1057D7C10E6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5BA050A3-6D03-48F6-B23B-F1057D7C10E6}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{5BA050A3-6D03-48F6-B23B-F1057D7C10E6} = {A26C73B4-567C-4038-AE97-5CC3B6BF4B81}
+	EndGlobalSection
+EndGlobal

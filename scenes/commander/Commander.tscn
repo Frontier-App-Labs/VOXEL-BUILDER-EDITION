@@ -1,0 +1,19 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://src/Commander/Commander.cs" id="1"]
+[ext_resource type="Script" path="res://src/Commander/CommanderHealth.cs" id="2"]
+[ext_resource type="Script" path="res://src/Commander/CommanderAnimation.cs" id="3"]
+[ext_resource type="Script" path="res://src/Commander/CommanderRagdoll.cs" id="4"]
+
+[node name="Commander" type="Node3D"]
+script = ExtResource("1")
+
+[node name="CommanderHealth" type="Node" parent="."]
+script = ExtResource("2")
+
+[node name="CommanderAnimation" type="Node" parent="."]
+script = ExtResource("3")
+
+[node name="CommanderRagdoll" type="Node3D" parent="."]
+script = ExtResource("4")
+visible = false

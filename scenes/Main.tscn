@@ -1,0 +1,83 @@
+[gd_scene load_steps=21 format=3]
+
+[ext_resource type="Script" path="res://src/Core/GameManager.cs" id="1"]
+[ext_resource type="PackedScene" path="res://scenes/GameWorld.tscn" id="2"]
+[ext_resource type="Script" path="res://src/Camera/FreeFlyCamera.cs" id="3"]
+[ext_resource type="Script" path="res://src/Core/TurnManager.cs" id="4"]
+[ext_resource type="Script" path="res://src/Building/BuildSystem.cs" id="5"]
+[ext_resource type="Script" path="res://src/Combat/WeaponPlacer.cs" id="6"]
+[ext_resource type="Script" path="res://src/Combat/AimingSystem.cs" id="7"]
+[ext_resource type="Script" path="res://src/Networking/NetworkManager.cs" id="8"]
+[ext_resource type="Script" path="res://src/Networking/LobbyManager.cs" id="9"]
+[ext_resource type="Script" path="res://src/Networking/SyncManager.cs" id="10"]
+[ext_resource type="Script" path="res://src/Networking/ReplayRecorder.cs" id="11"]
+[ext_resource type="Script" path="res://src/Networking/AntiCheat.cs" id="12"]
+[ext_resource type="PackedScene" path="res://scenes/ui/CombatHUD.tscn" id="13"]
+[ext_resource type="PackedScene" path="res://scenes/ui/GameOver.tscn" id="14"]
+[ext_resource type="Script" path="res://src/Networking/SteamPlatformNode.cs" id="15"]
+[ext_resource type="Script" path="res://src/Core/ProgressionManager.cs" id="16"]
+[ext_resource type="Script" path="res://src/Core/AchievementTracker.cs" id="17"]
+[ext_resource type="Script" path="res://src/Core/AudioDirector.cs" id="18"]
+[ext_resource type="PackedScene" path="res://scenes/ui/BuildHUD.tscn" id="19"]
+[ext_resource type="Script" path="res://src/UI/TooltipSystem.cs" id="20"]
+[ext_resource type="PackedScene" path="res://scenes/ui/MainMenu.tscn" id="21"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1")
+AutoStartPrototypeMatch = false
+
+[node name="GameWorld" parent="." instance=ExtResource("2")]
+
+[node name="TurnManager" type="Node" parent="."]
+script = ExtResource("4")
+
+[node name="BuildSystem" type="Node" parent="."]
+script = ExtResource("5")
+
+[node name="WeaponPlacer" type="Node" parent="."]
+script = ExtResource("6")
+
+[node name="AimingSystem" type="Node" parent="."]
+script = ExtResource("7")
+
+[node name="NetworkManager" type="Node" parent="."]
+script = ExtResource("8")
+
+[node name="LobbyManager" type="Node" parent="."]
+script = ExtResource("9")
+
+[node name="SyncManager" type="Node" parent="."]
+script = ExtResource("10")
+
+[node name="ReplayRecorder" type="Node" parent="."]
+script = ExtResource("11")
+
+[node name="AntiCheat" type="Node" parent="."]
+script = ExtResource("12")
+
+[node name="SteamPlatform" type="Node" parent="."]
+script = ExtResource("15")
+
+[node name="ProgressionManager" type="Node" parent="."]
+script = ExtResource("16")
+
+[node name="AchievementTracker" type="Node" parent="."]
+script = ExtResource("17")
+
+[node name="AudioDirector" type="Node" parent="."]
+script = ExtResource("18")
+
+[node name="FreeFlyCamera" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.906308, 0.422618, 0, -0.422618, 0.906308, 0, 18, 26)
+script = ExtResource("3")
+
+[node name="BuildHUD" parent="." instance=ExtResource("19")]
+
+[node name="CombatHUD" parent="." instance=ExtResource("13")]
+
+[node name="GameOverUI" parent="." instance=ExtResource("14")]
+
+[node name="TooltipSystem" type="CanvasLayer" parent="."]
+script = ExtResource("20")
+
+[node name="MainMenu" parent="." instance=ExtResource("21")]

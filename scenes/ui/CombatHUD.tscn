@@ -1,0 +1,13 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://src/UI/CombatUI.cs" id="1"]
+[ext_resource type="Script" path="res://src/UI/ScoreboardUI.cs" id="2"]
+
+[node name="CombatHUD" type="CanvasLayer"]
+
+[node name="CombatUI" type="Control" parent="."]
+script = ExtResource("1")
+
+[node name="ScoreboardUI" type="Control" parent="."]
+position = Vector2(1400, 20)
+script = ExtResource("2")
