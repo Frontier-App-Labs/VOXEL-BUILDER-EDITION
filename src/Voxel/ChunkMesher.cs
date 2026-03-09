@@ -1,6 +1,8 @@
 using Godot;
 using System;
+using System.Buffers;
 using System.Collections.Generic;
+using System.Threading;
 using VoxelSiege.Core;
 
 namespace VoxelSiege.Voxel;
@@ -36,6 +38,15 @@ public sealed class VoxelChunkSnapshot
         int index = x + (_paddedSize * (y + (_paddedSize * z)));
         return _voxels[index];
     }
+
+    /// <summary>
+    /// Clears internal voxel data for reuse from the pool.
+    /// </summary>
+    public void Reset()
+    {
+        // Fix #11: Removed — the snapshot is fully overwritten by AcquireSnapshot
+        // before use, so Array.Clear is redundant work.
+    }
 }
 
 public sealed class MeshBuildResult
@@ -62,6 +73,16 @@ internal sealed class ChunkGeometryBuffer
 
     public bool IsEmpty => _vertices.Count == 0;
 
+    // Fix #12: Clear for reuse across builds on the same thread
+    public void Clear()
+    {
+        _vertices.Clear();
+        _normals.Clear();
+        _uvs.Clear();
+        _colors.Clear();
+        _indices.Clear();
+    }
+
     public void AddQuad(Vector3 v0, Vector3 v1, Vector3 v2, Vector3 v3, Vector3 normal, Rect2 uvRect, Color color)
     {
         int start = _vertices.Count;
@@ -80,10 +101,12 @@ internal sealed class ChunkGeometryBuffer
         _colors.Add(color);
         _colors.Add(color);
 
+        // All 4 vertices share the same UV = tile origin in the atlas.
+        // The shader uses world_pos for triplanar sampling within the tile rect.
         _uvs.Add(uvRect.Position);
-        _uvs.Add(new Vector2(uvRect.Position.X, uvRect.End.Y));
-        _uvs.Add(uvRect.End);
-        _uvs.Add(new Vector2(uvRect.End.X, uvRect.Position.Y));
+        _uvs.Add(uvRect.Position);
+        _uvs.Add(uvRect.Position);
+        _uvs.Add(uvRect.Position);
 
         _indices.Add(start);
         _indices.Add(start + 1);
@@ -116,96 +139,137 @@ internal sealed class ChunkGeometryBuffer
 
 public static class ChunkMesher
 {
+    // Pool GreedyMaskCell?[] arrays to avoid per-build allocations.
+    // The mask size is ChunkSize * ChunkSize (16*16 = 256).
+    private static readonly int MaskSize = GameConfig.ChunkSize * GameConfig.ChunkSize;
+
+    // Fix #12: ThreadLocal geometry buffers to reuse across builds on the same thread
+    private static readonly ThreadLocal<ChunkGeometryBuffer> ThreadOpaqueBuffer
+        = new ThreadLocal<ChunkGeometryBuffer>(() => new ChunkGeometryBuffer());
+    private static readonly ThreadLocal<ChunkGeometryBuffer> ThreadTransparentBuffer
+        = new ThreadLocal<ChunkGeometryBuffer>(() => new ChunkGeometryBuffer());
+
+    /// <summary>
+    /// Rents a mask array from ArrayPool. Caller must return it after use.
+    /// </summary>
+    private static GreedyMaskCell?[] RentMask()
+    {
+        return ArrayPool<GreedyMaskCell?>.Shared.Rent(MaskSize);
+    }
+
+    private static void ReturnMask(GreedyMaskCell?[] mask)
+    {
+        // Clear before returning so nullables are reset
+        Array.Clear(mask, 0, MaskSize);
+        ArrayPool<GreedyMaskCell?>.Shared.Return(mask);
+    }
+
     public static MeshBuildResult Build(VoxelChunkSnapshot snapshot, VoxelTextureAtlas atlas)
     {
-        ChunkGeometryBuffer opaqueBuffer = new ChunkGeometryBuffer();
-        ChunkGeometryBuffer transparentBuffer = new ChunkGeometryBuffer();
+        // Fix #12: Reuse thread-local geometry buffers instead of allocating new ones
+        ChunkGeometryBuffer opaqueBuffer = ThreadOpaqueBuffer.Value!;
+        ChunkGeometryBuffer transparentBuffer = ThreadTransparentBuffer.Value!;
+        opaqueBuffer.Clear();
+        transparentBuffer.Clear();
+
         int size = snapshot.ChunkSize;
-        GreedyMaskCell?[] mask = new GreedyMaskCell?[size * size];
+        GreedyMaskCell?[] mask = RentMask();
         int[] x = new int[3];
         int[] q = new int[3];
 
-        for (int axis = 0; axis < 3; axis++)
+        // Fix #13: Hoist du/dv arrays outside the inner loop to avoid per-quad allocation
+        int[] du = new int[3];
+        int[] dv = new int[3];
+
+        try
         {
-            int u = (axis + 1) % 3;
-            int v = (axis + 2) % 3;
-            Array.Clear(q, 0, q.Length);
-            q[axis] = 1;
-
-            for (x[axis] = -1; x[axis] < size;)
+            for (int axis = 0; axis < 3; axis++)
             {
-                int maskIndex = 0;
-                for (x[v] = 0; x[v] < size; x[v]++)
+                int u = (axis + 1) % 3;
+                int v = (axis + 2) % 3;
+                Array.Clear(q, 0, q.Length);
+                q[axis] = 1;
+
+                for (x[axis] = -1; x[axis] < size;)
                 {
-                    for (x[u] = 0; x[u] < size; x[u]++)
+                    int maskIndex = 0;
+                    for (x[v] = 0; x[v] < size; x[v]++)
                     {
-                        Vector3I aPos = new Vector3I(x[0], x[1], x[2]);
-                        Vector3I bPos = new Vector3I(x[0] + q[0], x[1] + q[1], x[2] + q[2]);
-                        Voxel a = snapshot.Get(aPos);
-                        Voxel b = snapshot.Get(bPos);
-                        mask[maskIndex++] = CreateMaskCell(a, b, axis);
+                        for (x[u] = 0; x[u] < size; x[u]++)
+                        {
+                            Vector3I aPos = new Vector3I(x[0], x[1], x[2]);
+                            Vector3I bPos = new Vector3I(x[0] + q[0], x[1] + q[1], x[2] + q[2]);
+                            Voxel a = snapshot.Get(aPos);
+                            Voxel b = snapshot.Get(bPos);
+                            mask[maskIndex++] = CreateMaskCell(a, b, axis);
+                        }
                     }
-                }
 
-                x[axis]++;
-                maskIndex = 0;
-                for (int j = 0; j < size; j++)
-                {
-                    for (int i = 0; i < size;)
+                    x[axis]++;
+                    maskIndex = 0;
+                    for (int j = 0; j < size; j++)
                     {
-                        GreedyMaskCell? cell = mask[maskIndex];
-                        if (cell is null)
+                        for (int i = 0; i < size;)
                         {
-                            i++;
-                            maskIndex++;
-                            continue;
-                        }
-
-                        int width;
-                        for (width = 1; i + width < size && mask[maskIndex + width] == cell; width++)
-                        {
-                        }
-
-                        int height;
-                        bool done = false;
-                        for (height = 1; j + height < size; height++)
-                        {
-                            for (int offset = 0; offset < width; offset++)
+                            GreedyMaskCell? cell = mask[maskIndex];
+                            if (cell is null)
                             {
-                                if (mask[maskIndex + offset + (height * size)] != cell)
+                                i++;
+                                maskIndex++;
+                                continue;
+                            }
+
+                            int width;
+                            for (width = 1; i + width < size && mask[maskIndex + width] == cell; width++)
+                            {
+                            }
+
+                            int height;
+                            bool done = false;
+                            for (height = 1; j + height < size; height++)
+                            {
+                                for (int offset = 0; offset < width; offset++)
                                 {
-                                    done = true;
+                                    if (mask[maskIndex + offset + (height * size)] != cell)
+                                    {
+                                        done = true;
+                                        break;
+                                    }
+                                }
+
+                                if (done)
+                                {
                                     break;
                                 }
                             }
 
-                            if (done)
+                            x[u] = i;
+                            x[v] = j;
+                            // Fix #13: Reuse hoisted du/dv arrays, clear before use
+                            du[0] = 0; du[1] = 0; du[2] = 0;
+                            dv[0] = 0; dv[1] = 0; dv[2] = 0;
+                            du[u] = width;
+                            dv[v] = height;
+                            AppendQuad(cell.Value, x, du, dv, axis, atlas, opaqueBuffer, transparentBuffer);
+
+                            for (int l = 0; l < height; l++)
                             {
-                                break;
+                                for (int k = 0; k < width; k++)
+                                {
+                                    mask[maskIndex + k + (l * size)] = null;
+                                }
                             }
+
+                            i += width;
+                            maskIndex += width;
                         }
-
-                        x[u] = i;
-                        x[v] = j;
-                        int[] du = new int[3];
-                        int[] dv = new int[3];
-                        du[u] = width;
-                        dv[v] = height;
-                        AppendQuad(cell.Value, x, du, dv, axis, atlas, opaqueBuffer, transparentBuffer);
-
-                        for (int l = 0; l < height; l++)
-                        {
-                            for (int k = 0; k < width; k++)
-                            {
-                                mask[maskIndex + k + (l * size)] = null;
-                            }
-                        }
-
-                        i += width;
-                        maskIndex += width;
                     }
                 }
             }
+        }
+        finally
+        {
+            ReturnMask(mask);
         }
 
         return new MeshBuildResult(opaqueBuffer.ToArrayMesh(), transparentBuffer.ToArrayMesh());

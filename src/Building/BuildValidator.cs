@@ -76,7 +76,9 @@ public sealed class BuildValidator
 
         if (!stamp.IsEraseOperation)
         {
-            int placementCost = stamp.BuildUnits.Count * VoxelMaterials.GetDefinition(material).Cost;
+            int microPerUnit = GameConfig.MicrovoxelsPerBuildUnit * GameConfig.MicrovoxelsPerBuildUnit * GameConfig.MicrovoxelsPerBuildUnit;
+            int materialCost = VoxelMaterials.GetDefinition(material).Cost;
+            int placementCost = (int)System.MathF.Ceiling((stamp.Microvoxels.Count * materialCost) / (float)microPerUnit);
             if (!player.CanSpend(placementCost))
             {
                 return BuildValidationResult.Failed("Not enough budget.");

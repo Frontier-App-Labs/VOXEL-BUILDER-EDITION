@@ -1,4 +1,4 @@
-﻿using Godot;
+using Godot;
 using System;
 using System.Collections.Generic;
 
@@ -15,6 +15,7 @@ public partial class TurnManager : Node
     public int RoundNumber { get; private set; } = 1;
     public PlayerSlot? CurrentPlayer => _turnOrder.Count == 0 ? null : _turnOrder[_turnIndex];
     public float RemainingTurnTime => _remainingTurnTime;
+    public bool IsRunning => _isRunning;
 
     public void Configure(IEnumerable<PlayerSlot> alivePlayers, float turnTimeSeconds, RandomNumberGenerator? rng = null)
     {
@@ -45,6 +46,11 @@ public partial class TurnManager : Node
         EmitTurnChanged(turnTimeSeconds);
     }
 
+    public void StopTurnClock()
+    {
+        _isRunning = false;
+    }
+
     public bool AdvanceTurn(float turnTimeSeconds)
     {
         if (_turnOrder.Count == 0)
@@ -65,6 +71,14 @@ public partial class TurnManager : Node
         return true;
     }
 
+    /// <summary>
+    /// Skips the current player's turn and advances to the next player.
+    /// </summary>
+    public bool SkipTurn(float turnTimeSeconds)
+    {
+        return AdvanceTurn(turnTimeSeconds);
+    }
+
     public void RemovePlayer(PlayerSlot player, float turnTimeSeconds)
     {
         int removedIndex = _turnOrder.IndexOf(player);
@@ -72,6 +86,8 @@ public partial class TurnManager : Node
         {
             return;
         }
+
+        bool isCurrentPlayer = removedIndex == _turnIndex;
 
         _turnOrder.RemoveAt(removedIndex);
         if (_turnOrder.Count == 0)
@@ -87,8 +103,14 @@ public partial class TurnManager : Node
         }
 
         _turnIndex %= _turnOrder.Count;
-        _remainingTurnTime = turnTimeSeconds;
-        EmitTurnChanged(turnTimeSeconds);
+
+        // Only reset timer and emit TurnChanged if the removed player was the current player.
+        // Removing a non-active player should adjust the index silently.
+        if (isCurrentPlayer)
+        {
+            _remainingTurnTime = turnTimeSeconds;
+            EmitTurnChanged(turnTimeSeconds);
+        }
     }
 
     public override void _Process(double delta)

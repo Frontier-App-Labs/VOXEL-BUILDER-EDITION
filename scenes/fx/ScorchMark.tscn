@@ -2,5 +2,5 @@
 
 [ext_resource type="Script" path="res://src/FX/ImpactDecals.cs" id="1"]
 
-[node name="ScorchMark" type="Node3D"]
+[node name="ScorchMark" type="Node3D" groups=["DecalManager"]]
 script = ExtResource("1")

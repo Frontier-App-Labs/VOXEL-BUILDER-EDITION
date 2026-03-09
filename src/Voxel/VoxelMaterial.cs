@@ -19,6 +19,8 @@ public enum VoxelMaterialType
     Ice = 11,
     ArmorPlate = 12,
     Foundation = 13,
+    Leaves = 14,
+    Bark = 15,
 }
 
 public readonly record struct VoxelMaterialDefinition(
@@ -36,19 +38,21 @@ public static class VoxelMaterials
     private static readonly Dictionary<VoxelMaterialType, VoxelMaterialDefinition> Definitions = new Dictionary<VoxelMaterialType, VoxelMaterialDefinition>
     {
         [VoxelMaterialType.Air] = new VoxelMaterialDefinition(0, 0, 0f, true, false, false, false, 0f),
-        [VoxelMaterialType.Dirt] = new VoxelMaterialDefinition(1, 5, 0.8f, false, false, false, false, 0f),
-        [VoxelMaterialType.Wood] = new VoxelMaterialDefinition(3, 15, 0.5f, false, true, false, false, 0f),
-        [VoxelMaterialType.Stone] = new VoxelMaterialDefinition(5, 30, 1.2f, false, false, false, false, 0f),
-        [VoxelMaterialType.Brick] = new VoxelMaterialDefinition(7, 40, 1.3f, false, false, false, false, 0f),
-        [VoxelMaterialType.Concrete] = new VoxelMaterialDefinition(10, 60, 1.8f, false, false, false, false, 0f),
-        [VoxelMaterialType.Metal] = new VoxelMaterialDefinition(15, 80, 2.0f, false, false, false, false, 0.12f),
-        [VoxelMaterialType.ReinforcedSteel] = new VoxelMaterialDefinition(25, 120, 2.5f, false, false, false, false, 0.2f),
-        [VoxelMaterialType.Glass] = new VoxelMaterialDefinition(4, 3, 0.2f, true, false, false, false, 0f),
-        [VoxelMaterialType.Obsidian] = new VoxelMaterialDefinition(30, 150, 2.8f, false, false, false, false, 0.1f),
-        [VoxelMaterialType.Sand] = new VoxelMaterialDefinition(2, 8, 0.7f, false, false, true, false, 0f),
-        [VoxelMaterialType.Ice] = new VoxelMaterialDefinition(3, 10, 0.6f, true, false, false, false, 0f),
-        [VoxelMaterialType.ArmorPlate] = new VoxelMaterialDefinition(20, 100, 2.2f, false, false, false, true, 0.15f),
+        [VoxelMaterialType.Dirt] = new VoxelMaterialDefinition(10, 5, 0.8f, false, false, false, false, 0f),
+        [VoxelMaterialType.Wood] = new VoxelMaterialDefinition(15, 15, 0.5f, false, true, false, false, 0f),
+        [VoxelMaterialType.Stone] = new VoxelMaterialDefinition(20, 30, 1.2f, false, false, false, false, 0f),
+        [VoxelMaterialType.Brick] = new VoxelMaterialDefinition(25, 40, 1.3f, false, false, false, false, 0f),
+        [VoxelMaterialType.Concrete] = new VoxelMaterialDefinition(30, 60, 1.8f, false, false, false, false, 0f),
+        [VoxelMaterialType.Metal] = new VoxelMaterialDefinition(35, 80, 2.0f, false, false, false, false, 0.12f),
+        [VoxelMaterialType.ReinforcedSteel] = new VoxelMaterialDefinition(45, 120, 2.5f, false, false, false, false, 0.2f),
+        [VoxelMaterialType.Glass] = new VoxelMaterialDefinition(12, 3, 0.2f, true, false, false, false, 0f),
+        [VoxelMaterialType.Obsidian] = new VoxelMaterialDefinition(50, 150, 2.8f, false, false, false, false, 0.1f),
+        [VoxelMaterialType.Sand] = new VoxelMaterialDefinition(10, 8, 0.7f, false, false, true, false, 0f),
+        [VoxelMaterialType.Ice] = new VoxelMaterialDefinition(12, 10, 0.6f, true, false, false, false, 0f),
+        [VoxelMaterialType.ArmorPlate] = new VoxelMaterialDefinition(40, 100, 2.2f, false, false, false, true, 0.15f),
         [VoxelMaterialType.Foundation] = new VoxelMaterialDefinition(0, 255, 999f, false, false, false, false, 0f),
+        [VoxelMaterialType.Leaves] = new VoxelMaterialDefinition(10, 5, 0.2f, false, true, false, false, 0f),
+        [VoxelMaterialType.Bark] = new VoxelMaterialDefinition(15, 20, 0.8f, false, true, false, false, 0f),
     };
 
     public static VoxelMaterialDefinition GetDefinition(VoxelMaterialType type)
@@ -94,7 +98,7 @@ public static class VoxelMaterials
         return type switch
         {
             VoxelMaterialType.Air => new Color(0f, 0f, 0f, 0f),
-            VoxelMaterialType.Dirt => new Color("7f5d3b"),
+            VoxelMaterialType.Dirt => new Color("4a8c3f"),
             VoxelMaterialType.Wood => new Color("9b6a3c"),
             VoxelMaterialType.Stone => new Color("7c8797"),
             VoxelMaterialType.Brick => new Color("a45442"),
@@ -106,7 +110,9 @@ public static class VoxelMaterials
             VoxelMaterialType.Sand => new Color("cdb36c"),
             VoxelMaterialType.Ice => new Color(0.75f, 0.9f, 1f, 0.6f),
             VoxelMaterialType.ArmorPlate => new Color("58636f"),
-            VoxelMaterialType.Foundation => new Color("60763b"),
+            VoxelMaterialType.Foundation => new Color("6b7080"),
+            VoxelMaterialType.Leaves => new Color("3a7d2e"),
+            VoxelMaterialType.Bark => new Color("5c3a1e"),
             _ => Colors.White,
         };
     }

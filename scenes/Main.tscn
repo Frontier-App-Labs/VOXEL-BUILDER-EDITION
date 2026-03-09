@@ -1,4 +1,4 @@
-[gd_scene load_steps=21 format=3]
+[gd_scene load_steps=25 format=3]
 
 [ext_resource type="Script" path="res://src/Core/GameManager.cs" id="1"]
 [ext_resource type="PackedScene" path="res://scenes/GameWorld.tscn" id="2"]
@@ -21,6 +21,10 @@
 [ext_resource type="PackedScene" path="res://scenes/ui/BuildHUD.tscn" id="19"]
 [ext_resource type="Script" path="res://src/UI/TooltipSystem.cs" id="20"]
 [ext_resource type="PackedScene" path="res://scenes/ui/MainMenu.tscn" id="21"]
+[ext_resource type="Script" path="res://src/FX/WindAnimator.cs" id="22"]
+[ext_resource type="Script" path="res://src/Core/RetroSFXGenerator.cs" id="23"]
+[ext_resource type="PackedScene" path="res://scenes/ui/SplashScreen.tscn" id="24"]
+[ext_resource type="Script" path="res://src/Army/ArmyManager.cs" id="25"]
 
 [node name="Main" type="Node"]
 script = ExtResource("1")
@@ -39,6 +43,9 @@ script = ExtResource("6")
 
 [node name="AimingSystem" type="Node" parent="."]
 script = ExtResource("7")
+
+[node name="ArmyManager" type="Node" parent="."]
+script = ExtResource("25")
 
 [node name="NetworkManager" type="Node" parent="."]
 script = ExtResource("8")
@@ -67,8 +74,12 @@ script = ExtResource("17")
 [node name="AudioDirector" type="Node" parent="."]
 script = ExtResource("18")
 
+[node name="RetroSFX" type="Node" parent="."]
+script = ExtResource("23")
+
 [node name="FreeFlyCamera" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 0.906308, 0.422618, 0, -0.422618, 0.906308, 0, 18, 26)
+fov = 55.0
 script = ExtResource("3")
 
 [node name="BuildHUD" parent="." instance=ExtResource("19")]
@@ -80,4 +91,9 @@ script = ExtResource("3")
 [node name="TooltipSystem" type="CanvasLayer" parent="."]
 script = ExtResource("20")
 
+[node name="WindAnimator" type="Node" parent="."]
+script = ExtResource("22")
+
 [node name="MainMenu" parent="." instance=ExtResource("21")]
+
+[node name="SplashScreen" parent="." instance=ExtResource("24")]

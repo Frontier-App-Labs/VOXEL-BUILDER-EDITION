@@ -2,5 +2,5 @@
 
 [ext_resource type="Script" path="res://src/FX/DebrisFX.cs" id="1"]
 
-[node name="Debris" type="Node3D"]
+[node name="Debris" type="Node3D" groups=["DebrisManager"]]
 script = ExtResource("1")

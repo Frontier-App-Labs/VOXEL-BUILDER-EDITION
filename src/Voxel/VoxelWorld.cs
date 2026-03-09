@@ -1,4 +1,5 @@
 using Godot;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using VoxelSiege.Core;
 using VoxelSiege.Utility;
@@ -12,6 +13,34 @@ public partial class VoxelWorld : Node3D
     private readonly Queue<Vector3I> _dirtyChunkQueue = new Queue<Vector3I>();
     private readonly HashSet<Vector3I> _dirtyChunkSet = new HashSet<Vector3I>();
 
+    // Snapshot pool: reuse VoxelChunkSnapshot objects to reduce GC pressure
+    // Fix #2: Use ConcurrentStack for thread-safe access from deferred callbacks
+    private readonly ConcurrentStack<VoxelChunkSnapshot> _snapshotPool = new ConcurrentStack<VoxelChunkSnapshot>();
+
+    // Pooled lists/sets for explosion/destruction operations
+    private readonly Stack<List<Vector3I>> _listPool = new Stack<List<Vector3I>>();
+    private readonly Stack<HashSet<Vector3I>> _hashSetPool = new Stack<HashSet<Vector3I>>();
+
+    // Fix #1: Guard against re-entrant _Process dirty chunk processing
+    private bool _processingDirtyChunks;
+
+    // Fix #9: Throttle chunk distance culling
+    private float _cullTimer;
+    private Vector3 _lastCullCameraPos = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+    private const float CullInterval = 0.5f;
+    private const float CullCameraMoveSqThreshold = 4f; // 2m squared
+
+    // Fix #10: Static neighbor direction array instead of yield-return IEnumerable
+    private static readonly Vector3I[] NeighborDirections =
+    {
+        Vector3I.Right,
+        Vector3I.Left,
+        Vector3I.Up,
+        Vector3I.Down,
+        new Vector3I(0, 0, -1), // Forward (Godot: -Z)
+        new Vector3I(0, 0, 1),  // Back (Godot: +Z)
+    };
+
     [Export]
     public bool AutoGeneratePrototypeArena { get; set; } = true;
 
@@ -20,23 +49,70 @@ public partial class VoxelWorld : Node3D
 
     public override void _Ready()
     {
-        EnsurePrototypeScenery();
+        WireAtlasToShader();
         if (AutoGeneratePrototypeArena)
         {
             GeneratePrototypeArena();
         }
     }
 
-    public override async void _Process(double delta)
+    /// <summary>
+    /// Sets the material_atlas, use_material_atlas, and atlas_tile_size uniforms
+    /// on the shared opaque shader material when generated textures are available.
+    /// </summary>
+    private void WireAtlasToShader()
     {
-        int remeshBudget = GameConfig.MaxChunkMeshesPerFrame;
-        while (remeshBudget-- > 0 && _dirtyChunkQueue.Count > 0)
+        if (!TextureAtlas.HasGeneratedTextures || TextureAtlas.AtlasTexture == null)
         {
-            Vector3I chunkCoords = _dirtyChunkQueue.Dequeue();
-            _dirtyChunkSet.Remove(chunkCoords);
-            if (_chunks.TryGetValue(chunkCoords, out VoxelChunk? chunk) && chunk.IsDirty)
+            return;
+        }
+
+        ShaderMaterial mat = VoxelChunk.GetSharedOpaqueShaderMaterial();
+        mat.SetShaderParameter("material_atlas", TextureAtlas.AtlasTexture);
+        mat.SetShaderParameter("use_material_atlas", true);
+        mat.SetShaderParameter("atlas_tile_size", TextureAtlas.NormalizedTileSize);
+        GD.Print($"[VoxelWorld] Atlas wired to shader: use_material_atlas=true, tile_size={TextureAtlas.NormalizedTileSize}");
+    }
+
+    // Fix #1: Remove async/await from _Process to prevent re-entrancy.
+    // QueueRemeshAsync already handles re-entrancy via _meshingInProgress/_meshQueued.
+    public override void _Process(double delta)
+    {
+        if (!_processingDirtyChunks)
+        {
+            _processingDirtyChunks = true;
+            int remeshBudget = GameConfig.MaxChunkMeshesPerFrame;
+            while (remeshBudget-- > 0 && _dirtyChunkQueue.Count > 0)
             {
-                await chunk.QueueRemeshAsync(TextureAtlas);
+                Vector3I chunkCoords = _dirtyChunkQueue.Dequeue();
+                _dirtyChunkSet.Remove(chunkCoords);
+                if (_chunks.TryGetValue(chunkCoords, out VoxelChunk? chunk) && chunk.IsDirty)
+                {
+                    // Fire-and-forget: QueueRemeshAsync handles its own re-entrancy guard
+                    _ = chunk.QueueRemeshAsync(TextureAtlas);
+                }
+            }
+            _processingDirtyChunks = false;
+        }
+
+        // Fix #9: Chunk distance culling — only recompute every CullInterval seconds
+        // or when camera has moved more than 2m.
+        _cullTimer += (float)delta;
+        Camera3D? camera = GetViewport()?.GetCamera3D();
+        if (camera != null)
+        {
+            Vector3 cameraPos = camera.GlobalPosition;
+            float cameraDeltaSq = _lastCullCameraPos.DistanceSquaredTo(cameraPos);
+            if (_cullTimer >= CullInterval || cameraDeltaSq >= CullCameraMoveSqThreshold)
+            {
+                _cullTimer = 0f;
+                _lastCullCameraPos = cameraPos;
+                float cullDistSq = GameConfig.ChunkLODDistance * GameConfig.ChunkLODDistance;
+                foreach ((Vector3I _, VoxelChunk chunk) in _chunks)
+                {
+                    float distSq = chunk.GlobalPosition.DistanceSquaredTo(cameraPos);
+                    chunk.Visible = distSq <= cullDistSq;
+                }
             }
         }
     }
@@ -67,14 +143,66 @@ public partial class VoxelWorld : Node3D
 
     public void FillBox(Vector3I minInclusive, Vector3I maxInclusive, Voxel voxel, PlayerSlot? instigator = null)
     {
+        FillBoxBulk(minInclusive, maxInclusive, voxel, instigator);
+    }
+
+    /// <summary>
+    /// Fix #4: Bulk fill that groups voxel writes by chunk, avoiding per-voxel dictionary lookups,
+    /// remesh queues, and event emissions. Queues exactly one remesh per affected chunk.
+    /// </summary>
+    public void FillBoxBulk(Vector3I minInclusive, Vector3I maxInclusive, Voxel voxel, PlayerSlot? instigator = null)
+    {
+        // Gather all affected chunk coords and the voxels to write within each
+        var affectedChunks = new Dictionary<Vector3I, VoxelChunk>();
+        var edgeChunks = new HashSet<Vector3I>();
+
         for (int z = minInclusive.Z; z <= maxInclusive.Z; z++)
         {
             for (int y = minInclusive.Y; y <= maxInclusive.Y; y++)
             {
                 for (int x = minInclusive.X; x <= maxInclusive.X; x++)
                 {
-                    SetVoxel(new Vector3I(x, y, z), voxel, instigator);
+                    Vector3I worldPos = new Vector3I(x, y, z);
+                    Vector3I chunkCoords = MathHelpers.WorldToChunk(worldPos);
+
+                    if (!affectedChunks.TryGetValue(chunkCoords, out VoxelChunk? chunk))
+                    {
+                        chunk = GetOrCreateChunk(chunkCoords);
+                        affectedChunks[chunkCoords] = chunk;
+                    }
+
+                    Vector3I local = MathHelpers.WorldToLocal(worldPos);
+                    Voxel before = chunk.GetVoxel(local);
+                    chunk.SetVoxel(local, voxel);
+
+                    // Track edge neighbors for remeshing
+                    if (local.X == 0) edgeChunks.Add(chunkCoords + Vector3I.Left);
+                    if (local.X == GameConfig.ChunkSize - 1) edgeChunks.Add(chunkCoords + Vector3I.Right);
+                    if (local.Y == 0) edgeChunks.Add(chunkCoords + Vector3I.Down);
+                    if (local.Y == GameConfig.ChunkSize - 1) edgeChunks.Add(chunkCoords + Vector3I.Up);
+                    if (local.Z == 0) edgeChunks.Add(chunkCoords + new Vector3I(0, 0, -1));
+                    if (local.Z == GameConfig.ChunkSize - 1) edgeChunks.Add(chunkCoords + new Vector3I(0, 0, 1));
+
+                    if (instigator != null)
+                    {
+                        EventBus.Instance?.EmitVoxelChanged(new VoxelChangeEvent(worldPos, before.Data, voxel.Data, instigator));
+                    }
                 }
+            }
+        }
+
+        // Queue exactly one remesh per affected chunk
+        foreach (Vector3I chunkCoords in affectedChunks.Keys)
+        {
+            QueueRemesh(chunkCoords);
+        }
+
+        // Queue remeshes for edge-neighboring chunks not already in the affected set
+        foreach (Vector3I neighborCoords in edgeChunks)
+        {
+            if (!affectedChunks.ContainsKey(neighborCoords))
+            {
+                QueueRemesh(neighborCoords);
             }
         }
     }
@@ -83,7 +211,7 @@ public partial class VoxelWorld : Node3D
     {
         Vector3I center = MathHelpers.WorldToMicrovoxel(centerWorld);
         int radius = Mathf.CeilToInt(radiusMicrovoxels);
-        List<Vector3I> destroyed = new List<Vector3I>();
+        List<Vector3I> destroyed = AcquireList();
         foreach (Vector3I position in MathHelpers.EnumerateSphere(center, radius))
         {
             Voxel voxel = GetVoxel(position);
@@ -107,9 +235,18 @@ public partial class VoxelWorld : Node3D
         return destroyed;
     }
 
-    public VoxelChunkSnapshot CreateSnapshot(Vector3I chunkCoords)
+    /// <summary>
+    /// Acquires a snapshot from the pool (or creates a new one) and populates it.
+    /// Call ReturnSnapshot when meshing is complete.
+    /// </summary>
+    public VoxelChunkSnapshot AcquireSnapshot(Vector3I chunkCoords)
     {
-        VoxelChunkSnapshot snapshot = new VoxelChunkSnapshot(GameConfig.ChunkSize);
+        // Fix #2: Thread-safe pool via ConcurrentStack
+        if (!_snapshotPool.TryPop(out VoxelChunkSnapshot? snapshot))
+        {
+            snapshot = new VoxelChunkSnapshot(GameConfig.ChunkSize);
+        }
+
         Vector3I worldBase = chunkCoords * GameConfig.ChunkSize;
         for (int z = -1; z <= GameConfig.ChunkSize; z++)
         {
@@ -126,22 +263,54 @@ public partial class VoxelWorld : Node3D
         return snapshot;
     }
 
+    /// <summary>
+    /// Returns a snapshot to the pool for reuse.
+    /// </summary>
+    public void ReturnSnapshot(VoxelChunkSnapshot snapshot)
+    {
+        _snapshotPool.Push(snapshot);
+    }
+
+    /// <summary>
+    /// Legacy CreateSnapshot kept for backward compatibility. Prefer AcquireSnapshot/ReturnSnapshot.
+    /// </summary>
+    public VoxelChunkSnapshot CreateSnapshot(Vector3I chunkCoords)
+    {
+        return AcquireSnapshot(chunkCoords);
+    }
+
     public List<Vector3I> FindDisconnectedVoxels(Aabb searchBounds)
     {
-        Vector3I min = MathHelpers.WorldToMicrovoxel(searchBounds.Position);
-        Vector3I max = MathHelpers.WorldToMicrovoxel(searchBounds.End);
-        Queue<Vector3I> frontier = new Queue<Vector3I>();
-        HashSet<Vector3I> connected = new HashSet<Vector3I>();
+        Vector3I scanMin = MathHelpers.WorldToMicrovoxel(searchBounds.Position);
+        Vector3I scanMax = MathHelpers.WorldToMicrovoxel(searchBounds.End);
 
-        for (int z = min.Z; z <= max.Z; z++)
+        // Extend scan down to ground so BFS finds terrain-connected voxels
+        int groundLevel = GameConfig.PrototypeGroundThickness;
+        scanMin.Y = System.Math.Min(scanMin.Y, groundLevel);
+
+        // BFS bounds: let the flood fill walk further than the scan area so that
+        // connection paths running outside the scan area are still discovered.
+        // This prevents false positives (flagging voxels that are connected via
+        // voxels just outside the search bounds).
+        const int bfsPadding = 16; // extra microvoxels beyond scan area for BFS
+        Vector3I bfsMin = new Vector3I(scanMin.X - bfsPadding, 0, scanMin.Z - bfsPadding);
+        Vector3I bfsMax = new Vector3I(scanMax.X + bfsPadding, scanMax.Y + bfsPadding, scanMax.Z + bfsPadding);
+
+        Queue<Vector3I> frontier = new Queue<Vector3I>();
+        HashSet<Vector3I> connected = AcquireHashSet();
+
+        // Seed BFS from ground/foundation rows within the BFS XZ bounds
+        for (int z = bfsMin.Z; z <= bfsMax.Z; z++)
         {
-            for (int x = min.X; x <= max.X; x++)
+            for (int x = bfsMin.X; x <= bfsMax.X; x++)
             {
-                Vector3I ground = new Vector3I(x, min.Y, z);
-                if (GetVoxel(ground).IsSolid)
+                for (int y = 0; y <= groundLevel; y++)
                 {
-                    frontier.Enqueue(ground);
-                    connected.Add(ground);
+                    Vector3I ground = new Vector3I(x, y, z);
+                    if (GetVoxel(ground).IsSolid && connected.Add(ground))
+                    {
+                        frontier.Enqueue(ground);
+                    }
                 }
             }
         }
@@ -149,9 +318,13 @@ public partial class VoxelWorld : Node3D
         while (frontier.Count > 0)
         {
             Vector3I current = frontier.Dequeue();
-            foreach (Vector3I neighbor in EnumerateNeighbors(current))
+            // Fix #10: Use static direction array instead of yield-return iterator
+            for (int d = 0; d < NeighborDirections.Length; d++)
             {
-                if (neighbor.X < min.X || neighbor.Y < min.Y || neighbor.Z < min.Z || neighbor.X > max.X || neighbor.Y > max.Y || neighbor.Z > max.Z)
+                Vector3I neighbor = current + NeighborDirections[d];
+                // BFS walks within the expanded bfs bounds to find connection paths
+                if (neighbor.X < bfsMin.X || neighbor.Y < bfsMin.Y || neighbor.Z < bfsMin.Z ||
+                    neighbor.X > bfsMax.X || neighbor.Y > bfsMax.Y || neighbor.Z > bfsMax.Z)
                 {
                     continue;
                 }
@@ -166,12 +339,13 @@ public partial class VoxelWorld : Node3D
             }
         }
 
-        List<Vector3I> disconnected = new List<Vector3I>();
-        for (int z = min.Z; z <= max.Z; z++)
+        // Only report disconnected voxels within the original scan area (not the padded BFS area)
+        List<Vector3I> disconnected = AcquireList();
+        for (int z = scanMin.Z; z <= scanMax.Z; z++)
         {
-            for (int y = min.Y; y <= max.Y; y++)
+            for (int y = scanMin.Y; y <= scanMax.Y; y++)
             {
-                for (int x = min.X; x <= max.X; x++)
+                for (int x = scanMin.X; x <= scanMax.X; x++)
                 {
                     Vector3I position = new Vector3I(x, y, z);
                     if (GetVoxel(position).IsSolid && !connected.Contains(position))
@@ -182,6 +356,7 @@ public partial class VoxelWorld : Node3D
             }
         }
 
+        ReturnHashSet(connected);
         return disconnected;
     }
 
@@ -206,58 +381,89 @@ public partial class VoxelWorld : Node3D
     public void GeneratePrototypeArena()
     {
         int halfWidth = GameConfig.PrototypeArenaWidth / 2;
-        int halfDepth = GameConfig.PrototypeArenaDepth / 2;
-        FillBox(
-            new Vector3I(-halfWidth, 0, -halfDepth),
-            new Vector3I(halfWidth, GameConfig.PrototypeGroundThickness - 1, halfDepth),
+
+        // Extend the flat ground out to cover the gap between arena edge and mountain start.
+        // This ensures there is a wide flat area before mountains begin rising.
+        int groundExtent = halfWidth + TerrainDecorator.MountainStartOffset;
+
+        // Sub-layers: Foundation (structural, indestructible)
+        FillBoxBulk(
+            new Vector3I(-groundExtent, 0, -groundExtent),
+            new Vector3I(groundExtent, GameConfig.PrototypeGroundThickness - 2, groundExtent),
             Voxel.Create(VoxelMaterialType.Foundation));
+
+        // Top layer: Dirt (looks like grass)
+        FillBoxBulk(
+            new Vector3I(-groundExtent, GameConfig.PrototypeGroundThickness - 1, -groundExtent),
+            new Vector3I(groundExtent, GameConfig.PrototypeGroundThickness - 1, groundExtent),
+            Voxel.Create(VoxelMaterialType.Dirt));
     }
 
-    private void EnsurePrototypeScenery()
+    // NOTE: Sun, WorldEnvironment, and sky are now created exclusively by
+    // VoxelGiSetup (via GameManager.SetupVoxelGiAndLighting) to avoid duplicate
+    // lighting/environment nodes that caused visual artifacts at the arena center.
+
+    /// <summary>
+    /// Steps through the voxel grid along a ray and returns the first solid voxel hit
+    /// plus the face normal indicating which face was entered.
+    /// </summary>
+    public bool RaycastVoxel(Vector3 worldOrigin, Vector3 worldDirection, float maxDistance, out Vector3I hitPos, out Vector3I hitNormal)
     {
-        if (GetNodeOrNull<DirectionalLight3D>("Sun") == null)
-        {
-            DirectionalLight3D sun = new DirectionalLight3D();
-            sun.Name = "Sun";
-            sun.LightEnergy = 1.8f;
-            sun.ShadowEnabled = true;
-            sun.RotationDegrees = new Vector3(-45f, -30f, 0f);
-            AddChild(sun);
-        }
-
-        if (GetNodeOrNull<WorldEnvironment>("WorldEnvironment") == null)
-        {
-            WorldEnvironment worldEnvironment = new WorldEnvironment();
-            worldEnvironment.Name = "WorldEnvironment";
-
-            Environment environment = new Environment();
-            environment.BackgroundMode = Environment.BGMode.Sky;
-            environment.AmbientLightSource = Environment.AmbientSource.Sky;
-            environment.AmbientLightEnergy = 0.8f;
-            environment.TonemapMode = Environment.ToneMapper.Aces;
-
-            ProceduralSkyMaterial sky = new ProceduralSkyMaterial();
-            sky.SkyTopColor = new Color("6aa4ff");
-            sky.SkyHorizonColor = new Color("b5d5ff");
-            sky.GroundBottomColor = new Color("4c5a32");
-            sky.GroundHorizonColor = new Color("768b4a");
-
-            Sky skyResource = new Sky();
-            skyResource.SkyMaterial = sky;
-            environment.Sky = skyResource;
-            worldEnvironment.Environment = environment;
-            AddChild(worldEnvironment);
-        }
+        return MathHelpers.RaycastVoxel(
+            worldOrigin,
+            worldDirection,
+            maxDistance,
+            pos => GetVoxel(pos).IsSolid,
+            out hitPos,
+            out hitNormal);
     }
 
-    private static IEnumerable<Vector3I> EnumerateNeighbors(Vector3I origin)
+    // --- Pooled collection helpers ---
+
+    /// <summary>
+    /// Acquires a List from the pool or creates a new one.
+    /// </summary>
+    public List<Vector3I> AcquireList()
     {
-        yield return origin + Vector3I.Right;
-        yield return origin + Vector3I.Left;
-        yield return origin + Vector3I.Up;
-        yield return origin + Vector3I.Down;
-        yield return origin + Vector3I.Forward;
-        yield return origin + Vector3I.Back;
+        if (_listPool.Count > 0)
+        {
+            List<Vector3I> list = _listPool.Pop();
+            list.Clear();
+            return list;
+        }
+        return new List<Vector3I>();
+    }
+
+    /// <summary>
+    /// Returns a List to the pool for reuse.
+    /// </summary>
+    public void ReturnList(List<Vector3I> list)
+    {
+        list.Clear();
+        _listPool.Push(list);
+    }
+
+    /// <summary>
+    /// Acquires a HashSet from the pool or creates a new one.
+    /// </summary>
+    public HashSet<Vector3I> AcquireHashSet()
+    {
+        if (_hashSetPool.Count > 0)
+        {
+            HashSet<Vector3I> set = _hashSetPool.Pop();
+            set.Clear();
+            return set;
+        }
+        return new HashSet<Vector3I>();
+    }
+
+    /// <summary>
+    /// Returns a HashSet to the pool for reuse.
+    /// </summary>
+    public void ReturnHashSet(HashSet<Vector3I> set)
+    {
+        set.Clear();
+        _hashSetPool.Push(set);
     }
 
     private VoxelChunk GetOrCreateChunk(Vector3I chunkCoords)
@@ -308,12 +514,12 @@ public partial class VoxelWorld : Node3D
 
         if (localPosition.Z == 0)
         {
-            QueueRemesh(chunkCoords + Vector3I.Back);
+            QueueRemesh(chunkCoords + new Vector3I(0, 0, -1));
         }
 
         if (localPosition.Z == GameConfig.ChunkSize - 1)
         {
-            QueueRemesh(chunkCoords + Vector3I.Forward);
+            QueueRemesh(chunkCoords + new Vector3I(0, 0, 1));
         }
     }
 }

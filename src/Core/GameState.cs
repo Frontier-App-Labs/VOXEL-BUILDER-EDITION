@@ -29,6 +29,8 @@ public enum BuildToolMode
     Eraser,
     Copy,
     Paste,
+    Door,
+    Blueprint,
 }
 
 public enum BuildSymmetryMode
@@ -58,4 +60,13 @@ public enum WeaponTier
     Tier1,
     Tier2,
     Tier3,
+}
+
+public enum WeaponType
+{
+    Cannon,
+    Mortar,
+    Railgun,
+    MissileLauncher,
+    Drill,
 }

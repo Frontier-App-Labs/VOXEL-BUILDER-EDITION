@@ -1,5 +1,6 @@
 using Godot;
 using System.Collections.Generic;
+using VoxelSiege.Art;
 using VoxelSiege.Core;
 using VoxelSiege.Utility;
 using VoxelSiege.Voxel;
@@ -11,8 +12,14 @@ public partial class Commander : Node3D
     private CommanderHealth? _health;
     private CommanderAnimation? _animation;
     private CommanderRagdoll? _ragdoll;
-    private MeshInstance3D? _bodyMesh;
-    private MeshInstance3D? _hatMesh;
+    private Node3D? _modelRoot;
+    private MeshInstance3D? _headMesh;
+    private MeshInstance3D? _torsoMesh;
+    private MeshInstance3D? _leftArmMesh;
+    private MeshInstance3D? _rightArmMesh;
+    private MeshInstance3D? _leftLegMesh;
+    private MeshInstance3D? _rightLegMesh;
+    private CommanderBodyParts _bodyParts;
     private PlayerSlot? _lastInstigator;
     private Vector3 _lastImpactDirection = Vector3.Up;
 
@@ -21,6 +28,8 @@ public partial class Commander : Node3D
 
     [Export]
     public Vector3I BuildUnitPosition { get; private set; }
+
+    public bool IsDead => _health?.IsDead ?? false;
 
     public bool IsExposed { get; private set; }
 
@@ -57,6 +66,16 @@ public partial class Commander : Node3D
         _health.Died += OnDied;
     }
 
+    public override void _Process(double delta)
+    {
+        if (_health?.IsDead ?? false)
+        {
+            return;
+        }
+
+        // Animation is now handled by CommanderAnimation._Process
+    }
+
     public void PlaceCommander(VoxelWorld world, Vector3I buildUnitPosition)
     {
         BuildUnitPosition = buildUnitPosition;
@@ -78,6 +97,10 @@ public partial class Commander : Node3D
         return _health?.ApplyDamage(damage) ?? false;
     }
 
+    /// <summary>
+    /// Check if the Commander is exposed (any adjacent voxels missing).
+    /// When exposed, switch to panic animation. When covered, return to idle.
+    /// </summary>
     public bool EvaluateExposure(VoxelWorld world)
     {
         Vector3I microBase = MathHelpers.BuildToMicrovoxel(BuildUnitPosition);
@@ -104,6 +127,26 @@ public partial class Commander : Node3D
         return false;
     }
 
+    /// <summary>
+    /// Apply an explosion impulse to the ragdoll if the Commander is already dead.
+    /// Lets subsequent explosions keep punting the body around.
+    /// </summary>
+    public void ApplyExplosionToRagdoll(Vector3 explosionOrigin, float force)
+    {
+        if (_health?.IsDead == true && _ragdoll?.IsActive == true)
+        {
+            _ragdoll.ApplyExplosionImpulse(explosionOrigin, force);
+        }
+    }
+
+    /// <summary>
+    /// Check if the ragdoll has settled (all parts at rest).
+    /// </summary>
+    public bool IsRagdollSettled()
+    {
+        return _ragdoll?.IsSettled() ?? false;
+    }
+
     private void OnDamaged(int damage, int remainingHealth)
     {
         if (remainingHealth > 0)
@@ -116,21 +159,54 @@ public partial class Commander : Node3D
     private async void OnDied()
     {
         _animation?.SetState(CommanderAnimationState.Dead);
-        if (_bodyMesh != null)
-        {
-            _bodyMesh.Visible = false;
-        }
 
-        if (_hatMesh != null)
-        {
-            _hatMesh.Visible = false;
-        }
+        // Create the ragdoll from the body parts
+        ActivateRagdollDeath();
 
-        _ragdoll?.ActivateRagdoll(_lastImpactDirection * 8f);
+        // Slow-motion for dramatic effect
         Engine.TimeScale = GameConfig.SlowMoTimeScale;
         EventBus.Instance?.EmitCommanderKilled(new CommanderKilledEvent(OwnerSlot, _lastInstigator, GlobalPosition));
         await ToSignal(GetTree().CreateTimer(GameConfig.SlowMoDuration * GameConfig.SlowMoTimeScale), SceneTreeTimer.SignalName.Timeout);
         Engine.TimeScale = 1f;
+    }
+
+    /// <summary>
+    /// Convert the Commander's animated body parts into a physics ragdoll.
+    /// Hides the animated model and spawns RigidBody3D parts that tumble spectacularly.
+    /// </summary>
+    private void ActivateRagdollDeath()
+    {
+        if (_ragdoll == null || _modelRoot == null)
+        {
+            return;
+        }
+
+        // Collect mesh references before hiding the model
+        MeshInstance3D?[] meshes = new MeshInstance3D?[]
+        {
+            _headMesh,
+            _torsoMesh,
+            _leftArmMesh,
+            _rightArmMesh,
+            _leftLegMesh,
+            _rightLegMesh,
+        };
+
+        // Hide the animated model
+        _modelRoot.Visible = false;
+
+        // Death impulse: direction of the killing blow + dramatic upward launch
+        float deathForce = 8f;
+        Vector3 impulseDir = _lastImpactDirection;
+
+        // If the impact direction is mostly zero (e.g., no origin given), launch upward
+        if (impulseDir.LengthSquared() < 0.01f)
+        {
+            impulseDir = Vector3.Up;
+        }
+
+        // Activate the ragdoll with full body part data
+        _ragdoll.Activate(_bodyParts, GlobalTransform, impulseDir, deathForce, meshes);
     }
 
     private static IEnumerable<Vector3I> Directions()
@@ -166,29 +242,9 @@ public partial class Commander : Node3D
         }
     }
 
-    private void EnsureVisuals()
+    private Color GetTeamColor()
     {
-        _bodyMesh ??= GetNodeOrNull<MeshInstance3D>("BodyMesh");
-        if (_bodyMesh == null)
-        {
-            _bodyMesh = new MeshInstance3D();
-            _bodyMesh.Name = "BodyMesh";
-            _bodyMesh.Mesh = new BoxMesh { Size = new Vector3(0.5f, 1.1f, 0.45f) };
-            _bodyMesh.Position = new Vector3(0f, 0.55f, 0f);
-            AddChild(_bodyMesh);
-        }
-
-        _hatMesh ??= GetNodeOrNull<MeshInstance3D>("HatMesh");
-        if (_hatMesh == null)
-        {
-            _hatMesh = new MeshInstance3D();
-            _hatMesh.Name = "HatMesh";
-            _hatMesh.Mesh = new BoxMesh { Size = new Vector3(0.55f, 0.2f, 0.55f) };
-            _hatMesh.Position = new Vector3(0f, 1.2f, 0f);
-            AddChild(_hatMesh);
-        }
-
-        Color bodyColor = OwnerSlot switch
+        return OwnerSlot switch
         {
             PlayerSlot.Player1 => GameConfig.PlayerColors[0],
             PlayerSlot.Player2 => GameConfig.PlayerColors[1],
@@ -196,15 +252,61 @@ public partial class Commander : Node3D
             PlayerSlot.Player4 => GameConfig.PlayerColors[3],
             _ => Colors.White,
         };
+    }
 
-        StandardMaterial3D bodyMaterial = new StandardMaterial3D();
-        bodyMaterial.AlbedoColor = bodyColor;
-        bodyMaterial.Roughness = 0.8f;
-        _bodyMesh.MaterialOverride = bodyMaterial;
+    private void EnsureVisuals()
+    {
+        if (_modelRoot != null)
+        {
+            _modelRoot.QueueFree();
+            _modelRoot = null;
+        }
 
-        StandardMaterial3D hatMaterial = new StandardMaterial3D();
-        hatMaterial.AlbedoColor = new Color("2f3642");
-        hatMaterial.Roughness = 0.7f;
-        _hatMesh.MaterialOverride = hatMaterial;
+        Color teamColor = GetTeamColor();
+        _bodyParts = CommanderModelGenerator.Generate(teamColor);
+
+        _modelRoot = new Node3D();
+        _modelRoot.Name = "CommanderModel";
+        AddChild(_modelRoot);
+
+        // Load toon shader material
+        ShaderMaterial? toonMat = VoxelModelBuilder.CreateToonMaterial();
+        if (toonMat != null)
+        {
+            toonMat.SetShaderParameter("team_color", new Godot.Color(teamColor.R, teamColor.G, teamColor.B, 1f));
+        }
+
+        // Fallback material if shader not found
+        StandardMaterial3D fallbackMat = VoxelModelBuilder.CreateVoxelMaterial(0.0f, 0.8f);
+
+        _headMesh = CreateBodyPartMesh("Head", _bodyParts.HeadMesh, _bodyParts.HeadRegion, toonMat, fallbackMat);
+        _torsoMesh = CreateBodyPartMesh("Torso", _bodyParts.TorsoMesh, _bodyParts.TorsoRegion, toonMat, fallbackMat);
+        _leftArmMesh = CreateBodyPartMesh("LeftArm", _bodyParts.LeftArmMesh, _bodyParts.LeftArmRegion, toonMat, fallbackMat);
+        _rightArmMesh = CreateBodyPartMesh("RightArm", _bodyParts.RightArmMesh, _bodyParts.RightArmRegion, toonMat, fallbackMat);
+        _leftLegMesh = CreateBodyPartMesh("LeftLeg", _bodyParts.LeftLegMesh, _bodyParts.LeftLegRegion, toonMat, fallbackMat);
+        _rightLegMesh = CreateBodyPartMesh("RightLeg", _bodyParts.RightLegMesh, _bodyParts.RightLegRegion, toonMat, fallbackMat);
+
+        // Wire up the animation system with body part references
+        _animation?.SetBodyParts(
+            _headMesh, _torsoMesh,
+            _leftArmMesh, _rightArmMesh,
+            _leftLegMesh, _rightLegMesh,
+            _bodyParts.HeadRegion.CenterOffset,
+            _bodyParts.TorsoRegion.CenterOffset,
+            _bodyParts.LeftArmRegion.CenterOffset,
+            _bodyParts.RightArmRegion.CenterOffset,
+            _bodyParts.LeftLegRegion.CenterOffset,
+            _bodyParts.RightLegRegion.CenterOffset
+        );
+    }
+
+    private MeshInstance3D CreateBodyPartMesh(string name, ArrayMesh mesh, CommanderBodyPartRegion region, ShaderMaterial? toonMat, StandardMaterial3D fallbackMat)
+    {
+        MeshInstance3D instance = new();
+        instance.Name = name;
+        instance.Mesh = mesh;
+        instance.MaterialOverride = (Material?)toonMat?.Duplicate() ?? fallbackMat;
+        _modelRoot!.AddChild(instance);
+        return instance;
     }
 }

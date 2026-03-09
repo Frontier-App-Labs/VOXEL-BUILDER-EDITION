@@ -40,6 +40,121 @@ public partial class BuildSystem : Node
 
     public bool HollowBoxMode { get; set; }
 
+    /// <summary>
+    /// The currently active blueprint definition (when CurrentToolMode == Blueprint).
+    /// Set by the UI/GameManager when the player selects a blueprint preset.
+    /// </summary>
+    public BlueprintDefinition? ActiveBlueprint { get; set; }
+
+    /// <summary>
+    /// Places a blueprint at the given build-unit origin using the player's selected material.
+    /// The blueprint offsets are pre-rotated by the caller. Each offset in the blueprint
+    /// becomes a full build unit (2x2x2 microvoxels) filled with the player's current material.
+    /// </summary>
+    public bool TryApplyBlueprint(PlayerSlot playerSlot, BuildZone zone, Vector3I origin, List<Vector3I> rotatedOffsets, out string failureReason)
+    {
+        failureReason = string.Empty;
+        GameManager? gameManager = ResolveGameManager();
+        VoxelWorld? world = ResolveWorld();
+        if (gameManager == null || world == null)
+        {
+            failureReason = "Build system is not connected to the game world.";
+            return false;
+        }
+
+        PlayerData? player = gameManager.GetPlayer(playerSlot);
+        if (player == null)
+        {
+            failureReason = "Player data not found.";
+            return false;
+        }
+
+        // Build stamp from blueprint offsets
+        BuildStamp stamp = new BuildStamp { IsEraseOperation = false };
+        foreach (Vector3I offset in rotatedOffsets)
+        {
+            Vector3I buildUnit = origin + offset;
+            stamp.BuildUnits.Add(buildUnit);
+            foreach (Vector3I micro in ExpandUniformBuildUnit(buildUnit))
+            {
+                stamp.Microvoxels.Add(micro);
+            }
+        }
+
+        // Apply symmetry
+        HashSet<Vector3I> symmetricBuildUnits = _symmetryTool.Apply(zone, stamp.BuildUnits);
+        if (symmetricBuildUnits.Count > stamp.BuildUnits.Count)
+        {
+            // Symmetry added extra build units — expand their microvoxels too
+            foreach (Vector3I buildUnit in symmetricBuildUnits)
+            {
+                if (stamp.BuildUnits.Add(buildUnit))
+                {
+                    foreach (Vector3I micro in ExpandUniformBuildUnit(buildUnit))
+                    {
+                        stamp.Microvoxels.Add(micro);
+                    }
+                }
+            }
+        }
+
+        BuildValidationResult validation = _validator.ValidateStamp(world, player, zone, stamp, CurrentMaterial);
+        if (!validation.Success)
+        {
+            failureReason = validation.Reason;
+            return false;
+        }
+
+        BuildAction action = CreateBuildAction(playerSlot, world, stamp, validation.BudgetDelta);
+        if (!ApplyBudgetDelta(player, action.BudgetDelta))
+        {
+            failureReason = "Budget application failed.";
+            return false;
+        }
+
+        ApplyBuildAction(world, action, true);
+        _undoStack.Push(action);
+        _redoStack.Clear();
+        EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(player.Slot, player.Budget, action.BudgetDelta));
+        return true;
+    }
+
+    /// <summary>
+    /// Generates microvoxel positions for a blueprint placed at the given build-unit origin
+    /// with the given rotated offsets. Used by GameManager for ghost preview rendering.
+    /// </summary>
+    public static List<Vector3I> GenerateBlueprintMicrovoxels(Vector3I origin, List<Vector3I> rotatedOffsets)
+    {
+        List<Vector3I> microvoxels = new List<Vector3I>(rotatedOffsets.Count * GameConfig.MicrovoxelsPerBuildUnit * GameConfig.MicrovoxelsPerBuildUnit * GameConfig.MicrovoxelsPerBuildUnit);
+        foreach (Vector3I offset in rotatedOffsets)
+        {
+            Vector3I buildUnit = origin + offset;
+            foreach (Vector3I micro in ExpandUniformBuildUnit(buildUnit))
+            {
+                microvoxels.Add(micro);
+            }
+        }
+
+        return microvoxels;
+    }
+
+    /// <summary>
+    /// Checks whether all build units in a blueprint placement are within the build zone.
+    /// Used by GameManager for ghost preview validation.
+    /// </summary>
+    public static bool ValidateBlueprintInZone(BuildZone zone, Vector3I origin, List<Vector3I> rotatedOffsets)
+    {
+        foreach (Vector3I offset in rotatedOffsets)
+        {
+            if (!zone.ContainsBuildUnit(origin + offset))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     public bool TryApply(PlayerSlot playerSlot, BuildZone zone, Vector3I startBuildUnit, Vector3I endBuildUnit, out string failureReason)
     {
         failureReason = string.Empty;
@@ -214,16 +329,29 @@ public partial class BuildSystem : Node
         return true;
     }
 
-    private int CalculateRefund(VoxelWorld world, BuildStamp stamp)
+    private static int CalculateRefund(VoxelWorld world, BuildStamp stamp)
     {
-        int refund = 0;
-        foreach (Vector3I buildUnit in stamp.BuildUnits)
+        int microPerUnit = GameConfig.MicrovoxelsPerBuildUnit * GameConfig.MicrovoxelsPerBuildUnit * GameConfig.MicrovoxelsPerBuildUnit;
+        int solidMicrovoxelCount = 0;
+        int totalMaterialCost = 0;
+
+        foreach (Vector3I microvoxel in stamp.Microvoxels)
         {
-            VoxelMaterialType material = SampleBuildUnitMaterial(world, buildUnit);
-            refund += VoxelMaterials.GetDefinition(material).Cost;
+            VoxelValue voxel = world.GetVoxel(microvoxel);
+            if (!voxel.IsAir)
+            {
+                solidMicrovoxelCount++;
+                totalMaterialCost += VoxelMaterials.GetDefinition(voxel.Material).Cost;
+            }
         }
 
-        return refund;
+        if (solidMicrovoxelCount == 0)
+        {
+            return 0;
+        }
+
+        // Refund proportional to microvoxels actually erased
+        return (int)MathF.Ceiling(totalMaterialCost / (float)microPerUnit);
     }
 
     private static VoxelMaterialType SampleBuildUnitMaterial(VoxelWorld world, Vector3I buildUnit)
@@ -240,7 +368,7 @@ public partial class BuildSystem : Node
         return VoxelMaterialType.Air;
     }
 
-    private static IEnumerable<Vector3I> GenerateBuildUnitCells(BuildToolMode toolMode, Vector3I start, Vector3I end, bool hollowBox)
+    internal static IEnumerable<Vector3I> GenerateBuildUnitCells(BuildToolMode toolMode, Vector3I start, Vector3I end, bool hollowBox)
     {
         Vector3I min = new Vector3I(Math.Min(start.X, end.X), Math.Min(start.Y, end.Y), Math.Min(start.Z, end.Z));
         Vector3I max = new Vector3I(Math.Max(start.X, end.X), Math.Max(start.Y, end.Y), Math.Max(start.Z, end.Z));
@@ -388,21 +516,38 @@ public partial class BuildSystem : Node
         }
     }
 
-    private static IEnumerable<Vector3I> ExpandBuildUnit(Vector3I buildUnit, BuildToolMode toolMode, Vector3I start, Vector3I end)
+    internal static IEnumerable<Vector3I> ExpandBuildUnit(Vector3I buildUnit, BuildToolMode toolMode, Vector3I start, Vector3I end)
     {
-        if (toolMode == BuildToolMode.Ramp)
+        switch (toolMode)
         {
-            foreach (Vector3I micro in ExpandRampBuildUnit(buildUnit, start, end))
-            {
-                yield return micro;
-            }
+            case BuildToolMode.Ramp:
+                foreach (Vector3I micro in ExpandRampBuildUnit(buildUnit, start, end))
+                {
+                    yield return micro;
+                }
 
-            yield break;
-        }
+                yield break;
+            case BuildToolMode.Wall:
+                foreach (Vector3I micro in ExpandWallBuildUnit(buildUnit, start, end))
+                {
+                    yield return micro;
+                }
 
-        foreach (Vector3I micro in ExpandUniformBuildUnit(buildUnit))
-        {
-            yield return micro;
+                yield break;
+            case BuildToolMode.Floor:
+                foreach (Vector3I micro in ExpandFloorBuildUnit(buildUnit))
+                {
+                    yield return micro;
+                }
+
+                yield break;
+            default:
+                foreach (Vector3I micro in ExpandUniformBuildUnit(buildUnit))
+                {
+                    yield return micro;
+                }
+
+                yield break;
         }
     }
 
@@ -439,6 +584,58 @@ public partial class BuildSystem : Node
                 {
                     yield return microBase + new Vector3I(x, y, z);
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Expands a wall build unit to 1 microvoxel thick, 2 build units (4 microvoxels) tall.
+    /// Orientation is determined by the drag direction: if the drag spans more in X than Z,
+    /// the wall runs along X (thin in Z). Otherwise it runs along Z (thin in X).
+    /// For single-click placement (start == end), defaults to thin in Z.
+    /// The non-thin axis always has full build-unit width (2 microvoxels).
+    /// </summary>
+    private static IEnumerable<Vector3I> ExpandWallBuildUnit(Vector3I buildUnit, Vector3I start, Vector3I end)
+    {
+        // Wall is 2 build units tall (4 microvoxels = 2m), 1 microvoxel thick
+        const int WallHeight = GameConfig.MicrovoxelsPerBuildUnit * 2; // 4 microvoxels = 2 build units tall
+        Vector3I microBase = buildUnit * GameConfig.MicrovoxelsPerBuildUnit;
+        int spanX = Math.Abs(end.X - start.X);
+        int spanZ = Math.Abs(end.Z - start.Z);
+
+        // Determine thin axis: wall running along X is thin in Z, wall running along Z is thin in X.
+        // When spans are equal or zero (single click), default to thin in Z.
+        bool thinInZ = spanX >= spanZ;
+
+        // Width on the non-thin axis is always full build unit width (2 microvoxels).
+        // Thickness on the thin axis is always 1 microvoxel.
+        int widthX = thinInZ ? GameConfig.MicrovoxelsPerBuildUnit : 1;
+        int widthZ = thinInZ ? 1 : GameConfig.MicrovoxelsPerBuildUnit;
+
+        for (int z = 0; z < widthZ; z++)
+        {
+            for (int y = 0; y < WallHeight; y++)
+            {
+                for (int x = 0; x < widthX; x++)
+                {
+                    yield return microBase + new Vector3I(x, y, z);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Expands a floor build unit to only the bottom layer (y=0) of microvoxels,
+    /// producing a 0.5m deep floor slab.
+    /// </summary>
+    private static IEnumerable<Vector3I> ExpandFloorBuildUnit(Vector3I buildUnit)
+    {
+        Vector3I microBase = buildUnit * GameConfig.MicrovoxelsPerBuildUnit;
+        for (int z = 0; z < GameConfig.MicrovoxelsPerBuildUnit; z++)
+        {
+            for (int x = 0; x < GameConfig.MicrovoxelsPerBuildUnit; x++)
+            {
+                yield return microBase + new Vector3I(x, 0, z);
             }
         }
     }

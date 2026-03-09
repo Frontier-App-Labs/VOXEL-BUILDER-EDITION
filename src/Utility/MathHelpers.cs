@@ -1,4 +1,5 @@
 using Godot;
+using System;
 using System.Collections.Generic;
 using VoxelSiege.Core;
 
@@ -65,6 +66,17 @@ public static class MathHelpers
         return buildUnitPosition * GameConfig.MicrovoxelsPerBuildUnit;
     }
 
+    /// <summary>
+    /// Converts a microvoxel position to a build unit position (integer division, floors).
+    /// </summary>
+    public static Vector3I MicrovoxelToBuild(Vector3I microvoxelPosition)
+    {
+        return new Vector3I(
+            FloorDiv(microvoxelPosition.X, GameConfig.MicrovoxelsPerBuildUnit),
+            FloorDiv(microvoxelPosition.Y, GameConfig.MicrovoxelsPerBuildUnit),
+            FloorDiv(microvoxelPosition.Z, GameConfig.MicrovoxelsPerBuildUnit));
+    }
+
     public static IEnumerable<Vector3I> EnumerateSphere(Vector3I center, int radius)
     {
         int radiusSquared = radius * radius;
@@ -99,5 +111,117 @@ public static class MathHelpers
         }
 
         return points;
+    }
+
+    /// <summary>
+    /// Steps through a ray in voxel (microvoxel) space using DDA algorithm.
+    /// Returns true if a solid voxel was hit within maxDistance world units.
+    /// hitPos is the microvoxel position of the solid voxel.
+    /// hitNormal is the face normal (which face of the solid voxel was entered from).
+    /// placementPos is hitPos + hitNormal (where a new block would go).
+    /// </summary>
+    public static bool RaycastVoxel(
+        Vector3 worldOrigin,
+        Vector3 worldDirection,
+        float maxDistance,
+        Func<Vector3I, bool> isSolid,
+        out Vector3I hitPos,
+        out Vector3I hitNormal)
+    {
+        hitPos = Vector3I.Zero;
+        hitNormal = Vector3I.Zero;
+
+        if (worldDirection.LengthSquared() < 1e-10f)
+        {
+            return false;
+        }
+
+        worldDirection = worldDirection.Normalized();
+
+        // Convert to microvoxel space
+        float scale = GameConfig.MicrovoxelMeters;
+        Vector3 origin = worldOrigin / scale;
+        Vector3 direction = worldDirection; // direction stays the same, just step size changes
+        float maxSteps = maxDistance / scale;
+
+        // Current microvoxel cell
+        int x = Mathf.FloorToInt(origin.X);
+        int y = Mathf.FloorToInt(origin.Y);
+        int z = Mathf.FloorToInt(origin.Z);
+
+        // Step direction
+        int stepX = direction.X >= 0 ? 1 : -1;
+        int stepY = direction.Y >= 0 ? 1 : -1;
+        int stepZ = direction.Z >= 0 ? 1 : -1;
+
+        // tMax: distance along the ray to the next voxel boundary in each axis
+        float tMaxX = direction.X != 0 ? ((direction.X > 0 ? (x + 1) - origin.X : x - origin.X) / direction.X) : float.MaxValue;
+        float tMaxY = direction.Y != 0 ? ((direction.Y > 0 ? (y + 1) - origin.Y : y - origin.Y) / direction.Y) : float.MaxValue;
+        float tMaxZ = direction.Z != 0 ? ((direction.Z > 0 ? (z + 1) - origin.Z : z - origin.Z) / direction.Z) : float.MaxValue;
+
+        // tDelta: how far along the ray to cross one full voxel in each axis
+        float tDeltaX = direction.X != 0 ? Math.Abs(1.0f / direction.X) : float.MaxValue;
+        float tDeltaY = direction.Y != 0 ? Math.Abs(1.0f / direction.Y) : float.MaxValue;
+        float tDeltaZ = direction.Z != 0 ? Math.Abs(1.0f / direction.Z) : float.MaxValue;
+
+        float t = 0f;
+        Vector3I lastNormal = Vector3I.Zero;
+
+        // Step up to maxSteps voxel cells
+        int maxIterations = (int)(maxSteps * 2) + 1;
+        for (int i = 0; i < maxIterations; i++)
+        {
+            Vector3I current = new Vector3I(x, y, z);
+
+            if (isSolid(current))
+            {
+                hitPos = current;
+                hitNormal = lastNormal;
+                return true;
+            }
+
+            // Advance to next voxel boundary
+            if (tMaxX < tMaxY)
+            {
+                if (tMaxX < tMaxZ)
+                {
+                    t = tMaxX;
+                    x += stepX;
+                    tMaxX += tDeltaX;
+                    lastNormal = new Vector3I(-stepX, 0, 0);
+                }
+                else
+                {
+                    t = tMaxZ;
+                    z += stepZ;
+                    tMaxZ += tDeltaZ;
+                    lastNormal = new Vector3I(0, 0, -stepZ);
+                }
+            }
+            else
+            {
+                if (tMaxY < tMaxZ)
+                {
+                    t = tMaxY;
+                    y += stepY;
+                    tMaxY += tDeltaY;
+                    lastNormal = new Vector3I(0, -stepY, 0);
+                }
+                else
+                {
+                    t = tMaxZ;
+                    z += stepZ;
+                    tMaxZ += tDeltaZ;
+                    lastNormal = new Vector3I(0, 0, -stepZ);
+                }
+            }
+
+            if (t > maxSteps)
+            {
+                break;
+            }
+        }
+
+        return false;
     }
 }

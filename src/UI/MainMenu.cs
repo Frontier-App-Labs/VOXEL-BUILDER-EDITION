@@ -1,62 +1,356 @@
 using Godot;
 using System;
+using System.Collections.Generic;
 using VoxelSiege.Core;
 
 namespace VoxelSiege.UI;
 
 public partial class MainMenu : Control
 {
+    // --- Theme Colors ---
+    private static readonly Color BgDark = new Color("0d1117");
+    private static readonly Color BgPanel = new Color("161b22");
+    private static readonly Color AccentGreen = new Color("2ea043");
+    private static readonly Color AccentGold = new Color("d4a029");
+    private static readonly Color AccentRed = new Color("d73a49");
+    private static readonly Color TextPrimary = new Color("e6edf3");
+    private static readonly Color TextSecondary = new Color("8b949e");
+    private static readonly Color ButtonHover = new Color("1f2937");
+    private static readonly Color ButtonNormal = new Color("0d1117");
+    private static readonly Color BorderColor = new Color("30363d");
+
+    // --- Pixel Font (lazy to avoid loading before Godot's resource system is ready) ---
+    private static Font? _pixelFont;
+    private static Font PixelFont => _pixelFont ??= GD.Load<Font>("res://assets/fonts/PressStart2P-Regular.ttf");
+
+    // --- Voxel title textures (lazy-loaded) ---
+    private static Texture2D? _titleTexGreen;
+    private static Texture2D? _titleTexGold;
+    private static Texture2D TitleTexGreen => _titleTexGreen ??= ResourceLoader.Load<Texture2D>("res://assets/textures/voxels/dirt_32.png");
+    private static Texture2D TitleTexGold => _titleTexGold ??= ResourceLoader.Load<Texture2D>("res://assets/textures/voxels/sand_32.png");
+
+    // Voxel title colors
+    private static readonly Color TitleGreen1 = new Color("2ea043");
+    private static readonly Color TitleGreen2 = new Color("3cb653");
+    private static readonly Color TitleGold1 = new Color("d4a029");
+    private static readonly Color TitleGold2 = new Color("e8b84a");
     public event Action? PlayOnlineRequested;
     public event Action? PlayBotsRequested;
     public event Action? SandboxRequested;
+    public event Action? BlueprintsRequested;
+    public event Action? AssetsRequested;
     public event Action? SettingsRequested;
     public event Action? QuitRequested;
 
-    private VBoxContainer? _menuStack;
+    private AssetViewer? _assetViewer;
+
+    private int _botCount = 1;
+    private Label? _botCountLabel;
+    private LineEdit? _commanderNameInput;
+
+    private readonly List<Control> _menuButtons = new List<Control>();
+    private readonly List<Control> _titleBlocks = new List<Control>();
+    private readonly List<FallingBlock> _fallingBlocks = new List<FallingBlock>();
+    private Control? _contentContainer;
+    private Control? _fallingBlockLayer;
+    private Label? _subtitleLabel;
+    private float _time;
+    private float _subtitleRevealTimer;
+    private int _subtitleRevealIndex;
+    private const string SubtitleFull = "BUILD.  HIDE.  DESTROY.";
+    private RandomNumberGenerator _rng = new RandomNumberGenerator();
+
+    // --- Pixel Font Letter Definitions (5 wide x 7 tall) ---
+    private static readonly bool[,] LetterV = {
+        {true,false,false,false,true},
+        {true,false,false,false,true},
+        {true,false,false,false,true},
+        {false,true,false,true,false},
+        {false,true,false,true,false},
+        {false,false,true,false,false},
+        {false,false,true,false,false},
+    };
+    private static readonly bool[,] LetterO = {
+        {false,true,true,true,false},
+        {true,false,false,false,true},
+        {true,false,false,false,true},
+        {true,false,false,false,true},
+        {true,false,false,false,true},
+        {true,false,false,false,true},
+        {false,true,true,true,false},
+    };
+    private static readonly bool[,] LetterX = {
+        {true,false,false,false,true},
+        {true,false,false,false,true},
+        {false,true,false,true,false},
+        {false,false,true,false,false},
+        {false,true,false,true,false},
+        {true,false,false,false,true},
+        {true,false,false,false,true},
+    };
+    private static readonly bool[,] LetterE = {
+        {true,true,true,true,true},
+        {true,false,false,false,false},
+        {true,false,false,false,false},
+        {true,true,true,true,false},
+        {true,false,false,false,false},
+        {true,false,false,false,false},
+        {true,true,true,true,true},
+    };
+    private static readonly bool[,] LetterL = {
+        {true,false,false,false,false},
+        {true,false,false,false,false},
+        {true,false,false,false,false},
+        {true,false,false,false,false},
+        {true,false,false,false,false},
+        {true,false,false,false,false},
+        {true,true,true,true,true},
+    };
+    private static readonly bool[,] LetterS = {
+        {true,true,true,true,true},
+        {true,false,false,false,false},
+        {true,false,false,false,false},
+        {true,true,true,true,true},
+        {false,false,false,false,true},
+        {false,false,false,false,true},
+        {true,true,true,true,true},
+    };
+    private static readonly bool[,] LetterI = {
+        {false,true,true,true,false},
+        {false,false,true,false,false},
+        {false,false,true,false,false},
+        {false,false,true,false,false},
+        {false,false,true,false,false},
+        {false,false,true,false,false},
+        {false,true,true,true,false},
+    };
+    private static readonly bool[,] LetterG = {
+        {true,true,true,true,true},
+        {true,false,false,false,false},
+        {true,false,false,false,false},
+        {true,false,true,true,false},
+        {true,false,false,true,false},
+        {true,false,false,true,false},
+        {true,true,true,true,true},
+    };
+
+    // Tetromino shapes for falling blocks
+    private static readonly int[][][] Tetrominoes = {
+        // I-block
+        new[] { new[] {0,0}, new[] {1,0}, new[] {2,0}, new[] {3,0} },
+        // O-block
+        new[] { new[] {0,0}, new[] {1,0}, new[] {0,1}, new[] {1,1} },
+        // T-block
+        new[] { new[] {0,0}, new[] {1,0}, new[] {2,0}, new[] {1,1} },
+        // L-block
+        new[] { new[] {0,0}, new[] {0,1}, new[] {0,2}, new[] {1,2} },
+        // S-block
+        new[] { new[] {1,0}, new[] {2,0}, new[] {0,1}, new[] {1,1} },
+    };
+
+    private struct FallingBlock
+    {
+        public List<ColorRect> Rects;
+        public int ShapeIndex;
+        public float X;
+        public float Y;
+        public float Speed;
+        public float Rotation;
+        public float RotSpeed;
+    }
 
     public override void _Ready()
     {
         SetAnchorsPreset(LayoutPreset.FullRect);
         MouseFilter = MouseFilterEnum.Stop;
+        _rng.Randomize();
 
+        // Full-screen dark backdrop
         ColorRect backdrop = new ColorRect();
         backdrop.Name = "Backdrop";
         backdrop.SetAnchorsPreset(LayoutPreset.FullRect);
-        backdrop.Color = new Color(0.06f, 0.08f, 0.12f, 0.82f);
+        backdrop.Color = new Color(BgDark.R, BgDark.G, BgDark.B, 0.85f);
         AddChild(backdrop);
 
-        PanelContainer panel = new PanelContainer();
-        panel.Name = "Panel";
-        panel.Size = new Vector2(460f, 360f);
-        panel.Position = new Vector2(70f, 70f);
-        AddChild(panel);
+        // Falling voxel blocks layer (behind content)
+        _fallingBlockLayer = new Control();
+        _fallingBlockLayer.Name = "FallingBlockLayer";
+        _fallingBlockLayer.SetAnchorsPreset(LayoutPreset.FullRect);
+        _fallingBlockLayer.MouseFilter = MouseFilterEnum.Ignore;
+        AddChild(_fallingBlockLayer);
 
-        _menuStack = new VBoxContainer();
-        _menuStack.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        _menuStack.SizeFlagsVertical = SizeFlags.ExpandFill;
-        _menuStack.AddThemeConstantOverride("separation", 12);
-        panel.AddChild(_menuStack);
+        // Subtle gradient overlay at top
+        ColorRect topGradient = new ColorRect();
+        topGradient.SetAnchorsPreset(LayoutPreset.TopWide);
+        topGradient.OffsetBottom = 250;
+        topGradient.CustomMinimumSize = new Vector2(0, 250);
+        topGradient.Color = new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.04f);
+        topGradient.MouseFilter = MouseFilterEnum.Ignore;
+        AddChild(topGradient);
 
-        Label title = new Label();
-        title.Text = "VOXEL SIEGE";
-        title.AddThemeFontSizeOverride("font_size", 34);
-        _menuStack.AddChild(title);
+        // Voxel block title layer (rendered above background)
+        Control titleLayer = new Control();
+        titleLayer.Name = "TitleLayer";
+        titleLayer.SetAnchorsPreset(LayoutPreset.FullRect);
+        titleLayer.MouseFilter = MouseFilterEnum.Ignore;
+        AddChild(titleLayer);
+        BuildVoxelTitle(titleLayer);
 
-        Label subtitle = new Label();
-        subtitle.Text = "Build fortified strongholds, conceal your commander, and tear apart enemy defenses.";
-        subtitle.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-        _menuStack.AddChild(subtitle);
+        // Main content - centered vertical layout
+        // Brute-force: skip anchors entirely, set Position/Size in _Process every frame
+        // (Godot's anchor system failed to center reliably across 5+ attempts)
+        _contentContainer = new VBoxContainer();
+        _contentContainer.Name = "Content";
+        _contentContainer.MouseFilter = MouseFilterEnum.Ignore;
+        AddChild(_contentContainer);
 
-        _menuStack.AddChild(CreateButton("Start Prototype Match", OnStartPrototypePressed));
-        _menuStack.AddChild(CreateButton("Play Vs Bots", () => PlayBotsRequested?.Invoke()));
-        _menuStack.AddChild(CreateButton("Sandbox", () => SandboxRequested?.Invoke()));
-        _menuStack.AddChild(CreateButton("Settings", () => SettingsRequested?.Invoke()));
-        _menuStack.AddChild(CreateButton("Quit", OnQuitPressed));
+        // Top spacer (tall enough to clear the voxel title)
+        Control topSpacer = new Control();
+        topSpacer.CustomMinimumSize = new Vector2(0, 180);
+        topSpacer.MouseFilter = MouseFilterEnum.Ignore;
+        _contentContainer.AddChild(topSpacer);
 
+        VBoxContainer centerBox = new VBoxContainer();
+        centerBox.AddThemeConstantOverride("separation", 0);
+        centerBox.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        centerBox.SizeFlagsVertical = SizeFlags.ExpandFill;
+        centerBox.MouseFilter = MouseFilterEnum.Ignore;
+        _contentContainer.AddChild(centerBox);
+
+        // Accent bar under title (voxel-style segmented bar)
+        HBoxContainer accentBar = new HBoxContainer();
+        accentBar.AddThemeConstantOverride("separation", 3);
+        accentBar.MouseFilter = MouseFilterEnum.Ignore;
+
+        // Wrap in an HBoxContainer that centers horizontally (VBoxContainer ignores ShrinkCenter)
+        HBoxContainer accentWrapper = new HBoxContainer();
+        accentWrapper.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        accentWrapper.Alignment = BoxContainer.AlignmentMode.Center;
+        accentWrapper.MouseFilter = MouseFilterEnum.Ignore;
+        accentWrapper.AddChild(accentBar);
+        centerBox.AddChild(accentWrapper);
+
+        for (int i = 0; i < 40; i++)
+        {
+            ColorRect segment = new ColorRect();
+            segment.CustomMinimumSize = new Vector2(6, 4);
+            float hueShift = (float)i / 40f * 0.1f;
+            Color segColor = AccentGreen.Lerp(AccentGold, hueShift);
+            segment.Color = segColor;
+            segment.MouseFilter = MouseFilterEnum.Ignore;
+            accentBar.AddChild(segment);
+        }
+
+        // Spacer
+        Control titleSpacer = new Control();
+        titleSpacer.CustomMinimumSize = new Vector2(0, 12);
+        titleSpacer.MouseFilter = MouseFilterEnum.Ignore;
+        centerBox.AddChild(titleSpacer);
+
+        // Subtitle with letter-by-letter reveal
+        _subtitleLabel = new Label();
+        _subtitleLabel.Text = "";
+        _subtitleLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        _subtitleLabel.AddThemeFontOverride("font", PixelFont);
+        _subtitleLabel.AddThemeFontSizeOverride("font_size", 14);
+        _subtitleLabel.AddThemeColorOverride("font_color", AccentGold);
+        _subtitleLabel.MouseFilter = MouseFilterEnum.Ignore;
+
+        // Wrap in an HBoxContainer that centers horizontally
+        HBoxContainer subtitleWrapper = new HBoxContainer();
+        subtitleWrapper.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        subtitleWrapper.Alignment = BoxContainer.AlignmentMode.Center;
+        subtitleWrapper.MouseFilter = MouseFilterEnum.Ignore;
+        subtitleWrapper.AddChild(_subtitleLabel);
+        centerBox.AddChild(subtitleWrapper);
+
+        // Spacer before buttons
+        Control btnSpacer = new Control();
+        btnSpacer.CustomMinimumSize = new Vector2(0, 40);
+        btnSpacer.MouseFilter = MouseFilterEnum.Ignore;
+        centerBox.AddChild(btnSpacer);
+
+        // Button container
+        VBoxContainer buttonContainer = new VBoxContainer();
+        buttonContainer.AddThemeConstantOverride("separation", 6);
+        buttonContainer.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        buttonContainer.MouseFilter = MouseFilterEnum.Ignore;
+        centerBox.AddChild(buttonContainer);
+
+        // Menu buttons with voxel-style borders
+        AddMenuButton(buttonContainer, "PLAY ONLINE", AccentGreen, OnPlayOnlinePressed);
+
+        // Bot count selector row
+        AddBotCountSelector(buttonContainer);
+
+        AddMenuButton(buttonContainer, "PLAY VS BOTS", AccentGreen, OnPlayBotsPressed);
+        AddMenuButton(buttonContainer, "SANDBOX", AccentGreen, OnSandboxPressed);
+        AddMenuButton(buttonContainer, "BLUEPRINTS", AccentGold, () => BlueprintsRequested?.Invoke());
+        AddMenuButton(buttonContainer, "ASSETS", AccentGold, OnAssetsPressed);
+        AddMenuButton(buttonContainer, "SETTINGS", TextSecondary, () => SettingsRequested?.Invoke());
+        AddMenuButton(buttonContainer, "QUIT", AccentRed, OnQuitPressed);
+
+        // Bottom spacer
+        Control bottomSpacer = new Control();
+        bottomSpacer.SizeFlagsVertical = SizeFlags.ExpandFill;
+        bottomSpacer.SizeFlagsStretchRatio = 1.2f;
+        bottomSpacer.MouseFilter = MouseFilterEnum.Ignore;
+        _contentContainer.AddChild(bottomSpacer);
+
+        // Version bar at bottom
+        PanelContainer versionBar = new PanelContainer();
+        StyleBoxFlat versionStyle = CreatePanelStyle(new Color(BgPanel.R, BgPanel.G, BgPanel.B, 0.8f), 0);
+        versionBar.AddThemeStyleboxOverride("panel", versionStyle);
+        versionBar.MouseFilter = MouseFilterEnum.Ignore;
+        _contentContainer.AddChild(versionBar);
+
+        MarginContainer versionMargin = new MarginContainer();
+        versionMargin.AddThemeConstantOverride("margin_left", 20);
+        versionMargin.AddThemeConstantOverride("margin_right", 20);
+        versionMargin.AddThemeConstantOverride("margin_top", 8);
+        versionMargin.AddThemeConstantOverride("margin_bottom", 8);
+        versionMargin.MouseFilter = MouseFilterEnum.Ignore;
+        versionBar.AddChild(versionMargin);
+
+        HBoxContainer versionContent = new HBoxContainer();
+        versionContent.MouseFilter = MouseFilterEnum.Ignore;
+        versionMargin.AddChild(versionContent);
+
+        Label versionLabel = new Label();
+        versionLabel.Text = "VOXEL SIEGE  v0.1.0-alpha";
+        versionLabel.AddThemeFontOverride("font", PixelFont);
+        versionLabel.AddThemeFontSizeOverride("font_size", 12);
+        versionLabel.AddThemeColorOverride("font_color", TextSecondary);
+        versionLabel.MouseFilter = MouseFilterEnum.Ignore;
+        versionContent.AddChild(versionLabel);
+
+        Control versionSpc = new Control();
+        versionSpc.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        versionSpc.MouseFilter = MouseFilterEnum.Ignore;
+        versionContent.AddChild(versionSpc);
+
+        Label engineLabel = new Label();
+        engineLabel.Text = "Godot 4.3+  |  C#";
+        engineLabel.AddThemeFontOverride("font", PixelFont);
+        engineLabel.AddThemeFontSizeOverride("font_size", 12);
+        engineLabel.AddThemeColorOverride("font_color", TextSecondary);
+        engineLabel.MouseFilter = MouseFilterEnum.Ignore;
+        versionContent.AddChild(engineLabel);
+
+        // Subscribe to phase changes
         if (EventBus.Instance != null)
         {
             EventBus.Instance.PhaseChanged += OnPhaseChanged;
         }
+
+        // Spawn initial falling blocks
+        for (int i = 0; i < 6; i++)
+        {
+            SpawnFallingBlock(true);
+        }
+
+        // Animate in: stagger button appearances
+        AnimateEntrance();
     }
 
     public override void _ExitTree()
@@ -67,26 +361,595 @@ public partial class MainMenu : Control
         }
     }
 
+    public override void _Process(double delta)
+    {
+        if (!Visible) return;
+
+        float dt = (float)delta;
+        _time += dt;
+
+        // Brute-force centering: set position/size every frame to guarantee center alignment
+        if (_contentContainer != null)
+        {
+            Vector2 viewSize = GetViewportRect().Size;
+            float contentW = viewSize.X * 0.5f;
+            _contentContainer.Position = new Vector2((viewSize.X - contentW) * 0.5f, 0f);
+            _contentContainer.Size = new Vector2(contentW, viewSize.Y);
+        }
+
+        AnimateTitleWave(dt);
+        AnimateFallingBlocks(dt);
+        AnimateSubtitleReveal(dt);
+    }
+
     public void RequestPlayOnline() => PlayOnlineRequested?.Invoke();
     public void RequestPlayBots() => PlayBotsRequested?.Invoke();
     public void RequestSandbox() => SandboxRequested?.Invoke();
     public void RequestSettings() => SettingsRequested?.Invoke();
     public void RequestQuit() => QuitRequested?.Invoke();
 
-    private Button CreateButton(string text, Action handler)
+    // =====================================================================
+    // VOXEL BLOCK TITLE
+    // =====================================================================
+    private void BuildVoxelTitle(Control parent)
     {
-        Button button = new Button();
-        button.Text = text;
-        button.CustomMinimumSize = new Vector2(0f, 42f);
-        button.Pressed += handler;
-        return button;
+        bool[][,] word1 = { LetterV, LetterO, LetterX, LetterE, LetterL };
+        bool[][,] word2 = { LetterS, LetterI, LetterE, LetterG, LetterE };
+
+        const int blockSize = 8;
+        const int gap = 2;        // gap between blocks in a letter
+        const int letterGap = 12; // gap between letters
+        const int wordGap = 28;   // gap between words
+        const int letterW = 5;
+
+        // Calculate total width
+        int word1Width = word1.Length * (letterW * (blockSize + gap) - gap) + (word1.Length - 1) * letterGap;
+        int word2Width = word2.Length * (letterW * (blockSize + gap) - gap) + (word2.Length - 1) * letterGap;
+        int totalWidth = word1Width + wordGap + word2Width;
+
+        float startX = (GetViewportRect().Size.X - totalWidth) / 2f;
+        float startY = 60f;
+
+        float curX = startX;
+
+        // Render word "VOXEL"
+        foreach (bool[,] letter in word1)
+        {
+            RenderLetter(parent, letter, curX, startY, blockSize, gap, true);
+            curX += letterW * (blockSize + gap) - gap + letterGap;
+        }
+
+        curX += wordGap - letterGap;
+
+        // Render word "SIEGE"
+        foreach (bool[,] letter in word2)
+        {
+            RenderLetter(parent, letter, curX, startY, blockSize, gap, false);
+            curX += letterW * (blockSize + gap) - gap + letterGap;
+        }
     }
 
-    private void OnStartPrototypePressed()
+    private void RenderLetter(Control parent, bool[,] grid, float originX, float originY,
+                               int blockSize, int gap, bool isFirstWord)
     {
+        int rows = grid.GetLength(0);
+        int cols = grid.GetLength(1);
+
+        for (int r = 0; r < rows; r++)
+        {
+            for (int c = 0; c < cols; c++)
+            {
+                if (!grid[r, c]) continue;
+
+                TextureRect block = new TextureRect();
+                block.CustomMinimumSize = new Vector2(blockSize, blockSize);
+                block.Size = new Vector2(blockSize, blockSize);
+                block.Texture = isFirstWord ? TitleTexGreen : TitleTexGold;
+                block.ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize;
+                block.StretchMode = TextureRect.StretchModeEnum.Tile;
+                block.TextureFilter = CanvasItem.TextureFilterEnum.Nearest; // crisp pixels!
+
+                float px = originX + c * (blockSize + gap);
+                float py = originY + r * (blockSize + gap);
+                block.Position = new Vector2(px, py);
+
+                // Apply color modulation for variation + tinting
+                Color baseColor = isFirstWord ? TitleGreen1 : TitleGold1;
+                Color altColor = isFirstWord ? TitleGreen2 : TitleGold2;
+                float variation = _rng.RandfRange(0f, 1f);
+                Color tint = baseColor.Lerp(altColor, variation * 0.5f);
+                float bright = _rng.RandfRange(0.9f, 1.1f);
+                block.SelfModulate = new Color(
+                    Mathf.Clamp(tint.R * bright, 0f, 1f),
+                    Mathf.Clamp(tint.G * bright, 0f, 1f),
+                    Mathf.Clamp(tint.B * bright, 0f, 1f),
+                    1f
+                );
+                block.MouseFilter = MouseFilterEnum.Ignore;
+
+                // Store grid position for wave animation
+                block.SetMeta("base_x", px);
+                block.SetMeta("base_y", py);
+                block.SetMeta("grid_col", c + (isFirstWord ? 0 : 30)); // global column for wave phase
+
+                parent.AddChild(block);
+                _titleBlocks.Add(block);
+            }
+        }
+    }
+
+    private void AnimateTitleWave(float delta)
+    {
+        foreach (Control block in _titleBlocks)
+        {
+            float baseX = (float)block.GetMeta("base_x");
+            float baseY = (float)block.GetMeta("base_y");
+            int col = (int)block.GetMeta("grid_col");
+
+            // Gentle floating wave
+            float waveOffset = Mathf.Sin(_time * 1.5f + col * 0.3f) * 3f;
+            block.Position = new Vector2(baseX, baseY + waveOffset);
+        }
+    }
+
+    // =====================================================================
+    // FALLING TETROMINO BLOCKS (background)
+    // =====================================================================
+    private void SpawnFallingBlock(bool randomY)
+    {
+        if (_fallingBlockLayer == null) return;
+
+        int shapeIdx = _rng.RandiRange(0, Tetrominoes.Length - 1);
+        int[][] shape = Tetrominoes[shapeIdx];
+
+        Color[] fallingColors = { AccentGreen, AccentGold, TextSecondary, new Color("1a6b2d"), new Color("8b6914") };
+        Color baseColor = fallingColors[_rng.RandiRange(0, fallingColors.Length - 1)];
+
+        float blockSize = _rng.RandfRange(6f, 12f);
+        float alpha = _rng.RandfRange(0.06f, 0.18f);
+
+        float viewW = GetViewportRect().Size.X;
+        float viewH = GetViewportRect().Size.Y;
+        float xPos = _rng.RandfRange(0, viewW);
+        float yPos = randomY ? _rng.RandfRange(-200, viewH) : _rng.RandfRange(-200, -50);
+
+        List<ColorRect> rects = new List<ColorRect>();
+        foreach (int[] cell in shape)
+        {
+            ColorRect rect = new ColorRect();
+            rect.CustomMinimumSize = new Vector2(blockSize, blockSize);
+            rect.Size = new Vector2(blockSize, blockSize);
+            rect.Color = new Color(baseColor.R, baseColor.G, baseColor.B, alpha);
+            rect.MouseFilter = MouseFilterEnum.Ignore;
+            _fallingBlockLayer.AddChild(rect);
+            rects.Add(rect);
+        }
+
+        FallingBlock fb = new FallingBlock
+        {
+            Rects = rects,
+            ShapeIndex = shapeIdx,
+            X = xPos,
+            Y = yPos,
+            Speed = _rng.RandfRange(20f, 60f),
+            Rotation = _rng.RandfRange(0f, Mathf.Tau),
+            RotSpeed = _rng.RandfRange(-0.3f, 0.3f),
+        };
+        _fallingBlocks.Add(fb);
+    }
+
+    private void AnimateFallingBlocks(float delta)
+    {
+        Vector2 viewportSize = GetViewportRect().Size;
+
+        for (int i = _fallingBlocks.Count - 1; i >= 0; i--)
+        {
+            FallingBlock fb = _fallingBlocks[i];
+            fb.Y += fb.Speed * delta;
+            fb.Rotation += fb.RotSpeed * delta;
+            _fallingBlocks[i] = fb;
+
+            if (fb.Y > viewportSize.Y + 100)
+            {
+                // Remove and respawn
+                foreach (ColorRect r in fb.Rects)
+                {
+                    r.QueueFree();
+                }
+                _fallingBlocks.RemoveAt(i);
+                SpawnFallingBlock(false);
+                continue;
+            }
+
+            // Position each cell of the tetromino using the stored shape
+            float blockSize = fb.Rects[0].Size.X;
+            float cos = Mathf.Cos(fb.Rotation);
+            float sin = Mathf.Sin(fb.Rotation);
+            int[][] shape = Tetrominoes[fb.ShapeIndex];
+
+            for (int j = 0; j < fb.Rects.Count; j++)
+            {
+                float localX = shape[j][0] * (blockSize + 2) - blockSize;
+                float localY = shape[j][1] * (blockSize + 2) - blockSize;
+
+                // Rotate
+                float rx = localX * cos - localY * sin;
+                float ry = localX * sin + localY * cos;
+
+                fb.Rects[j].Position = new Vector2(fb.X + rx, fb.Y + ry);
+            }
+        }
+    }
+
+    // =====================================================================
+    // SUBTITLE LETTER-BY-LETTER REVEAL
+    // =====================================================================
+    private void AnimateSubtitleReveal(float delta)
+    {
+        if (_subtitleLabel == null) return;
+        if (_subtitleRevealIndex >= SubtitleFull.Length) return;
+
+        _subtitleRevealTimer += delta;
+        float interval = 0.06f;
+
+        while (_subtitleRevealTimer >= interval && _subtitleRevealIndex < SubtitleFull.Length)
+        {
+            _subtitleRevealIndex++;
+            _subtitleLabel.Text = SubtitleFull.Substring(0, _subtitleRevealIndex);
+            _subtitleRevealTimer -= interval;
+        }
+    }
+
+    // =====================================================================
+    // BUTTONS (voxel-style)
+    // =====================================================================
+    private void AddMenuButton(VBoxContainer container, string text, Color accentColor, Action handler)
+    {
+        PanelContainer btnPanel = new PanelContainer();
+        btnPanel.CustomMinimumSize = new Vector2(360, 48);
+
+        // Voxel-style: square corners (0 radius), thick pixelated border
+        StyleBoxFlat normalStyle = CreatePanelStyle(ButtonNormal, 0);
+        normalStyle.BorderWidthLeft = 4;
+        normalStyle.BorderWidthTop = 2;
+        normalStyle.BorderWidthRight = 2;
+        normalStyle.BorderWidthBottom = 4;
+        normalStyle.BorderColor = accentColor;
+        normalStyle.ContentMarginLeft = 20;
+        normalStyle.ContentMarginRight = 20;
+        normalStyle.ContentMarginTop = 10;
+        normalStyle.ContentMarginBottom = 10;
+        btnPanel.AddThemeStyleboxOverride("panel", normalStyle);
+
+        Button btn = new Button();
+        btn.Text = text;
+        btn.Flat = true;
+        btn.AddThemeFontOverride("font", PixelFont);
+        btn.AddThemeFontSizeOverride("font_size", 14);
+        btn.AddThemeColorOverride("font_color", TextPrimary);
+        btn.AddThemeColorOverride("font_hover_color", accentColor);
+        btn.AddThemeColorOverride("font_pressed_color", accentColor);
+        btn.Alignment = HorizontalAlignment.Center;
+        btn.MouseFilter = MouseFilterEnum.Stop;
+        btn.Pressed += handler;
+
+        // Hover styling via signals
+        btn.MouseEntered += () => OnButtonHover(btnPanel, accentColor, true);
+        btn.MouseExited += () => OnButtonHover(btnPanel, accentColor, false);
+
+        btnPanel.AddChild(btn);
+
+        // Wrap in an HBoxContainer that centers horizontally
+        // (VBoxContainer children always get full width; ShrinkCenter does not work)
+        HBoxContainer wrapper = new HBoxContainer();
+        wrapper.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        wrapper.Alignment = BoxContainer.AlignmentMode.Center;
+        wrapper.MouseFilter = MouseFilterEnum.Ignore;
+        wrapper.AddChild(btnPanel);
+        container.AddChild(wrapper);
+
+        // Start invisible for stagger animation
+        btnPanel.Modulate = new Color(1, 1, 1, 0);
+        btnPanel.Scale = new Vector2(0.95f, 0.95f);
+        _menuButtons.Add(btnPanel);
+    }
+
+    private void AddCommanderNameInput(VBoxContainer container)
+    {
+        // Outer wrapper to center the row horizontally
+        HBoxContainer wrapper = new HBoxContainer();
+        wrapper.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        wrapper.Alignment = BoxContainer.AlignmentMode.Center;
+        wrapper.MouseFilter = MouseFilterEnum.Ignore;
+        container.AddChild(wrapper);
+
+        // Panel with voxel-style border matching other buttons
+        PanelContainer panel = new PanelContainer();
+        panel.CustomMinimumSize = new Vector2(360, 48);
+
+        StyleBoxFlat panelStyle = CreatePanelStyle(ButtonNormal, 0);
+        panelStyle.BorderWidthLeft = 4;
+        panelStyle.BorderWidthTop = 2;
+        panelStyle.BorderWidthRight = 2;
+        panelStyle.BorderWidthBottom = 4;
+        panelStyle.BorderColor = AccentGreen;
+        panelStyle.ContentMarginLeft = 20;
+        panelStyle.ContentMarginRight = 20;
+        panelStyle.ContentMarginTop = 6;
+        panelStyle.ContentMarginBottom = 6;
+        panel.AddThemeStyleboxOverride("panel", panelStyle);
+        wrapper.AddChild(panel);
+
+        // Inner row: label + text input
+        HBoxContainer row = new HBoxContainer();
+        row.Alignment = BoxContainer.AlignmentMode.Center;
+        row.AddThemeConstantOverride("separation", 12);
+        panel.AddChild(row);
+
+        Label nameLabel = new Label();
+        nameLabel.Text = "NAME:";
+        nameLabel.AddThemeFontOverride("font", PixelFont);
+        nameLabel.AddThemeFontSizeOverride("font_size", 12);
+        nameLabel.AddThemeColorOverride("font_color", TextSecondary);
+        nameLabel.MouseFilter = MouseFilterEnum.Ignore;
+        row.AddChild(nameLabel);
+
+        // Spacer to push input to the right
+        Control spacer = new Control();
+        spacer.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        spacer.MouseFilter = MouseFilterEnum.Ignore;
+        row.AddChild(spacer);
+
+        _commanderNameInput = new LineEdit();
+        _commanderNameInput.Text = "Green";
+        _commanderNameInput.PlaceholderText = "Enter name...";
+        _commanderNameInput.CustomMinimumSize = new Vector2(180, 32);
+        _commanderNameInput.MaxLength = 20;
+        _commanderNameInput.AddThemeFontOverride("font", PixelFont);
+        _commanderNameInput.AddThemeFontSizeOverride("font_size", 11);
+        _commanderNameInput.AddThemeColorOverride("font_color", TextPrimary);
+        _commanderNameInput.AddThemeColorOverride("font_placeholder_color", TextSecondary);
+        _commanderNameInput.MouseFilter = MouseFilterEnum.Stop;
+        // Style with square corners and dark background
+        StyleBoxFlat inputStyle = CreatePanelStyle(new Color(0.04f, 0.06f, 0.08f, 0.95f), 0);
+        inputStyle.BorderWidthTop = 1;
+        inputStyle.BorderWidthBottom = 1;
+        inputStyle.BorderWidthLeft = 1;
+        inputStyle.BorderWidthRight = 1;
+        inputStyle.BorderColor = BorderColor;
+        inputStyle.ContentMarginLeft = 8;
+        inputStyle.ContentMarginRight = 8;
+        inputStyle.ContentMarginTop = 4;
+        inputStyle.ContentMarginBottom = 4;
+        _commanderNameInput.AddThemeStyleboxOverride("normal", inputStyle);
+        // Focus style
+        StyleBoxFlat focusStyle = CreatePanelStyle(new Color(0.06f, 0.08f, 0.10f, 0.95f), 0);
+        focusStyle.BorderWidthTop = 1;
+        focusStyle.BorderWidthBottom = 1;
+        focusStyle.BorderWidthLeft = 1;
+        focusStyle.BorderWidthRight = 1;
+        focusStyle.BorderColor = AccentGreen;
+        focusStyle.ContentMarginLeft = 8;
+        focusStyle.ContentMarginRight = 8;
+        focusStyle.ContentMarginTop = 4;
+        focusStyle.ContentMarginBottom = 4;
+        _commanderNameInput.AddThemeStyleboxOverride("focus", focusStyle);
+        row.AddChild(_commanderNameInput);
+
+        // Start invisible for stagger animation (matches menu buttons)
+        panel.Modulate = new Color(1, 1, 1, 0);
+        panel.Scale = new Vector2(0.95f, 0.95f);
+        _menuButtons.Add(panel);
+    }
+
+    private void AddBotCountSelector(VBoxContainer container)
+    {
+        // Outer wrapper to center the row horizontally
+        HBoxContainer wrapper = new HBoxContainer();
+        wrapper.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        wrapper.Alignment = BoxContainer.AlignmentMode.Center;
+        wrapper.MouseFilter = MouseFilterEnum.Ignore;
+        container.AddChild(wrapper);
+
+        // Panel with voxel-style border matching other buttons
+        PanelContainer panel = new PanelContainer();
+        panel.CustomMinimumSize = new Vector2(360, 48);
+
+        StyleBoxFlat panelStyle = CreatePanelStyle(ButtonNormal, 0);
+        panelStyle.BorderWidthLeft = 4;
+        panelStyle.BorderWidthTop = 2;
+        panelStyle.BorderWidthRight = 2;
+        panelStyle.BorderWidthBottom = 4;
+        panelStyle.BorderColor = AccentGreen;
+        panelStyle.ContentMarginLeft = 20;
+        panelStyle.ContentMarginRight = 20;
+        panelStyle.ContentMarginTop = 6;
+        panelStyle.ContentMarginBottom = 6;
+        panel.AddThemeStyleboxOverride("panel", panelStyle);
+        wrapper.AddChild(panel);
+
+        // Inner row: label  [-]  count  [+]
+        HBoxContainer row = new HBoxContainer();
+        row.Alignment = BoxContainer.AlignmentMode.Center;
+        row.AddThemeConstantOverride("separation", 12);
+        panel.AddChild(row);
+
+        Label botsLabel = new Label();
+        botsLabel.Text = "BOTS:";
+        botsLabel.AddThemeFontOverride("font", PixelFont);
+        botsLabel.AddThemeFontSizeOverride("font_size", 12);
+        botsLabel.AddThemeColorOverride("font_color", TextSecondary);
+        botsLabel.MouseFilter = MouseFilterEnum.Ignore;
+        row.AddChild(botsLabel);
+
+        // Spacer to push controls to the right
+        Control spacer = new Control();
+        spacer.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        spacer.MouseFilter = MouseFilterEnum.Ignore;
+        row.AddChild(spacer);
+
+        Button minusBtn = new Button();
+        minusBtn.Text = "-";
+        minusBtn.CustomMinimumSize = new Vector2(36, 36);
+        minusBtn.AddThemeFontOverride("font", PixelFont);
+        minusBtn.AddThemeFontSizeOverride("font_size", 14);
+        minusBtn.AddThemeColorOverride("font_color", TextPrimary);
+        minusBtn.AddThemeColorOverride("font_hover_color", AccentGreen);
+        minusBtn.Pressed += () => ChangeBotCount(-1);
+        row.AddChild(minusBtn);
+
+        _botCountLabel = new Label();
+        _botCountLabel.Text = _botCount.ToString();
+        _botCountLabel.CustomMinimumSize = new Vector2(28, 0);
+        _botCountLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        _botCountLabel.AddThemeFontOverride("font", PixelFont);
+        _botCountLabel.AddThemeFontSizeOverride("font_size", 14);
+        _botCountLabel.AddThemeColorOverride("font_color", AccentGreen);
+        _botCountLabel.MouseFilter = MouseFilterEnum.Ignore;
+        row.AddChild(_botCountLabel);
+
+        Button plusBtn = new Button();
+        plusBtn.Text = "+";
+        plusBtn.CustomMinimumSize = new Vector2(36, 36);
+        plusBtn.AddThemeFontOverride("font", PixelFont);
+        plusBtn.AddThemeFontSizeOverride("font_size", 14);
+        plusBtn.AddThemeColorOverride("font_color", TextPrimary);
+        plusBtn.AddThemeColorOverride("font_hover_color", AccentGreen);
+        plusBtn.Pressed += () => ChangeBotCount(1);
+        row.AddChild(plusBtn);
+
+        // Start invisible for stagger animation (matches menu buttons)
+        panel.Modulate = new Color(1, 1, 1, 0);
+        panel.Scale = new Vector2(0.95f, 0.95f);
+        _menuButtons.Add(panel);
+    }
+
+    private void ChangeBotCount(int delta)
+    {
+        _botCount = Math.Clamp(_botCount + delta, 1, 3);
+        if (_botCountLabel != null)
+        {
+            _botCountLabel.Text = _botCount.ToString();
+        }
+    }
+
+    private void OnButtonHover(PanelContainer panel, Color accent, bool entered)
+    {
+        // Voxel-style: square corners, thicker border on hover
+        StyleBoxFlat style = CreatePanelStyle(entered ? ButtonHover : ButtonNormal, 0);
+        style.BorderWidthLeft = entered ? 6 : 4;
+        style.BorderWidthTop = entered ? 3 : 2;
+        style.BorderWidthRight = entered ? 3 : 2;
+        style.BorderWidthBottom = entered ? 6 : 4;
+        style.BorderColor = accent;
+        style.ContentMarginLeft = 20;
+        style.ContentMarginRight = 20;
+        style.ContentMarginTop = 10;
+        style.ContentMarginBottom = 10;
+        panel.AddThemeStyleboxOverride("panel", style);
+
+        Tween tween = panel.CreateTween();
+        tween.TweenProperty(panel, "scale", entered ? new Vector2(1.03f, 1.03f) : Vector2.One, 0.12f)
+             .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+    }
+
+    // --- Stagger Animation ---
+    private void AnimateEntrance()
+    {
+        for (int i = 0; i < _menuButtons.Count; i++)
+        {
+            Control btn = _menuButtons[i];
+            Tween tween = btn.CreateTween();
+            tween.TweenProperty(btn, "modulate:a", 1.0f, 0.3f)
+                 .SetDelay(0.4f + i * 0.08f)
+                 .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
+            Tween scaleTween = btn.CreateTween();
+            scaleTween.TweenProperty(btn, "scale", Vector2.One, 0.35f)
+                      .SetDelay(0.4f + i * 0.08f)
+                      .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+        }
+    }
+
+    // --- Style Helpers ---
+    private static StyleBoxFlat CreatePanelStyle(Color bgColor, int cornerRadius)
+    {
+        StyleBoxFlat style = new StyleBoxFlat();
+        style.BgColor = bgColor;
+        style.CornerRadiusTopLeft = cornerRadius;
+        style.CornerRadiusTopRight = cornerRadius;
+        style.CornerRadiusBottomLeft = cornerRadius;
+        style.CornerRadiusBottomRight = cornerRadius;
+        return style;
+    }
+
+    // --- Button Handlers ---
+    private void OnPlayOnlinePressed()
+    {
+        PlayOnlineRequested?.Invoke();
+    }
+
+    private void OnPlayBotsPressed()
+    {
+        PlayBotsRequested?.Invoke();
         GameManager? gameManager = GetTree().Root.GetNodeOrNull<GameManager>("Main");
-        gameManager?.StartPrototypeMatch();
+        if (gameManager != null)
+        {
+            gameManager.Settings.BotCount = _botCount;
+            // Pass the commander name entered by the human player
+            string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
+            gameManager.HumanPlayerName = string.IsNullOrWhiteSpace(enteredName) ? null : enteredName;
+            gameManager.StartPrototypeMatch();
+        }
         Visible = false;
+    }
+
+    private void OnSandboxPressed()
+    {
+        SandboxRequested?.Invoke();
+    }
+
+    private void OnAssetsPressed()
+    {
+        AssetsRequested?.Invoke();
+        ShowAssetViewer();
+    }
+
+    private void ShowAssetViewer()
+    {
+        if (_assetViewer != null) return;
+
+        // Hide main menu content (keep this node visible so _Process still runs, but hide children)
+        if (_contentContainer != null) _contentContainer.Visible = false;
+        if (_fallingBlockLayer != null) _fallingBlockLayer.Visible = false;
+
+        // Hide the title blocks
+        foreach (var block in _titleBlocks)
+        {
+            block.Visible = false;
+        }
+
+        _assetViewer = new AssetViewer();
+        _assetViewer.Name = "AssetViewer";
+        AddChild(_assetViewer);
+        _assetViewer.BackRequested += OnAssetViewerBack;
+    }
+
+    private void OnAssetViewerBack()
+    {
+        if (_assetViewer == null) return;
+
+        _assetViewer.BackRequested -= OnAssetViewerBack;
+        _assetViewer.QueueFree();
+        _assetViewer = null;
+
+        // Restore main menu content
+        if (_contentContainer != null) _contentContainer.Visible = true;
+        if (_fallingBlockLayer != null) _fallingBlockLayer.Visible = true;
+
+        foreach (var block in _titleBlocks)
+        {
+            block.Visible = true;
+        }
     }
 
     private void OnQuitPressed()
