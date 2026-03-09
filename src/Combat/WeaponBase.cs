@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using Godot;
 using VoxelSiege.Art;
+using VoxelSiege.Camera;
 using VoxelSiege.Core;
 using VoxelSiege.FX;
+using VoxelSiege.Utility;
 using VoxelSiege.Voxel;
 
 namespace VoxelSiege.Combat;
@@ -10,11 +12,14 @@ namespace VoxelSiege.Combat;
 public abstract partial class WeaponBase : Node3D
 {
     private MeshInstance3D? _weaponMesh;
+    private MeshInstance3D? _highlightOverlay;
     private GpuParticles3D? _idleSmoke;
     private bool _hasFiredOnce;
     private float _idleScanTime;
     private float _idleScanAngle;
     private bool _ownerAssigned;
+    private bool _isHighlighted;
+    private float _supportCheckTimer;
 
     [Export]
     public string WeaponId { get; set; } = string.Empty;
@@ -35,9 +40,9 @@ public abstract partial class WeaponBase : Node3D
     public int CooldownTurns { get; set; }
 
     [Export]
-    public int MaxHitPoints { get; set; } = 50;
+    public int MaxHitPoints { get; set; } = 120;
 
-    public int HitPoints { get; private set; } = 50;
+    public int HitPoints { get; private set; } = 120;
     public bool IsDestroyed { get; private set; }
     public int LastFiredRound { get; protected set; } = -999;
     public PlayerSlot OwnerSlot { get; private set; }
@@ -56,7 +61,9 @@ public abstract partial class WeaponBase : Node3D
 
     public override void _Process(double delta)
     {
-        AnimateIdleScan((float)delta);
+        float dt = (float)delta;
+        AnimateIdleScan(dt);
+        CheckSupportPeriodically(dt);
     }
 
     public void AssignOwner(PlayerSlot ownerSlot)
@@ -208,22 +215,95 @@ public abstract partial class WeaponBase : Node3D
     }
 
     /// <summary>
-    /// Spawns a small explosion and debris at the weapon's position when it is destroyed.
+    /// Spawns destruction FX when a weapon is destroyed: explosion, substantial debris,
+    /// dust cloud, and camera shake for a dramatic breakup effect.
+    /// Debris uses the weapon's actual voxel scale (0.12-0.18m) rather than the world
+    /// MicrovoxelMeters (0.5m) so pieces are appropriately small shrapnel, not full-sized blocks.
     /// </summary>
     private void SpawnDestructionFX()
     {
         Node fxParent = GetTree().Root;
         Vector3 pos = GlobalPosition;
 
-        // Small explosion fireball
-        ExplosionFX.Spawn(fxParent, pos, 0.8f);
+        // Use the weapon's own voxel size so debris is proportional to the weapon model
+        float weaponVoxelSize = WeaponModelGenerator.GetVoxelSize(WeaponId);
 
-        // Debris in the team color
-        Color teamColor = GetOwnerColor();
-        DebrisFX.SpawnDebris(fxParent, pos, teamColor, pos, 4, Voxel.VoxelMaterialType.Metal);
+        // Explosion fireball (scaled to weapon size)
+        ExplosionFX.Spawn(fxParent, pos, 1.2f);
 
-        // Dust puff
-        DustFX.Spawn(fxParent, pos, 0.6f, Voxel.VoxelMaterialType.Metal);
+        // Debris burst: dark metal shrapnel + charred fragments flying outward
+        // to look like the weapon actually exploded — sized to weapon voxels
+        Color darkMetal = new Color(0.35f, 0.35f, 0.4f);
+        Color charred = new Color(0.2f, 0.18f, 0.15f);
+        Color hotMetal = new Color(0.8f, 0.4f, 0.1f);
+        DebrisFX.SpawnDebris(fxParent, pos, darkMetal, pos, 6, Voxel.VoxelMaterialType.Metal, weaponVoxelSize);
+        DebrisFX.SpawnDebris(fxParent, pos + Vector3.Up * 0.2f, charred, pos, 5, Voxel.VoxelMaterialType.Metal, weaponVoxelSize);
+        DebrisFX.SpawnDebris(fxParent, pos + Vector3.Up * 0.1f, hotMetal, pos, 3, Voxel.VoxelMaterialType.Metal, weaponVoxelSize);
+
+        // Smoke / dust cloud
+        DustFX.Spawn(fxParent, pos, 1.0f, Voxel.VoxelMaterialType.Metal);
+
+        // Camera shake for nearby destruction
+        CameraShake.Instance?.Shake(0.15f, 0.3f);
+    }
+
+    /// <summary>
+    /// Periodically checks that the weapon still has structural support (solid
+    /// voxels beneath it). This catches cases where the floor is removed by
+    /// fire, falling chunks, or other non-explosion causes. Runs every 0.5s
+    /// to avoid per-frame overhead. The same footprint check used by
+    /// Explosion.CheckWeaponSupport is duplicated here for consistency.
+    /// </summary>
+    private void CheckSupportPeriodically(float delta)
+    {
+        const float checkInterval = 0.5f;
+        _supportCheckTimer += delta;
+        if (_supportCheckTimer < checkInterval)
+        {
+            return;
+        }
+        _supportCheckTimer = 0f;
+
+        // Only check support during combat — during build phase the player is still
+        // constructing and the foundation may not be complete yet.
+        GameManager? gm = GetTree().Root.GetNodeOrNull<GameManager>("Main");
+        if (gm == null || gm.CurrentPhase != GamePhase.Combat)
+        {
+            return;
+        }
+
+        VoxelWorld? world = GetTree().Root.GetNodeOrNull<VoxelWorld>("Main/GameWorld");
+        if (world == null)
+        {
+            return;
+        }
+
+        Vector3 weaponPos = GlobalPosition;
+        Vector3 cornerPos = weaponPos - new Vector3(
+            GameConfig.BuildUnitMeters * 0.5f,
+            0f,
+            GameConfig.BuildUnitMeters * 0.5f);
+        Vector3I microBase = MathHelpers.WorldToMicrovoxel(cornerPos);
+
+        // Only check directly below the weapon (y = -1), matching Explosion.cs logic.
+        // Don't check the weapon's own footprint (y >= 0) — weapons are meshes, not voxels.
+        bool hasSupport = false;
+        for (int z = 0; z < GameConfig.MicrovoxelsPerBuildUnit && !hasSupport; z++)
+        {
+            for (int x = 0; x < GameConfig.MicrovoxelsPerBuildUnit && !hasSupport; x++)
+            {
+                Vector3I below = microBase + new Vector3I(x, -1, z);
+                if (world.GetVoxel(below).IsSolid)
+                {
+                    hasSupport = true;
+                }
+            }
+        }
+
+        if (!hasSupport)
+        {
+            DestroyFromLostSupport();
+        }
     }
 
     private void AnimateIdleScan(float delta)
@@ -252,8 +332,91 @@ public abstract partial class WeaponBase : Node3D
         };
     }
 
+    /// <summary>
+    /// Toggles a green selection highlight on/off for this weapon's 3D model.
+    /// Uses the outline_highlight shader for a pulsing green glow overlay
+    /// so the player can see which weapon they are about to fire.
+    /// </summary>
+    public void SetHighlighted(bool highlighted)
+    {
+        if (_isHighlighted == highlighted)
+        {
+            return;
+        }
+
+        _isHighlighted = highlighted;
+
+        if (highlighted)
+        {
+            EnsureHighlightOverlay();
+            if (_highlightOverlay != null)
+            {
+                _highlightOverlay.Visible = true;
+            }
+        }
+        else
+        {
+            if (_highlightOverlay != null)
+            {
+                _highlightOverlay.Visible = false;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Creates the highlight overlay mesh on first use. The overlay is a duplicate
+    /// of the weapon mesh rendered with the outline_highlight shader in green,
+    /// slightly expanded via the shader's vertex offset so it wraps the weapon.
+    /// </summary>
+    private void EnsureHighlightOverlay()
+    {
+        if (_highlightOverlay != null || _weaponMesh == null)
+        {
+            return;
+        }
+
+        _highlightOverlay = new MeshInstance3D();
+        _highlightOverlay.Name = "SelectionHighlight";
+        _highlightOverlay.Mesh = _weaponMesh.Mesh;
+
+        // Use the outline_highlight shader for a pulsing green glow
+        if (ResourceLoader.Exists("res://assets/shaders/outline_highlight.gdshader"))
+        {
+            Shader shader = GD.Load<Shader>("res://assets/shaders/outline_highlight.gdshader");
+            ShaderMaterial shaderMat = new ShaderMaterial();
+            shaderMat.Shader = shader;
+            shaderMat.SetShaderParameter("highlight_color", new Color(0.15f, 0.95f, 0.3f, 0.75f));
+            shaderMat.SetShaderParameter("pulse_speed", 2.0f);
+            shaderMat.SetShaderParameter("fresnel_power", 1.8f);
+            shaderMat.SetShaderParameter("glow_width", 0.7f);
+            shaderMat.SetShaderParameter("glow_intensity", 2.2f);
+            shaderMat.SetShaderParameter("outline_width", 0.025f);
+            _highlightOverlay.MaterialOverride = shaderMat;
+        }
+        else
+        {
+            // Fallback: simple green translucent emission material
+            StandardMaterial3D mat = new StandardMaterial3D();
+            mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+            mat.AlbedoColor = new Color(0.15f, 0.9f, 0.3f, 0.35f);
+            mat.EmissionEnabled = true;
+            mat.Emission = new Color(0.15f, 0.9f, 0.3f);
+            mat.EmissionEnergyMultiplier = 2.0f;
+            mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
+            mat.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+            _highlightOverlay.MaterialOverride = mat;
+        }
+
+        // Add as child of the weapon mesh so it follows idle scan rotation
+        _weaponMesh.AddChild(_highlightOverlay);
+    }
+
     private void EnsureVisuals()
     {
+        // Clean up highlight overlay (it's a child of _weaponMesh, so it would be
+        // freed with the mesh, but we null the reference to force recreation)
+        _highlightOverlay = null;
+
         if (_weaponMesh != null)
         {
             _weaponMesh.QueueFree();
@@ -281,6 +444,16 @@ public abstract partial class WeaponBase : Node3D
         if (_hasFiredOnce)
         {
             _idleSmoke.Emitting = true;
+        }
+
+        // Recreate highlight overlay if the weapon was highlighted before rebuild
+        if (_isHighlighted)
+        {
+            EnsureHighlightOverlay();
+            if (_highlightOverlay != null)
+            {
+                _highlightOverlay.Visible = true;
+            }
         }
     }
 }

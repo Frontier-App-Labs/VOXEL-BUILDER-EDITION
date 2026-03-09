@@ -16,7 +16,9 @@ public partial class GameOverUI : Control
     private static readonly Color TextSecondary = new Color("8b949e");
     private static readonly Color BorderColor = new Color("30363d");
     private static readonly Color PanelBg = new Color(0.086f, 0.106f, 0.133f, 0.95f);
-    private static readonly Color OverlayColor = new Color(0, 0, 0, 0.75f);
+    private static readonly Color ButtonNormal = new Color("0d1117");
+    private static readonly Color ButtonHover = new Color("1f2937");
+    private static readonly Color OverlayColor = new Color(0, 0, 0, 0.85f);
 
     // --- Pixel Font (lazy to avoid loading before Godot's resource system is ready) ---
     private static Font? _pixelFont;
@@ -42,9 +44,9 @@ public partial class GameOverUI : Control
         backdrop.MouseFilter = MouseFilterEnum.Ignore;
         AddChild(backdrop);
 
-        // Main content
+        // Main content — positioned via brute-force centering in _Process
+        // (same approach as PauseMenu / MainMenu to guarantee center alignment)
         _mainContent = new VBoxContainer();
-        _mainContent.SetAnchorsPreset(LayoutPreset.FullRect);
         _mainContent.MouseFilter = MouseFilterEnum.Ignore;
         AddChild(_mainContent);
 
@@ -67,14 +69,14 @@ public partial class GameOverUI : Control
         _resultLabel.Text = "VICTORY";
         _resultLabel.HorizontalAlignment = HorizontalAlignment.Center;
         _resultLabel.AddThemeFontOverride("font", PixelFont);
-        _resultLabel.AddThemeFontSizeOverride("font_size", 32);
+        _resultLabel.AddThemeFontSizeOverride("font_size", 48);
         _resultLabel.AddThemeColorOverride("font_color", AccentGold);
         _resultLabel.MouseFilter = MouseFilterEnum.Ignore;
         centerBox.AddChild(_resultLabel);
 
         // Accent bar
         ColorRect accentBar = new ColorRect();
-        accentBar.CustomMinimumSize = new Vector2(400, 4);
+        accentBar.CustomMinimumSize = new Vector2(500, 4);
         accentBar.SizeFlagsHorizontal = SizeFlags.ShrinkCenter;
         accentBar.Color = AccentGold;
         accentBar.MouseFilter = MouseFilterEnum.Ignore;
@@ -90,14 +92,14 @@ public partial class GameOverUI : Control
         _resultSubLabel.Text = "Your forces prevailed!";
         _resultSubLabel.HorizontalAlignment = HorizontalAlignment.Center;
         _resultSubLabel.AddThemeFontOverride("font", PixelFont);
-        _resultSubLabel.AddThemeFontSizeOverride("font_size", 12);
-        _resultSubLabel.AddThemeColorOverride("font_color", TextSecondary);
+        _resultSubLabel.AddThemeFontSizeOverride("font_size", 16);
+        _resultSubLabel.AddThemeColorOverride("font_color", TextPrimary);
         _resultSubLabel.MouseFilter = MouseFilterEnum.Ignore;
         centerBox.AddChild(_resultSubLabel);
 
         // Spacer
         Control midSpacer = new Control();
-        midSpacer.CustomMinimumSize = new Vector2(0, 32);
+        midSpacer.CustomMinimumSize = new Vector2(0, 36);
         midSpacer.MouseFilter = MouseFilterEnum.Ignore;
         centerBox.AddChild(midSpacer);
 
@@ -188,7 +190,7 @@ public partial class GameOverUI : Control
         centerBox.AddChild(buttonRow);
 
         buttonRow.AddChild(CreateActionButton("REMATCH", AccentGreen, OnRematchPressed));
-        buttonRow.AddChild(CreateActionButton("MAIN MENU", TextSecondary, OnReturnMenuPressed));
+        buttonRow.AddChild(CreateActionButton("MAIN MENU", AccentGold, OnReturnMenuPressed));
         buttonRow.AddChild(CreateActionButton("QUIT", AccentRed, OnQuitPressed));
 
         // Bottom spacer
@@ -200,6 +202,20 @@ public partial class GameOverUI : Control
         if (EventBus.Instance != null)
         {
             EventBus.Instance.PhaseChanged += OnPhaseChanged;
+        }
+    }
+
+    public override void _Process(double delta)
+    {
+        if (!Visible) return;
+
+        // Brute-force centering every frame (matching PauseMenu / MainMenu approach)
+        if (_mainContent != null)
+        {
+            Vector2 viewSize = GetViewportRect().Size;
+            float contentW = viewSize.X * 0.6f;
+            _mainContent.Position = new Vector2((viewSize.X - contentW) * 0.5f, 0f);
+            _mainContent.Size = new Vector2(contentW, viewSize.Y);
         }
     }
 
@@ -400,28 +416,35 @@ public partial class GameOverUI : Control
     private PanelContainer CreateActionButton(string text, Color accentColor, System.Action handler)
     {
         PanelContainer btnPanel = new PanelContainer();
-        btnPanel.CustomMinimumSize = new Vector2(160, 44);
+        btnPanel.CustomMinimumSize = new Vector2(200, 52);
 
-        StyleBoxFlat style = new StyleBoxFlat();
-        style.BgColor = new Color(accentColor.R, accentColor.G, accentColor.B, 0.12f);
-        style.CornerRadiusTopLeft = 0;
-        style.CornerRadiusTopRight = 0;
-        style.CornerRadiusBottomLeft = 0;
-        style.CornerRadiusBottomRight = 0;
-        style.BorderWidthLeft = 4;
-        style.BorderWidthBottom = 4;
-        style.BorderWidthTop = 2;
-        style.BorderWidthRight = 2;
-        style.BorderColor = new Color(accentColor.R, accentColor.G, accentColor.B, 0.3f);
-        btnPanel.AddThemeStyleboxOverride("panel", style);
+        // Solid dark background with full-opacity beveled border (matching PauseMenu)
+        StyleBoxFlat normalStyle = new StyleBoxFlat();
+        normalStyle.BgColor = ButtonNormal;
+        normalStyle.CornerRadiusTopLeft = 0;
+        normalStyle.CornerRadiusTopRight = 0;
+        normalStyle.CornerRadiusBottomLeft = 0;
+        normalStyle.CornerRadiusBottomRight = 0;
+        normalStyle.BorderWidthLeft = 4;
+        normalStyle.BorderWidthBottom = 4;
+        normalStyle.BorderWidthTop = 2;
+        normalStyle.BorderWidthRight = 2;
+        normalStyle.BorderColor = accentColor;
+        normalStyle.ContentMarginLeft = 16;
+        normalStyle.ContentMarginRight = 16;
+        normalStyle.ContentMarginTop = 8;
+        normalStyle.ContentMarginBottom = 8;
+        btnPanel.AddThemeStyleboxOverride("panel", normalStyle);
 
         Button btn = new Button();
         btn.Text = text;
         btn.Flat = true;
         btn.AddThemeFontOverride("font", PixelFont);
-        btn.AddThemeFontSizeOverride("font_size", 12);
-        btn.AddThemeColorOverride("font_color", accentColor);
-        btn.AddThemeColorOverride("font_hover_color", TextPrimary);
+        btn.AddThemeFontSizeOverride("font_size", 14);
+        btn.AddThemeColorOverride("font_color", TextPrimary);
+        btn.AddThemeColorOverride("font_hover_color", accentColor);
+        btn.AddThemeColorOverride("font_pressed_color", accentColor);
+        btn.Alignment = HorizontalAlignment.Center;
         btn.MouseFilter = MouseFilterEnum.Stop;
         btn.Pressed += handler;
         btnPanel.AddChild(btn);
@@ -431,25 +454,39 @@ public partial class GameOverUI : Control
         btn.OffsetTop = 0;
         btn.OffsetBottom = 0;
 
-        // Hover
+        // Hover: brighter background and thicker border
+        Color capturedAccent = accentColor;
+        PanelContainer capturedPanel = btnPanel;
         btn.MouseEntered += () =>
         {
             StyleBoxFlat hover = new StyleBoxFlat();
-            hover.BgColor = new Color(accentColor.R, accentColor.G, accentColor.B, 0.25f);
+            hover.BgColor = ButtonHover;
             hover.CornerRadiusTopLeft = 0;
             hover.CornerRadiusTopRight = 0;
             hover.CornerRadiusBottomLeft = 0;
             hover.CornerRadiusBottomRight = 0;
-            hover.BorderWidthLeft = 4;
-            hover.BorderWidthBottom = 4;
-            hover.BorderWidthTop = 2;
-            hover.BorderWidthRight = 2;
-            hover.BorderColor = accentColor;
-            btnPanel.AddThemeStyleboxOverride("panel", hover);
+            hover.BorderWidthLeft = 6;
+            hover.BorderWidthBottom = 6;
+            hover.BorderWidthTop = 3;
+            hover.BorderWidthRight = 3;
+            hover.BorderColor = capturedAccent;
+            hover.ContentMarginLeft = 16;
+            hover.ContentMarginRight = 16;
+            hover.ContentMarginTop = 8;
+            hover.ContentMarginBottom = 8;
+            capturedPanel.AddThemeStyleboxOverride("panel", hover);
+
+            Tween tween = capturedPanel.CreateTween();
+            tween.TweenProperty(capturedPanel, "scale", new Vector2(1.03f, 1.03f), 0.12f)
+                 .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
         };
         btn.MouseExited += () =>
         {
-            btnPanel.AddThemeStyleboxOverride("panel", style);
+            capturedPanel.AddThemeStyleboxOverride("panel", normalStyle);
+
+            Tween tween = capturedPanel.CreateTween();
+            tween.TweenProperty(capturedPanel, "scale", Vector2.One, 0.12f)
+                 .SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.Out);
         };
 
         return btnPanel;
@@ -465,8 +502,7 @@ public partial class GameOverUI : Control
     private void OnReturnMenuPressed()
     {
         GameManager? gm = GetTree().Root.GetNodeOrNull<GameManager>("Main");
-        gm?.CleanupMatchState();
-        gm?.SetPhase(GamePhase.Menu);
+        gm?.ReturnToMainMenu();
     }
 
     private void OnQuitPressed()
@@ -483,6 +519,12 @@ public partial class GameOverUI : Control
         style.CornerRadiusTopRight = cornerRadius;
         style.CornerRadiusBottomLeft = cornerRadius;
         style.CornerRadiusBottomRight = cornerRadius;
+        // Beveled border for better visibility against the dark overlay
+        style.BorderWidthLeft = 4;
+        style.BorderWidthTop = 2;
+        style.BorderWidthRight = 2;
+        style.BorderWidthBottom = 4;
+        style.BorderColor = new Color("30363d");
         panel.AddThemeStyleboxOverride("panel", style);
         return panel;
     }

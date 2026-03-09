@@ -23,29 +23,32 @@ public partial class WeaponPlacer : Node
         T weapon = new T();
         weapon.AssignOwner(owner);
 
-        // Center the weapon on the build unit
+        // Position the weapon at the bottom-center of the build unit so it sits
+        // flush on top of whatever surface it was placed on (floor or wall top).
+        // The weapon model's Y=0 is its base, so the origin goes at the bottom of
+        // the build unit, centered horizontally.
         Vector3 worldPos = MathHelpers.MicrovoxelToWorld(MathHelpers.BuildToMicrovoxel(buildUnitPosition))
             + new Vector3(
                 GameConfig.BuildUnitMeters * 0.5f,
-                GameConfig.BuildUnitMeters * 0.5f,
+                0f,
                 GameConfig.BuildUnitMeters * 0.5f);
         weapon.Position = worldPos;
 
         // Add to scene tree first (required for LookAt)
         parent.AddChild(weapon);
 
-        // Face outward: determine the dominant open-air direction around the weapon
+        // Face outward: determine the dominant open-air direction, but keep the
+        // weapon upright — only rotate around Y (yaw).  Weapons should never tilt.
         Vector3 outwardDir = ComputeOutwardDirection(world, buildUnitPosition);
-        if (outwardDir.LengthSquared() > 0.01f)
+        outwardDir.Y = 0f; // always stay level
+        if (outwardDir.LengthSquared() < 0.001f)
         {
-            // Use a non-degenerate up vector: if the look direction is nearly
-            // parallel to Vector3.Up (i.e. pointing straight up or down), use
-            // Vector3.Forward as the up hint instead to avoid the colinear warning.
-            Vector3 upHint = Mathf.Abs(outwardDir.Dot(Vector3.Up)) > 0.95f
-                ? Vector3.Forward
-                : Vector3.Up;
-            weapon.LookAt(worldPos + outwardDir, upHint);
+            // All horizontal directions cancelled out (open air on all sides) —
+            // default to facing forward (-Z).
+            outwardDir = Vector3.Forward;
         }
+        outwardDir = outwardDir.Normalized();
+        weapon.LookAt(worldPos + outwardDir, Vector3.Up);
 
         // Mark underlying voxels as weapon-mount
         foreach (Vector3I mountVoxel in EnumerateMountVoxels(buildUnitPosition))
@@ -74,7 +77,7 @@ public partial class WeaponPlacer : Node
             Vector3 targetPos = MathHelpers.MicrovoxelToWorld(MathHelpers.BuildToMicrovoxel(buildUnitPosition))
                 + new Vector3(
                     GameConfig.BuildUnitMeters * 0.5f,
-                    GameConfig.BuildUnitMeters * 0.5f,
+                    0f,
                     GameConfig.BuildUnitMeters * 0.5f);
 
             foreach (Node node in sceneTree.GetNodesInGroup("Weapons"))
@@ -92,18 +95,24 @@ public partial class WeaponPlacer : Node
         bool hasExposedFace = false;
 
         // Check structural support: at least one solid voxel directly below
-        for (int z = 0; z < GameConfig.MicrovoxelsPerBuildUnit; z++)
+        // OR within the base row of the build unit itself. When clicking on a
+        // floor surface, the raycast targets the air above, so the build unit
+        // may start at the same Y as the floor voxel. Checking only y=-1
+        // missed support when the floor voxel sits at the build unit's base row.
+        for (int y = -1; y < GameConfig.MicrovoxelsPerBuildUnit && !hasSupport; y++)
         {
-            for (int x = 0; x < GameConfig.MicrovoxelsPerBuildUnit; x++)
+            for (int z = 0; z < GameConfig.MicrovoxelsPerBuildUnit && !hasSupport; z++)
             {
-                Vector3I below = microBase + new Vector3I(x, -1, z);
-                if (world.GetVoxel(below).IsSolid)
+                for (int x = 0; x < GameConfig.MicrovoxelsPerBuildUnit; x++)
                 {
-                    hasSupport = true;
-                    break;
+                    Vector3I check = microBase + new Vector3I(x, y, z);
+                    if (world.GetVoxel(check).IsSolid)
+                    {
+                        hasSupport = true;
+                        break;
+                    }
                 }
             }
-            if (hasSupport) break;
         }
 
         if (!hasSupport)
@@ -112,7 +121,8 @@ public partial class WeaponPlacer : Node
         }
 
         // Check exterior exposure: at least one face of the build unit
-        // borders an air voxel so the weapon can actually fire outward
+        // borders an air voxel so the weapon can actually fire outward.
+        // Check all 6 cardinal directions (+X, -X, +Y, -Y, +Z, -Z).
         Vector3I[] cardinalOffsets =
         {
             new Vector3I(GameConfig.MicrovoxelsPerBuildUnit, 0, 0),
@@ -120,6 +130,7 @@ public partial class WeaponPlacer : Node
             new Vector3I(0, 0, GameConfig.MicrovoxelsPerBuildUnit),
             new Vector3I(0, 0, -1),
             new Vector3I(0, GameConfig.MicrovoxelsPerBuildUnit, 0),
+            new Vector3I(0, -1, 0),
         };
 
         foreach (Vector3I offset in cardinalOffsets)
@@ -144,7 +155,7 @@ public partial class WeaponPlacer : Node
         Vector3I microBase = MathHelpers.BuildToMicrovoxel(buildUnitPosition);
         Vector3 outward = Vector3.Zero;
 
-        // Sample each cardinal direction and accumulate open-air directions
+        // Sample all 6 cardinal directions and accumulate open-air directions
         (Vector3I offset, Vector3 dir)[] sides =
         {
             (new Vector3I(GameConfig.MicrovoxelsPerBuildUnit, 0, 0), Vector3.Right),
@@ -152,6 +163,7 @@ public partial class WeaponPlacer : Node
             (new Vector3I(0, 0, GameConfig.MicrovoxelsPerBuildUnit), Vector3.Back),
             (new Vector3I(0, 0, -1), Vector3.Forward),
             (new Vector3I(0, GameConfig.MicrovoxelsPerBuildUnit, 0), Vector3.Up),
+            (new Vector3I(0, -1, 0), Vector3.Down),
         };
 
         foreach ((Vector3I offset, Vector3 dir) in sides)
@@ -161,12 +173,6 @@ public partial class WeaponPlacer : Node
             {
                 outward += dir;
             }
-        }
-
-        // Prefer horizontal direction; zero out Y if there's any horizontal component
-        if (Mathf.Abs(outward.X) > 0.01f || Mathf.Abs(outward.Z) > 0.01f)
-        {
-            outward.Y = 0f;
         }
 
         return outward.LengthSquared() > 0.001f ? outward.Normalized() : Vector3.Forward;

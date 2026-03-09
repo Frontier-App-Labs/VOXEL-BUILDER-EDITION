@@ -23,6 +23,23 @@ public static class WeaponModelGenerator
 {
     private const float DefaultVoxelSize = 0.15f;
 
+    /// <summary>
+    /// Returns the voxel size (in meters) used by a given weapon type.
+    /// Weapon debris should use this scale instead of the world MicrovoxelMeters.
+    /// </summary>
+    public static float GetVoxelSize(string weaponId)
+    {
+        return weaponId switch
+        {
+            "cannon" => 0.14f,
+            "mortar" => 0.15f,
+            "railgun" => 0.18f,
+            "missile" => 0.17f,
+            "drill" => 0.12f,
+            _ => DefaultVoxelSize,
+        };
+    }
+
     public static WeaponModelResult Generate(string weaponId, Color teamColor)
     {
         return weaponId switch
@@ -227,7 +244,10 @@ public static class WeaponModelGenerator
     private static WeaponModelResult GenerateRailgun(Color teamColor)
     {
         const float vs = 0.18f;
-        int w = 10, h = 6, d = 14;
+        // Narrow profile (w=6) with long barrel (d=14) — sleek twin-rail silhouette.
+        // Previous w=10 made the weapon as wide as it was long, looking like a
+        // flat platform rather than a directional gun.
+        int w = 6, h = 6, d = 14;
         Color?[,,] v = new Color?[w, h, d];
 
         Color steel = new(0.35f, 0.37f, 0.40f);
@@ -240,68 +260,68 @@ public static class WeaponModelGenerator
         Color team = teamColor.Darkened(0.15f);
         Color teamDark = teamColor.Darkened(0.35f);
 
-        // Base platform
-        FillBlock(v, 2, 0, 3, 8, 1, 12, team);
-        for (int x = 2; x < 8; x++) { v[x, 0, 3] = teamDark; v[x, 0, 11] = teamDark; }
+        // Base platform (narrower)
+        FillBlock(v, 1, 0, 3, 5, 1, 12, team);
+        for (int x = 1; x < 5; x++) { v[x, 0, 3] = teamDark; v[x, 0, 11] = teamDark; }
 
-        // === LEFT RAIL (extended, sleek) ===
-        FillBlock(v, 1, 1, 0, 3, 3, 13, steel);
+        // === LEFT RAIL (x=0..1, close to center) ===
+        FillBlock(v, 0, 1, 0, 2, 3, 13, steel);
         // Tapered front
-        FillBlock(v, 1, 1, 0, 3, 3, 1, steelDark);
-        v[1, 2, 0] = steelLight; v[2, 2, 0] = steelLight; // front edge highlight
+        FillBlock(v, 0, 1, 0, 2, 3, 1, steelDark);
+        v[0, 2, 0] = steelLight; v[1, 2, 0] = steelLight; // front edge highlight
         // Top highlight strip
-        for (int z = 1; z < 12; z++) { v[1, 2, z] = steelLight; v[2, 2, z] = steelLight; }
+        for (int z = 1; z < 12; z++) { v[0, 2, z] = steelLight; v[1, 2, z] = steelLight; }
 
-        // === RIGHT RAIL (extended, sleek) ===
-        FillBlock(v, 7, 1, 0, 9, 3, 13, steel);
-        FillBlock(v, 7, 1, 0, 9, 3, 1, steelDark);
-        v[7, 2, 0] = steelLight; v[8, 2, 0] = steelLight;
-        for (int z = 1; z < 12; z++) { v[7, 2, z] = steelLight; v[8, 2, z] = steelLight; }
+        // === RIGHT RAIL (x=4..5, close to center) ===
+        FillBlock(v, 4, 1, 0, 6, 3, 13, steel);
+        FillBlock(v, 4, 1, 0, 6, 3, 1, steelDark);
+        v[4, 2, 0] = steelLight; v[5, 2, 0] = steelLight;
+        for (int z = 1; z < 12; z++) { v[4, 2, z] = steelLight; v[5, 2, z] = steelLight; }
 
-        // === ENERGY CHANNEL between rails ===
-        FillBlock(v, 3, 1, 2, 7, 2, 11, cyan);
-        // Bright energy pulses along the channel (more frequent)
+        // === ENERGY CHANNEL between rails (x=2..3) ===
+        FillBlock(v, 2, 1, 2, 4, 2, 11, cyan);
+        // Bright energy pulses along the channel
         for (int z = 2; z < 11; z += 2)
         {
-            v[4, 1, z] = cyanGlow;
-            v[5, 1, z] = cyanGlow;
+            v[2, 1, z] = cyanGlow;
+            v[3, 1, z] = cyanGlow;
         }
 
         // === SPARKS AT MUZZLE (bright white voxels at front) ===
-        v[3, 1, 0] = cyanBright; v[6, 1, 0] = cyanBright;
-        v[4, 1, 0] = cyanBright; v[5, 1, 0] = cyanBright;
-        v[3, 2, 0] = cyanGlow; v[6, 2, 0] = cyanGlow;
-        v[4, 2, 1] = cyanGlow; v[5, 2, 1] = cyanGlow;
+        v[1, 1, 0] = cyanBright; v[4, 1, 0] = cyanBright;
+        v[2, 1, 0] = cyanBright; v[3, 1, 0] = cyanBright;
+        v[1, 2, 0] = cyanGlow; v[4, 2, 0] = cyanGlow;
+        v[2, 2, 1] = cyanGlow; v[3, 2, 1] = cyanGlow;
 
         // === CAPACITOR COILS on top (rings of dark metal) ===
         // Coil 1
-        FillBlock(v, 3, 3, 4, 7, 4, 5, coilDark);
-        v[4, 3, 4] = cyan; v[5, 3, 4] = cyan; // glow between coils
+        FillBlock(v, 1, 3, 4, 5, 4, 5, coilDark);
+        v[2, 3, 4] = cyan; v[3, 3, 4] = cyan; // glow between coils
         // Coil 2
-        FillBlock(v, 3, 3, 6, 7, 4, 7, coilDark);
-        v[4, 3, 6] = cyan; v[5, 3, 6] = cyan;
+        FillBlock(v, 1, 3, 6, 5, 4, 7, coilDark);
+        v[2, 3, 6] = cyan; v[3, 3, 6] = cyan;
         // Coil 3
-        FillBlock(v, 3, 3, 8, 7, 4, 9, coilDark);
-        v[4, 3, 8] = cyan; v[5, 3, 8] = cyan;
+        FillBlock(v, 1, 3, 8, 5, 4, 9, coilDark);
+        v[2, 3, 8] = cyan; v[3, 3, 8] = cyan;
 
         // === TOP HOUSING connecting coils ===
-        FillBlock(v, 4, 3, 4, 6, 4, 9, steelDark);
+        FillBlock(v, 2, 3, 4, 4, 4, 9, steelDark);
         // Energy indicators on housing
-        v[4, 3, 5] = cyan; v[5, 3, 5] = cyan;
-        v[4, 3, 7] = cyanGlow; v[5, 3, 7] = cyanGlow;
+        v[2, 3, 5] = cyan; v[3, 3, 5] = cyan;
+        v[2, 3, 7] = cyanGlow; v[3, 3, 7] = cyanGlow;
 
         // === REAR POWER UNIT (bulkier) ===
-        FillBlock(v, 2, 1, 11, 8, 5, 14, steelDark);
+        FillBlock(v, 1, 1, 11, 5, 5, 14, steelDark);
         // Power core glow visible from back
-        v[4, 2, 12] = cyan; v[5, 2, 12] = cyan;
-        v[4, 3, 12] = cyanGlow; v[5, 3, 12] = cyanGlow;
-        v[4, 2, 13] = cyanBright; v[5, 2, 13] = cyanBright;
-        v[4, 3, 13] = cyanBright; v[5, 3, 13] = cyanBright;
+        v[2, 2, 12] = cyan; v[3, 2, 12] = cyan;
+        v[2, 3, 12] = cyanGlow; v[3, 3, 12] = cyanGlow;
+        v[2, 2, 13] = cyanBright; v[3, 2, 13] = cyanBright;
+        v[2, 3, 13] = cyanBright; v[3, 3, 13] = cyanBright;
         // Side vents
-        v[2, 3, 13] = steelLight; v[7, 3, 13] = steelLight;
-        v[2, 4, 13] = steelLight; v[7, 4, 13] = steelLight;
+        v[1, 3, 13] = steelLight; v[4, 3, 13] = steelLight;
+        v[1, 4, 13] = steelLight; v[4, 4, 13] = steelLight;
         // Top vent
-        v[4, 4, 12] = steelLight; v[5, 4, 12] = steelLight;
+        v[2, 4, 12] = steelLight; v[3, 4, 12] = steelLight;
 
         return BuildResult(v, w, h, d, Vector3.Back, vs);
     }

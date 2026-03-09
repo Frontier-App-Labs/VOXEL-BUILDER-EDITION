@@ -62,9 +62,16 @@ public partial class Railgun : WeaponBase
 
             if (!voxel.IsAir)
             {
-                if (voxel.Material == VoxelMaterialType.Foundation)
+                // Railgun-proof materials: Foundation, ReinforcedSteel, ArmorPlate
+                if (voxel.Material == VoxelMaterialType.Foundation ||
+                    voxel.Material == VoxelMaterialType.ReinforcedSteel ||
+                    voxel.Material == VoxelMaterialType.ArmorPlate)
                 {
-                    // Foundation blocks stop the rail completely -- set endpoint to previous step
+                    // These blocks stop the rail completely (damage applied but no penetration)
+                    int stopDamage = DamageCalculator.CalculateRailgunDamage(BaseDamage / 3, 1, voxel.Material);
+                    int stopHp = voxel.HitPoints - stopDamage;
+                    if (stopHp > 0)
+                        world.SetVoxel(micro, voxel.WithHitPoints(stopHp).WithDamaged(true), OwnerSlot);
                     endPoint = start + (direction * (step - 1) * GameConfig.MicrovoxelMeters);
                     break;
                 }
@@ -79,7 +86,21 @@ public partial class Railgun : WeaponBase
                 // Apply damage with penetration reduction
                 int damage = DamageCalculator.CalculateRailgunDamage(BaseDamage, penetrationCount, voxel.Material);
                 int nextHp = voxel.HitPoints - damage;
-                world.SetVoxel(micro, nextHp <= 0 ? VoxelValue.Air : voxel.WithHitPoints(nextHp).WithDamaged(true), OwnerSlot);
+                bool destroyed = nextHp <= 0;
+                world.SetVoxel(micro, destroyed ? VoxelValue.Air : voxel.WithHitPoints(nextHp).WithDamaged(true), OwnerSlot);
+
+                // Spawn debris flying outward from destroyed voxels
+                if (destroyed)
+                {
+                    Color debrisColor = VoxelMaterials.GetPreviewColor(voxel.Material);
+                    DebrisFX.SpawnDebris(GetTree().Root, point, debrisColor, point - direction * 0.5f, 2, voxel.Material);
+                }
+
+                // Ignite flammable voxels the beam passes through
+                if (!destroyed && VoxelMaterials.GetDefinition(voxel.Material).IsFlammable)
+                {
+                    FireSystem.Instance?.IgniteAt(micro);
+                }
 
                 endPoint = point;
 
@@ -127,6 +148,39 @@ public partial class Railgun : WeaponBase
             }
         }
 
+        // Damage enemy weapons along the beam path (same point-to-line check).
+        // Railgun beams that pass within 1 build unit of a weapon score a direct
+        // hit, dealing half base damage (same ratio as commander hits).
+        foreach (Node node in GetTree().GetNodesInGroup("Weapons"))
+        {
+            if (node is not WeaponBase weapon || weapon.IsDestroyed)
+            {
+                continue;
+            }
+
+            // Skip friendly weapons
+            if (weapon.OwnerSlot == OwnerSlot)
+            {
+                continue;
+            }
+
+            // Point-to-line distance from weapon to beam
+            Vector3 toWeapon = weapon.GlobalPosition - start;
+            float projection = toWeapon.Dot(direction);
+            if (projection < 0 || projection > beamLength)
+            {
+                continue;
+            }
+
+            Vector3 closestPoint = start + direction * projection;
+            float distance = weapon.GlobalPosition.DistanceTo(closestPoint);
+            if (distance < 1.0f) // within 1m of the beam (weapon footprint)
+            {
+                int weaponDamage = Mathf.Max(1, BaseDamage / 2);
+                weapon.ApplyDamage(weaponDamage);
+            }
+        }
+
         // Spawn beam visual effect
         SpawnBeamEffect(start, endPoint, direction);
 
@@ -137,6 +191,7 @@ public partial class Railgun : WeaponBase
 
         AudioDirector.Instance?.PlaySFX("railgun_fire", GlobalPosition);
         EventBus.Instance?.EmitWeaponFired(new WeaponFiredEvent(OwnerSlot, WeaponId, GlobalPosition, direction));
+        EventBus.Instance?.EmitRailgunBeamFired(new RailgunBeamFiredEvent(OwnerSlot, start, endPoint));
         return null; // hitscan -- no projectile
     }
 

@@ -8,7 +8,7 @@ public readonly record struct VoxelChangeEvent(Vector3I Position, ushort BeforeD
 public readonly record struct PhaseChangedEvent(GamePhase PreviousPhase, GamePhase CurrentPhase);
 public readonly record struct TurnChangedEvent(PlayerSlot CurrentPlayer, int RoundNumber, float TurnTimeSeconds);
 public readonly record struct BudgetChangedEvent(PlayerSlot Player, int NewBudget, int Delta);
-public readonly record struct CommanderDamagedEvent(PlayerSlot Player, int Damage, int RemainingHealth, Vector3 WorldPosition);
+public readonly record struct CommanderDamagedEvent(PlayerSlot Player, int Damage, int RemainingHealth, Vector3 WorldPosition, bool IsCriticalHit = false);
 public readonly record struct CommanderKilledEvent(PlayerSlot Victim, PlayerSlot? Killer, Vector3 WorldPosition);
 public readonly record struct WeaponFiredEvent(PlayerSlot Owner, string WeaponId, Vector3 Origin, Vector3 Direction);
 public readonly record struct PowerupActivatedEvent(PowerupType Type, PlayerSlot Player, Vector3 WorldPosition);
@@ -19,6 +19,7 @@ public readonly record struct TroopKilledEvent(PlayerSlot Owner, TroopType Type,
 public readonly record struct TroopDamagedEvent(PlayerSlot Owner, Vector3 WorldPosition, int Damage, int RemainingHP);
 public readonly record struct TroopAttackedCommanderEvent(PlayerSlot TroopOwner, PlayerSlot VictimPlayer, int Damage);
 public readonly record struct DoorPlacedEvent(PlayerSlot Owner, Vector3I BaseMicrovoxel);
+public readonly record struct RailgunBeamFiredEvent(PlayerSlot Owner, Vector3 Start, Vector3 End);
 
 /// <summary>
 /// Lightweight global event hub used by systems that should not hold direct references.
@@ -42,6 +43,7 @@ public partial class EventBus : Node
     public event Action<TroopDamagedEvent>? TroopDamaged;
     public event Action<TroopAttackedCommanderEvent>? TroopAttackedCommander;
     public event Action<DoorPlacedEvent>? DoorPlaced;
+    public event Action<RailgunBeamFiredEvent>? RailgunBeamFired;
 
     public override void _EnterTree()
     {
@@ -71,4 +73,5 @@ public partial class EventBus : Node
     public void EmitTroopDamaged(TroopDamagedEvent payload) => TroopDamaged?.Invoke(payload);
     public void EmitTroopAttackedCommander(TroopAttackedCommanderEvent payload) => TroopAttackedCommander?.Invoke(payload);
     public void EmitDoorPlaced(DoorPlacedEvent payload) => DoorPlaced?.Invoke(payload);
+    public void EmitRailgunBeamFired(RailgunBeamFiredEvent payload) => RailgunBeamFired?.Invoke(payload);
 }

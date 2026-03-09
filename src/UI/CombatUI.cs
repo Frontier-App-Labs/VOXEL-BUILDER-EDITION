@@ -49,6 +49,7 @@ public partial class CombatUI : Control
 
     // --- Events ---
     public event Action<int>? WeaponSelected;
+    public event Action<int>? WeaponConfirmed;
     public event Action? FireRequested;
     public event Action<PowerupType>? PowerupActivateRequested;
     public event Action? DeployRequested;
@@ -61,6 +62,15 @@ public partial class CombatUI : Control
 
     // --- Airstrike target picker ---
     private Control? _airstrikePickerOverlay;
+
+    // --- Target enemy selector (shown during targeting mode) ---
+    private PanelContainer? _targetSelectorPanel;
+
+    /// <summary>
+    /// Raised when the player clicks the left/right arrows in the target selector
+    /// to cycle through enemy bases. The int parameter is +1 (next) or -1 (prev).
+    /// </summary>
+    public event Action<int>? TargetCycleRequested;
 
     // --- State ---
     private Label? _turnPlayerLabel;
@@ -76,14 +86,30 @@ public partial class CombatUI : Control
     private readonly Dictionary<PlayerSlot, Label> _playerHealthLabels = new Dictionary<PlayerSlot, Label>();
     private readonly Dictionary<PlayerSlot, ColorRect> _playerHealthBars = new Dictionary<PlayerSlot, ColorRect>();
     private readonly Dictionary<PlayerSlot, Label> _playerStatusLabels = new Dictionary<PlayerSlot, Label>();
+    private readonly Dictionary<PlayerSlot, Label> _playerNameLabels = new Dictionary<PlayerSlot, Label>();
     private readonly Dictionary<PlayerSlot, VBoxContainer> _playerEntries = new Dictionary<PlayerSlot, VBoxContainer>();
-    private int _selectedWeaponIndex;
+    private int _selectedWeaponIndex = -1; // -1 means no weapon selected
+    private int _selectedGroupIndex = -1; // which weapon group is currently selected
+    private bool _weaponConfirmed; // true once the player confirms their weapon choice
     private readonly List<PanelContainer> _weaponButtons = new List<PanelContainer>();
     private HBoxContainer? _weaponRow;
     private readonly List<(string WeaponId, string Name, string Icon)> _activeWeapons = new();
+
+    // --- Confirm weapon button ---
+    private PanelContainer? _confirmWeaponPanel;
+    private Button? _confirmWeaponBtn;
+    private Label? _confirmWeaponLabel;
     private readonly List<PanelContainer> _powerupSlots = new List<PanelContainer>();
     private readonly List<Label> _powerupCountLabels = new List<Label>();
     private VBoxContainer? _powerupContainer;
+
+    // --- Weapon/Powerup bar visibility (hidden during bot turns) ---
+    private PanelContainer? _weaponBarPanel;
+    private PanelContainer? _powerupBarPanel;
+
+    // --- "SELECT WEAPON" flashing prompt ---
+    private Label? _selectWeaponLabel;
+    private Tween? _selectWeaponTween;
 
     // --- Deploy button state ---
     private PanelContainer? _deployPanel;
@@ -103,8 +129,8 @@ public partial class CombatUI : Control
         MouseFilter = MouseFilterEnum.Ignore;
 
         BuildTopBar();
-        BuildPlayerStatusPanel();
         BuildWeaponBar();
+        BuildConfirmWeaponButton();
         BuildPowerupPanel();
         BuildDeployPanel();
         // Power meter and fire button removed — click-to-target auto-calculates trajectory
@@ -369,6 +395,7 @@ public partial class CombatUI : Control
             nameLabel.ClipText = true;
             nameLabel.MouseFilter = MouseFilterEnum.Ignore;
             nameRow.AddChild(nameLabel);
+            _playerNameLabels[slot] = nameLabel;
 
             Label statusLabel = new Label();
             statusLabel.Text = "ALIVE";
@@ -379,8 +406,11 @@ public partial class CombatUI : Control
             nameRow.AddChild(statusLabel);
             _playerStatusLabels[slot] = statusLabel;
 
-            // Health bar background — clip contents to prevent fill from overflowing
-            PanelContainer healthBg = CreateStyledPanel(new Color(0.15f, 0.15f, 0.15f, 1f), 0);
+            // Health bar background — use Panel (not PanelContainer) so child anchors work
+            Panel healthBg = new Panel();
+            StyleBoxFlat healthBgStyle = new StyleBoxFlat();
+            healthBgStyle.BgColor = new Color(0.15f, 0.15f, 0.15f, 1f);
+            healthBg.AddThemeStyleboxOverride("panel", healthBgStyle);
             healthBg.CustomMinimumSize = new Vector2(0, 8);
             healthBg.ClipContents = true;
             healthBg.MouseFilter = MouseFilterEnum.Ignore;
@@ -423,6 +453,7 @@ public partial class CombatUI : Control
         weaponBar.CustomMinimumSize = new Vector2(400, 86);
         weaponBar.MouseFilter = MouseFilterEnum.Stop;
         AddChild(weaponBar);
+        _weaponBarPanel = weaponBar;
 
         MarginContainer weapMargin = new MarginContainer();
         weapMargin.AddThemeConstantOverride("margin_left", 12);
@@ -437,8 +468,144 @@ public partial class CombatUI : Control
         _weaponRow.MouseFilter = MouseFilterEnum.Ignore;
         weapMargin.AddChild(_weaponRow);
 
+        // "SELECT WEAPON" flashing prompt above the weapon bar
+        _selectWeaponLabel = new Label();
+        _selectWeaponLabel.Text = "SELECT WEAPON";
+        _selectWeaponLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        _selectWeaponLabel.AddThemeFontOverride("font", PixelFont);
+        _selectWeaponLabel.AddThemeFontSizeOverride("font_size", 14);
+        _selectWeaponLabel.AddThemeColorOverride("font_color", AccentRed);
+        _selectWeaponLabel.SetAnchorsPreset(LayoutPreset.CenterBottom);
+        _selectWeaponLabel.OffsetLeft = -120;
+        _selectWeaponLabel.OffsetRight = 120;
+        _selectWeaponLabel.OffsetTop = -130;
+        _selectWeaponLabel.OffsetBottom = -108;
+        _selectWeaponLabel.MouseFilter = MouseFilterEnum.Ignore;
+        _selectWeaponLabel.Visible = false;
+        AddChild(_selectWeaponLabel);
+
         // Initial placeholder — will be rebuilt by SetAvailableWeapons once combat starts
         RebuildWeaponButtons();
+    }
+
+    /// <summary>
+    /// Builds the "CONFIRM [ENTER]" button that appears to the right of the weapon bar
+    /// when the player has selected a weapon but not yet confirmed. Clicking it (or
+    /// pressing Enter/Space) locks in the weapon and transitions to targeting mode.
+    /// </summary>
+    private void BuildConfirmWeaponButton()
+    {
+        _confirmWeaponPanel = CreateStyledPanel(new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.25f), 0);
+        _confirmWeaponPanel.SetAnchorsPreset(LayoutPreset.CenterBottom);
+        _confirmWeaponPanel.OffsetLeft = 220;
+        _confirmWeaponPanel.OffsetRight = 380;
+        _confirmWeaponPanel.OffsetTop = -70;
+        _confirmWeaponPanel.OffsetBottom = -20;
+        _confirmWeaponPanel.CustomMinimumSize = new Vector2(160, 50);
+        _confirmWeaponPanel.MouseFilter = MouseFilterEnum.Stop;
+        _confirmWeaponPanel.Visible = false;
+        AddChild(_confirmWeaponPanel);
+
+        _confirmWeaponBtn = new Button();
+        _confirmWeaponBtn.Text = "CONFIRM  [ENTER]";
+        _confirmWeaponBtn.Flat = true;
+        _confirmWeaponBtn.AddThemeFontOverride("font", PixelFont);
+        _confirmWeaponBtn.AddThemeFontSizeOverride("font_size", 11);
+        _confirmWeaponBtn.AddThemeColorOverride("font_color", AccentGreen);
+        _confirmWeaponBtn.AddThemeColorOverride("font_hover_color", TextPrimary);
+        _confirmWeaponBtn.MouseFilter = MouseFilterEnum.Stop;
+        _confirmWeaponBtn.Pressed += OnConfirmWeaponPressed;
+        _confirmWeaponPanel.AddChild(_confirmWeaponBtn);
+        _confirmWeaponBtn.SetAnchorsPreset(LayoutPreset.FullRect);
+        _confirmWeaponBtn.OffsetLeft = 0;
+        _confirmWeaponBtn.OffsetRight = 0;
+        _confirmWeaponBtn.OffsetTop = 0;
+        _confirmWeaponBtn.OffsetBottom = 0;
+
+        // Hover effect
+        _confirmWeaponBtn.MouseEntered += () =>
+        {
+            if (_confirmWeaponPanel == null) return;
+            StyleBoxFlat hover = CreateFlatStyle(new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.4f), 0);
+            hover.BorderWidthTop = 2;
+            hover.BorderWidthBottom = 2;
+            hover.BorderWidthLeft = 2;
+            hover.BorderWidthRight = 2;
+            hover.BorderColor = AccentGreen;
+            _confirmWeaponPanel.AddThemeStyleboxOverride("panel", hover);
+        };
+        _confirmWeaponBtn.MouseExited += () =>
+        {
+            _confirmWeaponPanel?.AddThemeStyleboxOverride("panel",
+                CreateFlatStyle(new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.25f), 0));
+        };
+
+        // Label beneath the button showing the weapon name
+        _confirmWeaponLabel = new Label();
+        _confirmWeaponLabel.Text = "";
+        _confirmWeaponLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        _confirmWeaponLabel.AddThemeFontOverride("font", PixelFont);
+        _confirmWeaponLabel.AddThemeFontSizeOverride("font_size", 8);
+        _confirmWeaponLabel.AddThemeColorOverride("font_color", TextSecondary);
+        _confirmWeaponLabel.SetAnchorsPreset(LayoutPreset.CenterBottom);
+        _confirmWeaponLabel.OffsetLeft = 220;
+        _confirmWeaponLabel.OffsetRight = 380;
+        _confirmWeaponLabel.OffsetTop = -16;
+        _confirmWeaponLabel.OffsetBottom = -2;
+        _confirmWeaponLabel.MouseFilter = MouseFilterEnum.Ignore;
+        _confirmWeaponLabel.Visible = false;
+        AddChild(_confirmWeaponLabel);
+    }
+
+    private void OnConfirmWeaponPressed()
+    {
+        ConfirmWeaponSelection();
+    }
+
+    /// <summary>
+    /// Programmatically confirms the current weapon selection, transitioning to
+    /// targeting mode. Called from the confirm button, Enter key, or Space bar.
+    /// </summary>
+    public void ConfirmWeaponSelection()
+    {
+        if (_selectedWeaponIndex < 0 || _weaponConfirmed) return;
+
+        _weaponConfirmed = true;
+
+        // Hide the confirm button
+        if (_confirmWeaponPanel != null) _confirmWeaponPanel.Visible = false;
+        if (_confirmWeaponLabel != null) _confirmWeaponLabel.Visible = false;
+
+        // Emit the confirmed event with the flat weapon index
+        WeaponConfirmed?.Invoke(_selectedWeaponIndex);
+
+        GameManager? gm = GetTree().Root.GetNodeOrNull<GameManager>("Main");
+        gm?.OnWeaponSelectedFromUI(_selectedWeaponIndex);
+    }
+
+    /// <summary>
+    /// Shows the confirm button with the name of the selected weapon.
+    /// </summary>
+    private void ShowConfirmButton(string weaponName)
+    {
+        if (_confirmWeaponPanel != null)
+        {
+            _confirmWeaponPanel.Visible = true;
+        }
+        if (_confirmWeaponLabel != null)
+        {
+            _confirmWeaponLabel.Text = weaponName;
+            _confirmWeaponLabel.Visible = true;
+        }
+    }
+
+    /// <summary>
+    /// Hides the confirm button (on turn change, phase change, cancel, or after confirmation).
+    /// </summary>
+    private void HideConfirmButton()
+    {
+        if (_confirmWeaponPanel != null) _confirmWeaponPanel.Visible = false;
+        if (_confirmWeaponLabel != null) _confirmWeaponLabel.Visible = false;
     }
 
     // ========== POWERUP PANEL (bottom left, beside weapon bar) ==========
@@ -458,6 +625,7 @@ public partial class CombatUI : Control
         powerupBar.MouseFilter = MouseFilterEnum.Stop;
         powerupBar.ClipContents = true;
         AddChild(powerupBar);
+        _powerupBarPanel = powerupBar;
 
         MarginContainer pwrMargin = new MarginContainer();
         pwrMargin.AddThemeConstantOverride("margin_left", 8);
@@ -751,8 +919,11 @@ public partial class CombatUI : Control
         powerHeader.MouseFilter = MouseFilterEnum.Ignore;
         powerCol.AddChild(powerHeader);
 
-        // Bar background — clip contents so the fill never extends beyond the bar
-        PanelContainer barBg = CreateStyledPanel(new Color(0.1f, 0.1f, 0.12f, 1f), 0);
+        // Bar background — use Panel (not PanelContainer) so child anchors work for fill sizing
+        Panel barBg = new Panel();
+        StyleBoxFlat barBgPowerStyle = new StyleBoxFlat();
+        barBgPowerStyle.BgColor = new Color(0.1f, 0.1f, 0.12f, 1f);
+        barBg.AddThemeStyleboxOverride("panel", barBgPowerStyle);
         barBg.SizeFlagsVertical = SizeFlags.ExpandFill;
         barBg.CustomMinimumSize = new Vector2(36, 0);
         barBg.SizeFlagsHorizontal = SizeFlags.ShrinkCenter;
@@ -926,6 +1097,11 @@ public partial class CombatUI : Control
 
         foreach (var (slot, player) in gm.Players)
         {
+            if (_playerNameLabels.TryGetValue(slot, out Label? nameLabel))
+            {
+                nameLabel.Text = player.DisplayName;
+            }
+
             if (_playerHealthLabels.TryGetValue(slot, out Label? hpLabel))
             {
                 hpLabel.Text = $"{player.CommanderHealth} HP";
@@ -935,6 +1111,10 @@ public partial class CombatUI : Control
             {
                 float healthPercent = Mathf.Clamp(player.CommanderHealth / (float)GameConfig.CommanderHP, 0f, 1f);
                 bar.AnchorRight = healthPercent;
+                // Reset offset after anchor change — Godot 4 preserves the absolute
+                // position by adjusting offsets when anchors change, which prevents
+                // the bar from visually shrinking.
+                bar.OffsetRight = 0;
                 bar.Color = healthPercent > 0.5f
                     ? player.PlayerColor
                     : healthPercent > 0.25f ? AccentGold : AccentRed;
@@ -1078,43 +1258,93 @@ public partial class CombatUI : Control
     }
 
     /// <summary>
+    /// Weapon group: tracks a weapon type's display info and which flat indices
+    /// in the weapon list correspond to instances of this type.
+    /// </summary>
+    private struct WeaponGroup
+    {
+        public string WeaponId;
+        public string Name;
+        public string Icon;
+        public List<int> FlatIndices; // indices into GameManager's weapon list
+        public int SelectedInstance;  // which instance within this group is selected (0-based)
+    }
+
+    private readonly List<WeaponGroup> _weaponGroups = new();
+
+    /// <summary>
     /// Called by GameManager to set the list of actually-placed weapons for the current player.
-    /// Each entry is a WeaponBase from the player's weapon list. Only non-destroyed weapons
-    /// should be passed. The UI rebuilds its weapon bar to match.
+    /// Groups weapons by type so the UI shows one tile per type with a count badge.
     /// </summary>
     public void SetAvailableWeapons(List<WeaponBase>? weapons)
     {
         _activeWeapons.Clear();
+        _weaponGroups.Clear();
 
         if (weapons != null)
         {
+            // Build flat list and group by weapon ID
+            var groupMap = new Dictionary<string, int>(); // weaponId -> index in _weaponGroups
+            int flatIndex = 0;
+
             foreach (WeaponBase w in weapons)
             {
                 if (w == null || !GodotObject.IsInstanceValid(w) || w.IsDestroyed)
                 {
+                    flatIndex++;
                     continue;
                 }
 
                 string id = w.WeaponId;
+                string name = id;
+                string icon = "?";
                 if (WeaponDisplayLookup.TryGetValue(id, out var display))
                 {
-                    _activeWeapons.Add((id, display.Name, display.Icon));
+                    name = display.Name;
+                    icon = display.Icon;
+                }
+
+                _activeWeapons.Add((id, name, icon));
+
+                if (groupMap.TryGetValue(id, out int groupIdx))
+                {
+                    var group = _weaponGroups[groupIdx];
+                    group.FlatIndices.Add(flatIndex);
+                    _weaponGroups[groupIdx] = group;
                 }
                 else
                 {
-                    // Unknown weapon type — show with generic icon
-                    _activeWeapons.Add((id, id, "?"));
+                    groupMap[id] = _weaponGroups.Count;
+                    _weaponGroups.Add(new WeaponGroup
+                    {
+                        WeaponId = id,
+                        Name = name,
+                        Icon = icon,
+                        FlatIndices = new List<int> { flatIndex },
+                        SelectedInstance = 0,
+                    });
                 }
+
+                flatIndex++;
             }
         }
 
-        _selectedWeaponIndex = 0;
+        _selectedWeaponIndex = -1; // No weapon selected until player clicks one
+        _selectedGroupIndex = -1;
+        _weaponConfirmed = false;
+        HideConfirmButton();
         RebuildWeaponButtons();
+
+        // Do NOT show the "SELECT WEAPON" prompt here.  OnTurnChanged is the
+        // single authority that decides when the prompt appears (only at the
+        // start of the local human player's combat turn).  Showing it here
+        // would cause it to flash during bot turns or persist incorrectly.
     }
 
     /// <summary>
-    /// Rebuilds the weapon button row from _activeWeapons. If _activeWeapons
-    /// is empty, falls back to a "No Weapons" placeholder.
+    /// Rebuilds the weapon button row from grouped weapons. Each weapon type
+    /// gets one tile with a count badge (e.g., "x3") and left/right arrows
+    /// to cycle through instances when there are multiples.
     /// </summary>
     private void RebuildWeaponButtons()
     {
@@ -1136,7 +1366,7 @@ public partial class CombatUI : Control
             child.QueueFree();
         }
 
-        if (_activeWeapons.Count == 0)
+        if (_weaponGroups.Count == 0)
         {
             // Show "No Weapons" placeholder
             Label noWeapons = new Label();
@@ -1152,22 +1382,25 @@ public partial class CombatUI : Control
             return;
         }
 
-        for (int i = 0; i < _activeWeapons.Count; i++)
+        for (int g = 0; g < _weaponGroups.Count; g++)
         {
-            var weapon = _activeWeapons[i];
-            int capturedIndex = i;
+            WeaponGroup group = _weaponGroups[g];
+            int currentFlatIndex = group.FlatIndices[group.SelectedInstance];
+            bool isSelected = currentFlatIndex == _selectedWeaponIndex;
+            int capturedGroup = g;
 
             PanelContainer weapBtn = CreateStyledPanel(
-                i == _selectedWeaponIndex
-                    ? new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.2f)
+                isSelected
+                    ? new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.25f)
                     : new Color(0.1f, 0.1f, 0.15f, 0.8f),
                 0);
             weapBtn.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-            weapBtn.CustomMinimumSize = new Vector2(80, 0);
+            weapBtn.CustomMinimumSize = new Vector2(90, 0);
             weapBtn.MouseFilter = MouseFilterEnum.Stop;
             _weaponButtons.Add(weapBtn);
             _weaponRow.AddChild(weapBtn);
 
+            // Use a layered layout: VBox for icon+name, overlay for count badge
             VBoxContainer weapContent = new VBoxContainer();
             weapContent.AddThemeConstantOverride("separation", 2);
             weapContent.SizeFlagsHorizontal = SizeFlags.ShrinkCenter;
@@ -1176,54 +1409,216 @@ public partial class CombatUI : Control
             weapBtn.AddChild(weapContent);
 
             Label weapIcon = new Label();
-            weapIcon.Text = weapon.Icon;
+            weapIcon.Text = group.Icon;
             weapIcon.HorizontalAlignment = HorizontalAlignment.Center;
             weapIcon.AddThemeFontSizeOverride("font_size", 22);
-            weapIcon.AddThemeColorOverride("font_color", i == _selectedWeaponIndex ? AccentGreen : TextSecondary);
+            weapIcon.AddThemeColorOverride("font_color", isSelected ? AccentGreen : TextSecondary);
             weapIcon.MouseFilter = MouseFilterEnum.Ignore;
             weapContent.AddChild(weapIcon);
 
+            // Name + instance indicator (e.g., "CANNON 2/3" when multiple)
+            string nameText = group.Name;
+            if (group.FlatIndices.Count > 1)
+            {
+                nameText = $"{group.Name} {group.SelectedInstance + 1}/{group.FlatIndices.Count}";
+            }
+
             Label weapName = new Label();
-            weapName.Text = weapon.Name;
+            weapName.Text = nameText;
             weapName.HorizontalAlignment = HorizontalAlignment.Center;
             weapName.AddThemeFontOverride("font", PixelFont);
-            weapName.AddThemeFontSizeOverride("font_size", 10);
-            weapName.AddThemeColorOverride("font_color", TextSecondary);
+            weapName.AddThemeFontSizeOverride("font_size", 9);
+            weapName.AddThemeColorOverride("font_color", isSelected ? AccentGreen : TextSecondary);
             weapName.MouseFilter = MouseFilterEnum.Ignore;
             weapContent.AddChild(weapName);
 
+            // Count badge in the top-right corner (only if more than 1)
+            if (group.FlatIndices.Count > 1)
+            {
+                Label countBadge = new Label();
+                countBadge.Text = $"x{group.FlatIndices.Count}";
+                countBadge.AddThemeFontOverride("font", PixelFont);
+                countBadge.AddThemeFontSizeOverride("font_size", 9);
+                countBadge.AddThemeColorOverride("font_color", AccentGold);
+                countBadge.MouseFilter = MouseFilterEnum.Ignore;
+                countBadge.SetAnchorsPreset(LayoutPreset.TopRight);
+                countBadge.OffsetLeft = -30;
+                countBadge.OffsetRight = -4;
+                countBadge.OffsetTop = 2;
+                weapBtn.AddChild(countBadge);
+            }
+
+            // Click area: left-click selects this group's current instance.
+            // Right-click cycles to next instance within the group.
             Button weapClickArea = new Button();
             weapClickArea.Flat = true;
             weapClickArea.MouseFilter = MouseFilterEnum.Stop;
             weapClickArea.Modulate = new Color(1, 1, 1, 0);
-            weapClickArea.Pressed += () => SelectWeapon(capturedIndex);
+            weapClickArea.Pressed += () => SelectWeaponGroup(capturedGroup);
             weapBtn.AddChild(weapClickArea);
             weapClickArea.SetAnchorsPreset(LayoutPreset.FullRect);
             weapClickArea.OffsetLeft = 0;
             weapClickArea.OffsetRight = 0;
             weapClickArea.OffsetTop = 0;
             weapClickArea.OffsetBottom = 0;
+
+            // Right-click handler to cycle instances
+            weapClickArea.GuiInput += (InputEvent @event) =>
+            {
+                if (@event is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Right)
+                {
+                    CycleWeaponInstance(capturedGroup);
+                    weapClickArea.GetViewport().SetInputAsHandled();
+                }
+            };
         }
     }
 
-    private void SelectWeapon(int index)
+    /// <summary>
+    /// Selects a weapon group's current instance and shows the confirm button.
+    /// If the same group is already selected (and not yet confirmed), clicking
+    /// again cycles to the next instance within that group.
+    /// The camera does NOT move until the player confirms.
+    /// </summary>
+    private void SelectWeaponGroup(int groupIndex)
     {
-        _selectedWeaponIndex = index;
-        for (int i = 0; i < _weaponButtons.Count; i++)
+        if (groupIndex < 0 || groupIndex >= _weaponGroups.Count) return;
+
+        // If clicking the same group that's already selected (but not confirmed),
+        // cycle to the next instance within the group
+        if (groupIndex == _selectedGroupIndex && !_weaponConfirmed)
         {
-            Color bg = i == index
-                ? new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.2f)
-                : new Color(0.1f, 0.1f, 0.15f, 0.8f);
-            _weaponButtons[i].AddThemeStyleboxOverride("panel", CreateFlatStyle(bg, 0));
+            WeaponGroup grp = _weaponGroups[groupIndex];
+            if (grp.FlatIndices.Count > 1)
+            {
+                grp.SelectedInstance = (grp.SelectedInstance + 1) % grp.FlatIndices.Count;
+                _weaponGroups[groupIndex] = grp;
+                RebuildWeaponButtons();
+            }
         }
 
-        // Emit event so GameManager can update its weapon index
-        WeaponSelected?.Invoke(index);
+        _selectedGroupIndex = groupIndex;
+        _weaponConfirmed = false;
 
-        // Notify GameManager that a weapon was selected via UI
-        // The GameManager will handle transitioning the camera to weapon POV
+        WeaponGroup group = _weaponGroups[groupIndex];
+        int flatIndex = group.FlatIndices[group.SelectedInstance];
+        _selectedWeaponIndex = flatIndex;
+
+        // Hide the "SELECT WEAPON" prompt now that the player has chosen
+        HideSelectWeaponPrompt();
+
+        // Update button visuals
+        UpdateWeaponButtonHighlights();
+
+        // Emit WeaponSelected so GameManager highlights the weapon in 3D
+        // (but does NOT transition to targeting yet)
+        WeaponSelected?.Invoke(flatIndex);
+
+        // Notify GameManager to highlight the weapon (preview only, no camera move)
         GameManager? gm = GetTree().Root.GetNodeOrNull<GameManager>("Main");
-        gm?.OnWeaponSelectedFromUI(index);
+        gm?.OnWeaponSelectedFromUI(flatIndex);
+
+        // Build the label text for the confirm button
+        string confirmLabel;
+        if (group.FlatIndices.Count > 1)
+        {
+            confirmLabel = $"{group.Name} {group.SelectedInstance + 1}/{group.FlatIndices.Count}";
+        }
+        else
+        {
+            confirmLabel = group.Name;
+        }
+
+        // Show the confirm button so the player can lock in their choice
+        ShowConfirmButton(confirmLabel);
+    }
+
+    /// <summary>
+    /// Cycles to the next instance within a weapon group (e.g., next cannon).
+    /// Right-click on a weapon tile to cycle. Resets confirmation state so the
+    /// player must re-confirm after cycling.
+    /// </summary>
+    private void CycleWeaponInstance(int groupIndex)
+    {
+        if (groupIndex < 0 || groupIndex >= _weaponGroups.Count) return;
+
+        WeaponGroup group = _weaponGroups[groupIndex];
+        if (group.FlatIndices.Count <= 1) return;
+
+        group.SelectedInstance = (group.SelectedInstance + 1) % group.FlatIndices.Count;
+        _weaponGroups[groupIndex] = group;
+
+        _weaponConfirmed = false;
+        _selectedGroupIndex = groupIndex;
+
+        int flatIndex = group.FlatIndices[group.SelectedInstance];
+        _selectedWeaponIndex = flatIndex;
+
+        HideSelectWeaponPrompt();
+        UpdateWeaponButtonHighlights();
+        WeaponSelected?.Invoke(flatIndex);
+
+        GameManager? gm = GetTree().Root.GetNodeOrNull<GameManager>("Main");
+        gm?.OnWeaponSelectedFromUI(flatIndex);
+
+        string confirmLabel = $"{group.Name} {group.SelectedInstance + 1}/{group.FlatIndices.Count}";
+        ShowConfirmButton(confirmLabel);
+
+        // Rebuild to update the "1/3" label
+        RebuildWeaponButtons();
+    }
+
+    /// <summary>
+    /// Updates weapon button background colors to reflect the current selection.
+    /// </summary>
+    private void UpdateWeaponButtonHighlights()
+    {
+        for (int g = 0; g < _weaponGroups.Count && g < _weaponButtons.Count; g++)
+        {
+            WeaponGroup group = _weaponGroups[g];
+            int currentFlatIndex = group.FlatIndices[group.SelectedInstance];
+            bool isSelected = currentFlatIndex == _selectedWeaponIndex;
+
+            Color bg = isSelected
+                ? new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.25f)
+                : new Color(0.1f, 0.1f, 0.15f, 0.8f);
+            _weaponButtons[g].AddThemeStyleboxOverride("panel", CreateFlatStyle(bg, 0));
+        }
+    }
+
+    /// <summary>
+    /// Shows the flashing "SELECT WEAPON" prompt above the weapon bar.
+    /// Uses a looping tween to flash the label between full red and transparent.
+    /// </summary>
+    private void ShowSelectWeaponPrompt()
+    {
+        if (_selectWeaponLabel == null || _weaponGroups.Count == 0)
+            return;
+
+        _selectWeaponLabel.Visible = true;
+        _selectWeaponLabel.Modulate = new Color(1, 1, 1, 1);
+
+        // Kill any existing tween before creating a new one
+        _selectWeaponTween?.Kill();
+        _selectWeaponTween = CreateTween();
+        _selectWeaponTween.SetLoops(); // loop forever
+        _selectWeaponTween.TweenProperty(_selectWeaponLabel, "modulate:a", 0.15f, 0.5f)
+            .SetTrans(Tween.TransitionType.Sine)
+            .SetEase(Tween.EaseType.InOut);
+        _selectWeaponTween.TweenProperty(_selectWeaponLabel, "modulate:a", 1.0f, 0.5f)
+            .SetTrans(Tween.TransitionType.Sine)
+            .SetEase(Tween.EaseType.InOut);
+    }
+
+    /// <summary>
+    /// Hides the flashing "SELECT WEAPON" prompt (called when a weapon is selected).
+    /// </summary>
+    private void HideSelectWeaponPrompt()
+    {
+        _selectWeaponTween?.Kill();
+        _selectWeaponTween = null;
+        if (_selectWeaponLabel != null)
+            _selectWeaponLabel.Visible = false;
     }
 
     private void OnFirePressed()
@@ -1251,11 +1646,38 @@ public partial class CombatUI : Control
         {
             _roundLabel.Text = $"ROUND {payload.RoundNumber}";
         }
+
+        // Only show weapon bar and powerup panel on the local player's turn (Player1).
+        // During bot turns these should be hidden since the human can't use them.
+        bool isLocalTurn = payload.CurrentPlayer == PlayerSlot.Player1;
+        if (_weaponBarPanel != null) _weaponBarPanel.Visible = isLocalTurn;
+        if (_powerupBarPanel != null) _powerupBarPanel.Visible = isLocalTurn;
+
+        // Reset weapon selection for the new turn — no weapon pre-selected
+        _selectedWeaponIndex = -1;
+        _selectedGroupIndex = -1;
+        _weaponConfirmed = false;
+        HideConfirmButton();
+        if (isLocalTurn)
+        {
+            ShowSelectWeaponPrompt();
+        }
+        else
+        {
+            HideSelectWeaponPrompt();
+        }
     }
 
     private void OnPhaseChanged(PhaseChangedEvent payload)
     {
         Visible = payload.CurrentPhase == GamePhase.Combat;
+        if (payload.CurrentPhase != GamePhase.Combat)
+        {
+            HideSelectWeaponPrompt();
+            HideConfirmButton();
+            _weaponConfirmed = false;
+            _selectedGroupIndex = -1;
+        }
     }
 
     private void OnCommanderDamaged(CommanderDamagedEvent payload)
@@ -1529,4 +1951,168 @@ public partial class CombatUI : Control
         panel.AddThemeStyleboxOverride("panel", style);
         return panel;
     }
+
+    // ========== TARGET ENEMY SELECTOR ==========
+
+    /// <summary>
+    /// Shows the target enemy selector banner near the top of the screen.
+    /// Displays the enemy's name and color, with left/right arrow buttons
+    /// to cycle through enemies (when there are multiple alive enemies).
+    /// Also shows hint text for keyboard shortcuts.
+    /// </summary>
+    /// <param name="enemyName">Display name of the currently targeted enemy.</param>
+    /// <param name="enemyColor">Player color of the targeted enemy.</param>
+    /// <param name="canCycle">True if there are multiple enemies to cycle through.</param>
+    /// <param name="currentIndex">1-based index of the current target (e.g. 2 of 3).</param>
+    /// <param name="totalEnemies">Total number of alive enemies.</param>
+    public void ShowTargetSelector(string enemyName, Color enemyColor, bool canCycle, int currentIndex, int totalEnemies)
+    {
+        // Remove existing selector if any
+        HideTargetSelector();
+
+        // Create the panel container (positioned at top-center)
+        _targetSelectorPanel = new PanelContainer();
+        _targetSelectorPanel.Name = "TargetSelectorPanel";
+
+        // Style: dark panel with the enemy's color as border
+        StyleBoxFlat panelStyle = new StyleBoxFlat();
+        panelStyle.BgColor = new Color(0.06f, 0.08f, 0.1f, 0.92f);
+        panelStyle.CornerRadiusTopLeft = 0;
+        panelStyle.CornerRadiusTopRight = 0;
+        panelStyle.CornerRadiusBottomLeft = 4;
+        panelStyle.CornerRadiusBottomRight = 4;
+        panelStyle.BorderWidthBottom = 3;
+        panelStyle.BorderWidthLeft = 2;
+        panelStyle.BorderWidthRight = 2;
+        panelStyle.BorderWidthTop = 0;
+        panelStyle.BorderColor = enemyColor;
+        panelStyle.ContentMarginLeft = 16;
+        panelStyle.ContentMarginRight = 16;
+        panelStyle.ContentMarginTop = 8;
+        panelStyle.ContentMarginBottom = 8;
+        _targetSelectorPanel.AddThemeStyleboxOverride("panel", panelStyle);
+
+        // Position at top-center
+        _targetSelectorPanel.SetAnchorsPreset(LayoutPreset.CenterTop);
+        _targetSelectorPanel.GrowHorizontal = GrowDirection.Both;
+        _targetSelectorPanel.GrowVertical = GrowDirection.End;
+        _targetSelectorPanel.OffsetTop = 0;
+        _targetSelectorPanel.MouseFilter = MouseFilterEnum.Ignore;
+
+        // Outer vertical layout: main row + hint text
+        VBoxContainer outerVBox = new VBoxContainer();
+        outerVBox.AddThemeConstantOverride("separation", 4);
+        outerVBox.MouseFilter = MouseFilterEnum.Ignore;
+        _targetSelectorPanel.AddChild(outerVBox);
+
+        // Inner layout: horizontal row with optional arrows, icon, name, and counter
+        HBoxContainer row = new HBoxContainer();
+        row.AddThemeConstantOverride("separation", 10);
+        row.Alignment = BoxContainer.AlignmentMode.Center;
+        row.MouseFilter = MouseFilterEnum.Ignore;
+        outerVBox.AddChild(row);
+
+        // Left arrow button (only if multiple enemies)
+        if (canCycle)
+        {
+            Button leftBtn = new Button();
+            leftBtn.Text = "\u25c0"; // left triangle
+            leftBtn.Flat = true;
+            leftBtn.AddThemeFontSizeOverride("font_size", 14);
+            leftBtn.AddThemeColorOverride("font_color", TextPrimary);
+            leftBtn.AddThemeColorOverride("font_hover_color", AccentGold);
+            leftBtn.CustomMinimumSize = new Vector2(28, 28);
+            leftBtn.MouseFilter = MouseFilterEnum.Stop;
+            leftBtn.Pressed += () => TargetCycleRequested?.Invoke(-1);
+            row.AddChild(leftBtn);
+        }
+
+        // Colored square icon representing the enemy
+        ColorRect colorIcon = new ColorRect();
+        colorIcon.Color = enemyColor;
+        colorIcon.CustomMinimumSize = new Vector2(12, 12);
+        colorIcon.MouseFilter = MouseFilterEnum.Ignore;
+
+        // Wrap the color icon in a CenterContainer for vertical centering
+        CenterContainer iconCenter = new CenterContainer();
+        iconCenter.MouseFilter = MouseFilterEnum.Ignore;
+        iconCenter.AddChild(colorIcon);
+        row.AddChild(iconCenter);
+
+        // "TARGETING:" label
+        Label targetingLabel = new Label();
+        targetingLabel.Text = "TARGETING:";
+        targetingLabel.AddThemeFontOverride("font", PixelFont);
+        targetingLabel.AddThemeFontSizeOverride("font_size", 10);
+        targetingLabel.AddThemeColorOverride("font_color", TextSecondary);
+        targetingLabel.MouseFilter = MouseFilterEnum.Ignore;
+        row.AddChild(targetingLabel);
+
+        // Enemy name label
+        Label nameLabel = new Label();
+        nameLabel.Text = enemyName.ToUpper();
+        nameLabel.AddThemeFontOverride("font", PixelFont);
+        nameLabel.AddThemeFontSizeOverride("font_size", 12);
+        nameLabel.AddThemeColorOverride("font_color", enemyColor);
+        nameLabel.MouseFilter = MouseFilterEnum.Ignore;
+        row.AddChild(nameLabel);
+
+        // Counter label (e.g. "2/3") if multiple enemies
+        if (canCycle)
+        {
+            Label counterLabel = new Label();
+            counterLabel.Text = $"({currentIndex}/{totalEnemies})";
+            counterLabel.AddThemeFontOverride("font", PixelFont);
+            counterLabel.AddThemeFontSizeOverride("font_size", 9);
+            counterLabel.AddThemeColorOverride("font_color", TextSecondary);
+            counterLabel.MouseFilter = MouseFilterEnum.Ignore;
+            row.AddChild(counterLabel);
+        }
+
+        // Right arrow button (only if multiple enemies)
+        if (canCycle)
+        {
+            Button rightBtn = new Button();
+            rightBtn.Text = "\u25b6"; // right triangle
+            rightBtn.Flat = true;
+            rightBtn.AddThemeFontSizeOverride("font_size", 14);
+            rightBtn.AddThemeColorOverride("font_color", TextPrimary);
+            rightBtn.AddThemeColorOverride("font_hover_color", AccentGold);
+            rightBtn.CustomMinimumSize = new Vector2(28, 28);
+            rightBtn.MouseFilter = MouseFilterEnum.Stop;
+            rightBtn.Pressed += () => TargetCycleRequested?.Invoke(1);
+            row.AddChild(rightBtn);
+        }
+
+        // Hint label below the main row for keyboard shortcuts
+        Label hintLabel = new Label();
+        hintLabel.Name = "TargetSelectorHint";
+        hintLabel.Text = canCycle ? "[Tab/E] Next  [Q] Prev  [Click] Set Target  [Esc] Cancel" : "[Click] Set Target  [Esc] Cancel";
+        hintLabel.AddThemeFontOverride("font", PixelFont);
+        hintLabel.AddThemeFontSizeOverride("font_size", 8);
+        hintLabel.AddThemeColorOverride("font_color", TextSecondary);
+        hintLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        hintLabel.MouseFilter = MouseFilterEnum.Ignore;
+        outerVBox.AddChild(hintLabel);
+
+        AddChild(_targetSelectorPanel);
+    }
+
+    /// <summary>
+    /// Hides and removes the target enemy selector banner.
+    /// </summary>
+    public void HideTargetSelector()
+    {
+        if (_targetSelectorPanel != null && GodotObject.IsInstanceValid(_targetSelectorPanel))
+        {
+            _targetSelectorPanel.QueueFree();
+            _targetSelectorPanel = null;
+        }
+    }
+
+    /// <summary>
+    /// Returns true if the target selector is currently visible.
+    /// </summary>
+    public bool IsTargetSelectorVisible => _targetSelectorPanel != null
+        && GodotObject.IsInstanceValid(_targetSelectorPanel);
 }

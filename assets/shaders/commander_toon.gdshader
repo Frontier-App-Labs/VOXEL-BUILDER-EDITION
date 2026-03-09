@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode diffuse_toon, specular_toon, cull_back;
+render_mode diffuse_toon, specular_toon, cull_disabled, depth_draw_opaque;
 
 // -- Uniforms --
 uniform vec4 team_color : source_color = vec4(0.2, 0.5, 1.0, 1.0);
@@ -33,6 +33,9 @@ void vertex() {
     world_normal = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
     vtx_color = COLOR;
 
+    // Ensure vertex colors are never invisible (force full alpha)
+    vtx_color.a = 1.0;
+
     // -- Panic wobble --
     if (panic_level > 0.01) {
         float wobble_amount = panic_level * wobble_amplitude;
@@ -56,6 +59,11 @@ void vertex() {
 }
 
 void fragment() {
+    // -- Flip normal for back faces so they light correctly with cull_disabled --
+    vec3 frag_normal = FRONT_FACING ? NORMAL : -NORMAL;
+    vec3 frag_world_normal = FRONT_FACING ? world_normal : -world_normal;
+    NORMAL = frag_normal;
+
     // -- Base color from vertex color with team tint --
     vec3 base_color = vtx_color.rgb;
 
@@ -89,11 +97,11 @@ void fragment() {
 
     // -- Rim light (fresnel-based) --
     vec3 view_dir = normalize(CAMERA_POSITION_WORLD - world_pos);
-    float fresnel = 1.0 - max(dot(view_dir, normalize(world_normal)), 0.0);
+    float fresnel = 1.0 - max(dot(view_dir, normalize(frag_world_normal)), 0.0);
     fresnel = pow(fresnel, rim_power);
 
     // Rim is brighter on lit side (top hemisphere)
-    float top_bias = smoothstep(-0.2, 0.5, world_normal.y) * 0.5 + 0.5;
+    float top_bias = smoothstep(-0.2, 0.5, frag_world_normal.y) * 0.5 + 0.5;
     vec3 rim = rim_color.rgb * fresnel * rim_intensity * top_bias;
 
     EMISSION = rim;

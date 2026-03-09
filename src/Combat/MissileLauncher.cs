@@ -54,10 +54,11 @@ public partial class MissileLauncher : WeaponBase
         ProjectileBase projectile = CreateProjectile();
         GetTree().CurrentScene.AddChild(projectile);
         projectile.GlobalPosition = GlobalPosition;
+        projectile.GravityMultiplier = 0.3f; // Reduced gravity — homing thrust counteracts most of it
         projectile.Initialize(world, OwnerSlot, launchVelocity, BaseDamage, BlastRadiusMicrovoxels);
 
         // Enable homing behavior on the projectile
-        projectile.SetHoming(targetPoint, homingStrength: 2.5f);
+        projectile.SetHoming(targetPoint, homingStrength: 3.5f);
 
         // Rocket trail (fire + smoke)
         TrailFX.CreateRocketTrail(projectile);

@@ -13,7 +13,7 @@ namespace VoxelSiege.FX;
 public static class WeaponFX
 {
     // ---- Object pools for burst effects ----
-    private const int PoolSize = 6;
+    private const int PoolSize = 16;
     private static readonly Queue<GpuParticles3D> _muzzleFlashPool = new();
     private static readonly Queue<GpuParticles3D> _smokePuffPool = new();
     private static readonly Queue<GpuParticles3D> _smokeRingPool = new();
@@ -181,12 +181,16 @@ public static class WeaponFX
         if (weaponMesh == null || !GodotObject.IsInstanceValid(weaponMesh))
             return;
 
+        // Kill any existing tweens on this node to prevent tween accumulation
+        KillActiveTweens(weaponMesh);
+
         Vector3 restPos = weaponMesh.Position;
         // Recoil slides backward (opposite of fire direction) in local space
         Vector3 recoilOffset = -fireDirection.Normalized() * distance;
         Vector3 recoilPos = restPos + recoilOffset;
 
         Tween tween = weaponMesh.CreateTween();
+        TrackTween(weaponMesh, tween);
         tween.SetEase(Tween.EaseType.Out);
         tween.SetTrans(Tween.TransitionType.Expo);
 
@@ -207,9 +211,13 @@ public static class WeaponFX
         if (weaponMesh == null || !GodotObject.IsInstanceValid(weaponMesh))
             return;
 
+        // Kill any existing tweens on this node to prevent tween accumulation
+        KillActiveTweens(weaponMesh);
+
         Vector3 restPos = weaponMesh.Position;
 
         Tween tween = weaponMesh.CreateTween();
+        TrackTween(weaponMesh, tween);
         tween.SetEase(Tween.EaseType.InOut);
         tween.SetTrans(Tween.TransitionType.Sine);
 
@@ -996,8 +1004,10 @@ public static class WeaponFX
         light.LightEnergy = energy;
         light.OmniRange = range;
 
-        // Fade out and return to pool
+        // Kill any leftover tween from a previous pool use, then fade out and return
+        KillActiveTweens(light);
         Tween tween = light.CreateTween();
+        TrackTween(light, tween);
         tween.TweenProperty(light, "light_energy", 0f, duration);
         tween.TweenCallback(Callable.From(() =>
         {
@@ -1073,6 +1083,52 @@ public static class WeaponFX
         {
             float delay = (float)flash.Lifetime + 0.1f;
             tree.CreateTimer(delay).Timeout += () => ReturnToPool(flash, _muzzleFlashPool);
+        }
+    }
+
+    // ==================================================================
+    //  TWEEN CLEANUP
+    // ==================================================================
+
+    // Track active tweens per node to prevent tween accumulation.
+    // Without this, rapid-fire weapons create unbounded tweens that pile up
+    // and eventually cause Godot to silently fail creating new tweens,
+    // making all animations stop mid-game.
+    private static readonly Dictionary<ulong, Tween> _activeTweens = new();
+
+    /// <summary>
+    /// Kills any previously tracked tween on a node and stores the new one.
+    /// Must be called after creating a tween to register it for cleanup.
+    /// </summary>
+    private static void TrackTween(Node node, Tween tween)
+    {
+        ulong id = node.GetInstanceId();
+        if (_activeTweens.TryGetValue(id, out Tween? existing) && existing != null && existing.IsValid())
+        {
+            existing.Kill();
+        }
+        _activeTweens[id] = tween;
+
+        // Auto-remove from tracking when the tween finishes
+        tween.Finished += () =>
+        {
+            if (_activeTweens.TryGetValue(id, out Tween? current) && current == tween)
+            {
+                _activeTweens.Remove(id);
+            }
+        };
+    }
+
+    /// <summary>
+    /// Kills any existing tracked tween on a node. Call before creating a new tween.
+    /// </summary>
+    private static void KillActiveTweens(Node node)
+    {
+        ulong id = node.GetInstanceId();
+        if (_activeTweens.TryGetValue(id, out Tween? existing) && existing != null && existing.IsValid())
+        {
+            existing.Kill();
+            _activeTweens.Remove(id);
         }
     }
 

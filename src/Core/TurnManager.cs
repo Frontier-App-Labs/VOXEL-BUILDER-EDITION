@@ -22,11 +22,18 @@ public partial class TurnManager : Node
         _turnOrder.Clear();
         _turnOrder.AddRange(alivePlayers);
 
-        RandomNumberGenerator localRng = rng ?? new RandomNumberGenerator();
-        localRng.Randomize();
+        // Use System.Random with a high-entropy seed to guarantee a truly
+        // random starting player.  The previous Godot RandomNumberGenerator +
+        // Randomize() path could produce the same seed when called in quick
+        // succession (e.g. rapid restarts) because Randomize() only uses the
+        // current OS tick.  Guid.NewGuid().GetHashCode() pulls from the OS
+        // CSPRNG and avoids that pitfall.
+        Random sysRng = new Random(Guid.NewGuid().GetHashCode());
+
+        // Fisher-Yates shuffle so every player has an equal chance of going first
         for (int index = _turnOrder.Count - 1; index > 0; index--)
         {
-            int swapIndex = localRng.RandiRange(0, index);
+            int swapIndex = sysRng.Next(0, index + 1);
             PlayerSlot temp = _turnOrder[index];
             _turnOrder[index] = _turnOrder[swapIndex];
             _turnOrder[swapIndex] = temp;
@@ -36,6 +43,8 @@ public partial class TurnManager : Node
         RoundNumber = 1;
         _remainingTurnTime = turnTimeSeconds;
         _isRunning = _turnOrder.Count > 0;
+
+        GD.Print($"[TurnManager] Random turn order: {string.Join(", ", _turnOrder)}");
         EmitTurnChanged(turnTimeSeconds);
     }
 

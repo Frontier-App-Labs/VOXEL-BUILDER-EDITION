@@ -42,16 +42,15 @@ void fragment() {
     float min_edge = min(edge_dist.x, min(edge_dist.y, edge_dist.z));
     float edge_line = smoothstep(0.04, 0.0, min_edge);
 
-    // -- Combine fresnel glow and edge lines --
+    // -- Combine fresnel glow, edge lines, and a base fill so all faces are visible --
+    float base_fill = 0.35; // always-on tint so top/bottom faces aren't invisible
     float glow_factor = max(fresnel, edge_line * 0.6);
+    glow_factor = max(glow_factor, base_fill);
     glow_factor *= pulse;
 
     // -- Final color --
     vec3 color = highlight_color.rgb * glow_intensity;
     float alpha = glow_factor * highlight_color.a;
-
-    // Ensure minimum visibility so the highlight is always somewhat visible
-    alpha = max(alpha, 0.08 * pulse * highlight_color.a);
 
     ALBEDO = color;
     ALPHA = clamp(alpha, 0.0, 1.0);

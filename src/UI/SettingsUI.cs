@@ -1,12 +1,15 @@
 using Godot;
 using System;
 using System.Collections.Generic;
+using VoxelSiege.Camera;
+using VoxelSiege.Core;
 using VoxelSiege.Utility;
 
 namespace VoxelSiege.UI;
 
 public sealed class GameSettingsData
 {
+    // --- Graphics ---
     public string QualityPreset { get; set; } = "High";
     public bool VSync { get; set; } = true;
     public bool Bloom { get; set; } = true;
@@ -17,12 +20,37 @@ public sealed class GameSettingsData
     public float ResolutionScale { get; set; } = 1.0f;
     public int FpsCap { get; set; } = 120;
     public int ParticleQuality { get; set; } = 2;
-    public string CameraShake { get; set; } = "Full";
 
+    // --- Audio ---
     public float MasterVolume { get; set; } = 0.8f;
     public float MusicVolume { get; set; } = 0.6f;
     public float SfxVolume { get; set; } = 0.8f;
     public float AmbienceVolume { get; set; } = 0.5f;
+    public float WeaponsSfxVolume { get; set; } = 0.8f;
+    public float UiSfxVolume { get; set; } = 0.8f;
+
+    // --- Gameplay ---
+    public string BotDifficulty { get; set; } = "Medium";
+    public string CameraShake { get; set; } = "Full";
+    public bool ScreenFlash { get; set; } = true;
+    public bool AutoSkipEmptyTurns { get; set; }
+    public bool ShowDamageNumbers { get; set; } = true;
+    public bool ShowFpsCounter { get; set; }
+
+    /// <summary>
+    /// Cached instance loaded from disk. Initialised once and kept in sync
+    /// so that any system can read settings without going through SettingsUI.
+    /// </summary>
+    public static GameSettingsData Current { get; set; } = new GameSettingsData();
+
+    private const string SettingsFilePath = "user://settings/game_settings.json";
+
+    /// <summary>Load settings from disk (or return defaults) and cache in Current.</summary>
+    public static GameSettingsData LoadCurrent()
+    {
+        Current = SaveSystem.LoadJson<GameSettingsData>(SettingsFilePath) ?? new GameSettingsData();
+        return Current;
+    }
 }
 
 public partial class SettingsUI : Control
@@ -65,10 +93,22 @@ public partial class SettingsUI : Control
     private HSlider? _musicSlider;
     private HSlider? _sfxSlider;
     private HSlider? _ambienceSlider;
+    private HSlider? _weaponsSfxSlider;
+    private HSlider? _uiSfxSlider;
     private Label? _masterLabel;
     private Label? _musicLabel;
     private Label? _sfxLabel;
     private Label? _ambienceLabel;
+    private Label? _weaponsSfxLabel;
+    private Label? _uiSfxLabel;
+
+    // Gameplay controls
+    private OptionButton? _botDifficultyOption;
+    private OptionButton? _cameraShakeOption;
+    private CheckButton? _screenFlashToggle;
+    private CheckButton? _autoSkipToggle;
+    private CheckButton? _damageNumbersToggle;
+    private CheckButton? _fpsCounterToggle;
 
     public override void _Ready()
     {
@@ -77,6 +117,10 @@ public partial class SettingsUI : Control
         Visible = false;
 
         CurrentSettings = SaveSystem.LoadJson<GameSettingsData>(SettingsPath) ?? new GameSettingsData();
+        GameSettingsData.Current = CurrentSettings;
+
+        // Apply all saved settings at startup
+        ApplyAllSettings(CurrentSettings);
 
         // Dark overlay
         ColorRect backdrop = new ColorRect();
@@ -151,7 +195,8 @@ public partial class SettingsUI : Control
 
         tabBar.AddChild(CreateTab("GRAPHICS", 0));
         tabBar.AddChild(CreateTab("AUDIO", 1));
-        tabBar.AddChild(CreateTab("CONTROLS", 2));
+        tabBar.AddChild(CreateTab("GAMEPLAY", 2));
+        tabBar.AddChild(CreateTab("CONTROLS", 3));
 
         // Separator
         ColorRect tabLine = new ColorRect();
@@ -169,6 +214,7 @@ public partial class SettingsUI : Control
         // Create tab contents
         _tabContents.Add(CreateGraphicsTab(tabArea));
         _tabContents.Add(CreateAudioTab(tabArea));
+        _tabContents.Add(CreateGameplayTab(tabArea));
         _tabContents.Add(CreateControlsTab(tabArea));
 
         // Bottom buttons
@@ -282,7 +328,7 @@ public partial class SettingsUI : Control
 
         VBoxContainer container = new VBoxContainer();
         container.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        container.AddThemeConstantOverride("separation", 18);
+        container.AddThemeConstantOverride("separation", 14);
         container.MouseFilter = MouseFilterEnum.Ignore;
         scroll.AddChild(container);
 
@@ -290,6 +336,67 @@ public partial class SettingsUI : Control
         (_musicSlider, _musicLabel) = CreateVolumeRow(container, "Music", CurrentSettings.MusicVolume);
         (_sfxSlider, _sfxLabel) = CreateVolumeRow(container, "Sound Effects", CurrentSettings.SfxVolume);
         (_ambienceSlider, _ambienceLabel) = CreateVolumeRow(container, "Ambience", CurrentSettings.AmbienceVolume);
+
+        // SFX sub-categories header
+        Label subHeader = new Label();
+        subHeader.Text = "SFX Sub-Categories";
+        subHeader.AddThemeFontSizeOverride("font_size", 14);
+        subHeader.AddThemeColorOverride("font_color", AccentGold);
+        subHeader.MouseFilter = MouseFilterEnum.Ignore;
+        container.AddChild(subHeader);
+
+        (_weaponsSfxSlider, _weaponsSfxLabel) = CreateVolumeRow(container, "  Weapons", CurrentSettings.WeaponsSfxVolume);
+        (_uiSfxSlider, _uiSfxLabel) = CreateVolumeRow(container, "  UI Sounds", CurrentSettings.UiSfxVolume);
+
+        return scroll;
+    }
+
+    // ========== GAMEPLAY TAB ==========
+    private Control CreateGameplayTab(Control parent)
+    {
+        ScrollContainer scroll = new ScrollContainer();
+        scroll.SetAnchorsPreset(LayoutPreset.FullRect);
+        scroll.Visible = false;
+        scroll.MouseFilter = MouseFilterEnum.Ignore;
+        parent.AddChild(scroll);
+
+        VBoxContainer container = new VBoxContainer();
+        container.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        container.AddThemeConstantOverride("separation", 14);
+        container.MouseFilter = MouseFilterEnum.Ignore;
+        scroll.AddChild(container);
+
+        // Bot Difficulty
+        _botDifficultyOption = new OptionButton();
+        _botDifficultyOption.AddItem("Easy");
+        _botDifficultyOption.AddItem("Medium");
+        _botDifficultyOption.AddItem("Hard");
+        _botDifficultyOption.Selected = CurrentSettings.BotDifficulty switch { "Easy" => 0, "Hard" => 2, _ => 1 };
+        AddSettingRow(container, "Bot Difficulty", _botDifficultyOption);
+
+        // Camera Shake
+        _cameraShakeOption = new OptionButton();
+        _cameraShakeOption.AddItem("Off");
+        _cameraShakeOption.AddItem("Reduced");
+        _cameraShakeOption.AddItem("Full");
+        _cameraShakeOption.Selected = CurrentSettings.CameraShake switch { "Off" => 0, "Reduced" => 1, _ => 2 };
+        AddSettingRow(container, "Camera Shake", _cameraShakeOption);
+
+        // Screen Flash
+        _screenFlashToggle = CreateStyledToggle(CurrentSettings.ScreenFlash);
+        AddSettingRow(container, "Screen Flash", _screenFlashToggle);
+
+        // Auto-Skip Empty Turns
+        _autoSkipToggle = CreateStyledToggle(CurrentSettings.AutoSkipEmptyTurns);
+        AddSettingRow(container, "Auto-Skip Empty Turns", _autoSkipToggle);
+
+        // Show Damage Numbers
+        _damageNumbersToggle = CreateStyledToggle(CurrentSettings.ShowDamageNumbers);
+        AddSettingRow(container, "Show Damage Numbers", _damageNumbersToggle);
+
+        // Show FPS Counter
+        _fpsCounterToggle = CreateStyledToggle(CurrentSettings.ShowFpsCounter);
+        AddSettingRow(container, "Show FPS Counter", _fpsCounterToggle);
 
         return scroll;
     }
@@ -512,7 +619,7 @@ public partial class SettingsUI : Control
 
     private void OnApplyPressed()
     {
-        // Gather values from controls
+        // Gather values from controls -- Graphics
         if (_qualityPreset != null)
         {
             CurrentSettings.QualityPreset = _qualityPreset.Selected switch { 0 => "Low", 1 => "Medium", 3 => "Ultra", _ => "High" };
@@ -527,12 +634,32 @@ public partial class SettingsUI : Control
         if (_bloomToggle != null) CurrentSettings.Bloom = _bloomToggle.ButtonPressed;
         if (_particleQuality != null) CurrentSettings.ParticleQuality = _particleQuality.Selected;
 
+        // Audio
         if (_masterSlider != null) CurrentSettings.MasterVolume = (float)_masterSlider.Value;
         if (_musicSlider != null) CurrentSettings.MusicVolume = (float)_musicSlider.Value;
         if (_sfxSlider != null) CurrentSettings.SfxVolume = (float)_sfxSlider.Value;
         if (_ambienceSlider != null) CurrentSettings.AmbienceVolume = (float)_ambienceSlider.Value;
+        if (_weaponsSfxSlider != null) CurrentSettings.WeaponsSfxVolume = (float)_weaponsSfxSlider.Value;
+        if (_uiSfxSlider != null) CurrentSettings.UiSfxVolume = (float)_uiSfxSlider.Value;
 
+        // Gameplay
+        if (_botDifficultyOption != null)
+        {
+            CurrentSettings.BotDifficulty = _botDifficultyOption.Selected switch { 0 => "Easy", 2 => "Hard", _ => "Medium" };
+        }
+        if (_cameraShakeOption != null)
+        {
+            CurrentSettings.CameraShake = _cameraShakeOption.Selected switch { 0 => "Off", 1 => "Reduced", _ => "Full" };
+        }
+        if (_screenFlashToggle != null) CurrentSettings.ScreenFlash = _screenFlashToggle.ButtonPressed;
+        if (_autoSkipToggle != null) CurrentSettings.AutoSkipEmptyTurns = _autoSkipToggle.ButtonPressed;
+        if (_damageNumbersToggle != null) CurrentSettings.ShowDamageNumbers = _damageNumbersToggle.ButtonPressed;
+        if (_fpsCounterToggle != null) CurrentSettings.ShowFpsCounter = _fpsCounterToggle.ButtonPressed;
+
+        // Persist and apply
         SaveCurrentSettings();
+        ApplyAllSettings(CurrentSettings);
+
         Visible = false;
         SettingsClosed?.Invoke();
     }
@@ -545,7 +672,127 @@ public partial class SettingsUI : Control
 
     public void SaveCurrentSettings()
     {
+        GameSettingsData.Current = CurrentSettings;
         SaveSystem.SaveJson(SettingsPath, CurrentSettings);
+    }
+
+    // ====================================================================
+    //  APPLY ALL SETTINGS — called on startup and when the user hits Apply
+    // ====================================================================
+
+    public static void ApplyAllSettings(GameSettingsData settings)
+    {
+        GameSettingsData.Current = settings;
+        ApplyGraphicsSettings(settings);
+        ApplyAudioSettings(settings);
+        ApplyGameplaySettings(settings);
+    }
+
+    // ---------- Graphics ----------
+    private static void ApplyGraphicsSettings(GameSettingsData s)
+    {
+        // VSync
+        DisplayServer.WindowSetVsyncMode(s.VSync
+            ? DisplayServer.VSyncMode.Enabled
+            : DisplayServer.VSyncMode.Disabled);
+
+        // Resolution Scale
+        Viewport? vp = (Engine.GetMainLoop() as SceneTree)?.Root;
+        if (vp != null)
+        {
+            vp.Scaling3DScale = s.ResolutionScale;
+
+            // Anti-Aliasing
+            switch (s.AntiAliasing)
+            {
+                case "None":
+                    vp.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
+                    vp.Msaa3D = Viewport.Msaa.Disabled;
+                    break;
+                case "FXAA":
+                    vp.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Fxaa;
+                    vp.Msaa3D = Viewport.Msaa.Disabled;
+                    break;
+                case "MSAA 2x":
+                    vp.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
+                    vp.Msaa3D = Viewport.Msaa.Msaa2X;
+                    break;
+                case "MSAA 4x":
+                    vp.ScreenSpaceAA = Viewport.ScreenSpaceAAEnum.Disabled;
+                    vp.Msaa3D = Viewport.Msaa.Msaa4X;
+                    break;
+            }
+        }
+
+        // Shadows, AO, Bloom — need to find the WorldEnvironment and DirectionalLight3D in the scene
+        SceneTree? tree = Engine.GetMainLoop() as SceneTree;
+        if (tree?.Root == null) return;
+
+        // Find DirectionalLight3D and toggle shadows
+        ApplyToNodesOfType<DirectionalLight3D>(tree.Root, light =>
+        {
+            light.ShadowEnabled = s.Shadows;
+        });
+
+        // Find WorldEnvironment and toggle AO + Bloom
+        ApplyToNodesOfType<WorldEnvironment>(tree.Root, worldEnv =>
+        {
+            Godot.Environment? env = worldEnv.Environment;
+            if (env == null) return;
+            env.SsaoEnabled = s.AmbientOcclusion;
+            env.GlowEnabled = s.Bloom;
+        });
+    }
+
+    // ---------- Audio ----------
+    private static void ApplyAudioSettings(GameSettingsData s)
+    {
+        AudioDirector.Instance?.SetMasterVolume(s.MasterVolume);
+        AudioDirector.Instance?.SetMusicVolume(s.MusicVolume);
+        AudioDirector.Instance?.SetSFXVolume(s.SfxVolume);
+        AudioDirector.Instance?.SetAmbienceVolume(s.AmbienceVolume);
+        AudioDirector.Instance?.SetWeaponsSfxVolume(s.WeaponsSfxVolume);
+        AudioDirector.Instance?.SetUiSfxVolume(s.UiSfxVolume);
+    }
+
+    // ---------- Gameplay ----------
+    private static void ApplyGameplaySettings(GameSettingsData s)
+    {
+        // Camera Shake intensity multiplier
+        if (CameraShake.Instance != null)
+        {
+            CameraShake.Instance.IntensityMultiplier = s.CameraShake switch
+            {
+                "Off" => 0f,
+                "Reduced" => 0.5f,
+                _ => 1.0f,
+            };
+        }
+
+        // FPS counter (toggle the DebugOverlay if present)
+        SceneTree? tree = Engine.GetMainLoop() as SceneTree;
+        if (tree?.Root != null)
+        {
+            ApplyToNodesOfType<DebugOverlay>(tree.Root, overlay =>
+            {
+                overlay.Visible = s.ShowFpsCounter;
+            });
+        }
+    }
+
+    // ====================================================================
+    //  Utility: recursively find and apply to nodes of a given type
+    // ====================================================================
+    private static void ApplyToNodesOfType<T>(Node root, Action<T> action) where T : Node
+    {
+        if (root is T typed)
+        {
+            action(typed);
+        }
+        foreach (Node child in root.GetChildren())
+        {
+            ApplyToNodesOfType(child, action);
+        }
     }
 
     private static PanelContainer CreateStyledPanel(Color bgColor, int cornerRadius)

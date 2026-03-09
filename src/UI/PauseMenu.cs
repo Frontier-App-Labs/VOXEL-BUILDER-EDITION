@@ -30,6 +30,7 @@ public partial class PauseMenu : Control
 
     private SettingsUI? _settingsUI;
     private Control? _menuPanel; // The button panel, hidden when settings is open
+    private Control? _contentContainer; // Outer layout, brute-force centered in _Process
 
     public override void _Ready()
     {
@@ -47,11 +48,11 @@ public partial class PauseMenu : Control
         backdrop.MouseFilter = MouseFilterEnum.Ignore;
         AddChild(backdrop);
 
-        // Center layout
+        // Center layout - brute-force positioned in _Process (matching MainMenu approach)
         VBoxContainer outerLayout = new VBoxContainer();
-        outerLayout.SetAnchorsPreset(LayoutPreset.FullRect);
         outerLayout.AddThemeConstantOverride("separation", 0);
         outerLayout.MouseFilter = MouseFilterEnum.Ignore;
+        _contentContainer = outerLayout;
         AddChild(outerLayout);
 
         // Top spacer
@@ -136,6 +137,21 @@ public partial class PauseMenu : Control
         bottomSpacer.SizeFlagsVertical = SizeFlags.ExpandFill;
         bottomSpacer.MouseFilter = MouseFilterEnum.Ignore;
         outerLayout.AddChild(bottomSpacer);
+    }
+
+    public override void _Process(double delta)
+    {
+        if (!Visible) return;
+
+        // Brute-force centering: set position/size every frame to guarantee center alignment
+        // (matching MainMenu approach -- Godot's anchor system doesn't reliably center)
+        if (_contentContainer != null)
+        {
+            Vector2 viewSize = GetViewportRect().Size;
+            float contentW = viewSize.X * 0.5f;
+            _contentContainer.Position = new Vector2((viewSize.X - contentW) * 0.5f, 0f);
+            _contentContainer.Size = new Vector2(contentW, viewSize.Y);
+        }
     }
 
     public override void _UnhandledInput(InputEvent @event)
@@ -249,10 +265,10 @@ public partial class PauseMenu : Control
         GetTree().Paused = false;
         Visible = false;
 
-        // Clean up match state and return to main menu
+        // Fully return to the main menu: cleans up all match state, regenerates
+        // the menu background terrain with the 4-CPU demo battle, and shows the menu UI.
         GameManager? gm = GetTree().Root.GetNodeOrNull<GameManager>("Main");
-        gm?.CleanupMatchState();
-        gm?.SetPhase(GamePhase.Menu);
+        gm?.ReturnToMainMenu();
     }
 
     private void OnQuitToDesktopPressed()

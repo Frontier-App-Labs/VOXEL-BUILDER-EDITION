@@ -2,6 +2,7 @@ using Godot;
 using System;
 using System.Collections.Generic;
 using VoxelSiege.Core;
+using VoxelSiege.Networking;
 
 namespace VoxelSiege.UI;
 
@@ -36,13 +37,25 @@ public partial class MainMenu : Control
     private static readonly Color TitleGold2 = new Color("e8b84a");
     public event Action? PlayOnlineRequested;
     public event Action? PlayBotsRequested;
-    public event Action? SandboxRequested;
-    public event Action? BlueprintsRequested;
-    public event Action? AssetsRequested;
     public event Action? SettingsRequested;
     public event Action? QuitRequested;
 
-    private AssetViewer? _assetViewer;
+    /// <summary>
+    /// Fired when the player chooses to host a game.
+    /// The bool parameter indicates whether the lobby is open (true) or private/code-only (false).
+    /// </summary>
+    public event Action<bool>? HostGameRequested;
+
+    /// <summary>
+    /// Fired when the player chooses to join a random open lobby.
+    /// </summary>
+    public event Action? JoinRandomRequested;
+
+    /// <summary>
+    /// Fired when the player enters a lobby code and clicks Join.
+    /// The string parameter is the code entered.
+    /// </summary>
+    public event Action<string>? JoinWithCodeRequested;
 
     private int _botCount = 1;
     private Label? _botCountLabel;
@@ -59,6 +72,19 @@ public partial class MainMenu : Control
     private int _subtitleRevealIndex;
     private const string SubtitleFull = "BUILD.  HIDE.  DESTROY.";
     private RandomNumberGenerator _rng = new RandomNumberGenerator();
+
+    // Play Online sub-menu panels
+    private VBoxContainer? _mainButtonContainer;
+    private VBoxContainer? _playOnlinePanel;
+    private VBoxContainer? _hostPanel;
+    private VBoxContainer? _joinPanel;
+    private Label? _lobbyCodeLabel;
+    private Label? _statusLabel;
+
+    // --- Lobby code generation ---
+    private static readonly char[] CodeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".ToCharArray();
+    private const int LobbyCodeLength = 6;
+    private string _generatedLobbyCode = string.Empty;
 
     // --- Pixel Font Letter Definitions (5 wide x 7 tall) ---
     private static readonly bool[,] LetterV = {
@@ -270,25 +296,101 @@ public partial class MainMenu : Control
         btnSpacer.MouseFilter = MouseFilterEnum.Ignore;
         centerBox.AddChild(btnSpacer);
 
-        // Button container
-        VBoxContainer buttonContainer = new VBoxContainer();
-        buttonContainer.AddThemeConstantOverride("separation", 6);
-        buttonContainer.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        buttonContainer.MouseFilter = MouseFilterEnum.Ignore;
-        centerBox.AddChild(buttonContainer);
+        // Button container (holds all switchable panels)
+        VBoxContainer buttonArea = new VBoxContainer();
+        buttonArea.AddThemeConstantOverride("separation", 0);
+        buttonArea.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        buttonArea.MouseFilter = MouseFilterEnum.Ignore;
+        centerBox.AddChild(buttonArea);
+
+        // === MAIN BUTTON PANEL (default view) ===
+        _mainButtonContainer = new VBoxContainer();
+        _mainButtonContainer.AddThemeConstantOverride("separation", 6);
+        _mainButtonContainer.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _mainButtonContainer.MouseFilter = MouseFilterEnum.Ignore;
+        buttonArea.AddChild(_mainButtonContainer);
 
         // Menu buttons with voxel-style borders
-        AddMenuButton(buttonContainer, "PLAY ONLINE", AccentGreen, OnPlayOnlinePressed);
+        AddMenuButton(_mainButtonContainer, "PLAY ONLINE", AccentGreen, OnPlayOnlinePressed);
 
         // Bot count selector row
-        AddBotCountSelector(buttonContainer);
+        AddBotCountSelector(_mainButtonContainer);
 
-        AddMenuButton(buttonContainer, "PLAY VS BOTS", AccentGreen, OnPlayBotsPressed);
-        AddMenuButton(buttonContainer, "SANDBOX", AccentGreen, OnSandboxPressed);
-        AddMenuButton(buttonContainer, "BLUEPRINTS", AccentGold, () => BlueprintsRequested?.Invoke());
-        AddMenuButton(buttonContainer, "ASSETS", AccentGold, OnAssetsPressed);
-        AddMenuButton(buttonContainer, "SETTINGS", TextSecondary, () => SettingsRequested?.Invoke());
-        AddMenuButton(buttonContainer, "QUIT", AccentRed, OnQuitPressed);
+        AddMenuButton(_mainButtonContainer, "PLAY VS BOTS", AccentGreen, OnPlayBotsPressed);
+        AddMenuButton(_mainButtonContainer, "SETTINGS", TextSecondary, () => SettingsRequested?.Invoke());
+        AddMenuButton(_mainButtonContainer, "QUIT", AccentRed, OnQuitPressed);
+
+        // === PLAY ONLINE SUB-PANEL (Host / Join choice) ===
+        _playOnlinePanel = new VBoxContainer();
+        _playOnlinePanel.AddThemeConstantOverride("separation", 6);
+        _playOnlinePanel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _playOnlinePanel.MouseFilter = MouseFilterEnum.Ignore;
+        _playOnlinePanel.Visible = false;
+        buttonArea.AddChild(_playOnlinePanel);
+
+        AddSubMenuHeader(_playOnlinePanel, "PLAY ONLINE");
+        AddMenuButton(_playOnlinePanel, "HOST GAME", AccentGreen, OnHostPressed);
+        AddMenuButton(_playOnlinePanel, "JOIN GAME", AccentGold, OnJoinPressed);
+        AddMenuButton(_playOnlinePanel, "BACK", TextSecondary, OnBackToMainMenu);
+
+        // === HOST PANEL (Open / Private choice + lobby code display) ===
+        _hostPanel = new VBoxContainer();
+        _hostPanel.AddThemeConstantOverride("separation", 6);
+        _hostPanel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _hostPanel.MouseFilter = MouseFilterEnum.Ignore;
+        _hostPanel.Visible = false;
+        buttonArea.AddChild(_hostPanel);
+
+        AddSubMenuHeader(_hostPanel, "HOST GAME");
+        AddMenuButton(_hostPanel, "OPEN LOBBY", AccentGreen, OnHostOpenLobby);
+        AddMenuButton(_hostPanel, "PRIVATE (CODE ONLY)", AccentGold, OnHostPrivateLobby);
+
+        // Lobby code display (hidden until a lobby is created)
+        _lobbyCodeLabel = new Label();
+        _lobbyCodeLabel.Text = "";
+        _lobbyCodeLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        _lobbyCodeLabel.AddThemeFontOverride("font", PixelFont);
+        _lobbyCodeLabel.AddThemeFontSizeOverride("font_size", 20);
+        _lobbyCodeLabel.AddThemeColorOverride("font_color", AccentGreen);
+        _lobbyCodeLabel.MouseFilter = MouseFilterEnum.Ignore;
+        _lobbyCodeLabel.Visible = false;
+        HBoxContainer codeWrapper = new HBoxContainer();
+        codeWrapper.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        codeWrapper.Alignment = BoxContainer.AlignmentMode.Center;
+        codeWrapper.MouseFilter = MouseFilterEnum.Ignore;
+        codeWrapper.AddChild(_lobbyCodeLabel);
+        _hostPanel.AddChild(codeWrapper);
+
+        // Status label for host (e.g. "Waiting for players...")
+        _statusLabel = new Label();
+        _statusLabel.Text = "";
+        _statusLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        _statusLabel.AddThemeFontOverride("font", PixelFont);
+        _statusLabel.AddThemeFontSizeOverride("font_size", 10);
+        _statusLabel.AddThemeColorOverride("font_color", TextSecondary);
+        _statusLabel.MouseFilter = MouseFilterEnum.Ignore;
+        _statusLabel.Visible = false;
+        HBoxContainer statusWrapper = new HBoxContainer();
+        statusWrapper.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        statusWrapper.Alignment = BoxContainer.AlignmentMode.Center;
+        statusWrapper.MouseFilter = MouseFilterEnum.Ignore;
+        statusWrapper.AddChild(_statusLabel);
+        _hostPanel.AddChild(statusWrapper);
+
+        AddMenuButton(_hostPanel, "BACK", TextSecondary, OnBackToPlayOnline);
+
+        // === JOIN PANEL (Join Random / Enter Code) ===
+        _joinPanel = new VBoxContainer();
+        _joinPanel.AddThemeConstantOverride("separation", 6);
+        _joinPanel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _joinPanel.MouseFilter = MouseFilterEnum.Ignore;
+        _joinPanel.Visible = false;
+        buttonArea.AddChild(_joinPanel);
+
+        AddSubMenuHeader(_joinPanel, "JOIN GAME");
+        AddMenuButton(_joinPanel, "JOIN RANDOM", AccentGreen, OnJoinRandom);
+        AddJoinCodeInput(_joinPanel);
+        AddMenuButton(_joinPanel, "BACK", TextSecondary, OnBackToPlayOnline);
 
         // Bottom spacer
         Control bottomSpacer = new Control();
@@ -384,7 +486,6 @@ public partial class MainMenu : Control
 
     public void RequestPlayOnline() => PlayOnlineRequested?.Invoke();
     public void RequestPlayBots() => PlayBotsRequested?.Invoke();
-    public void RequestSandbox() => SandboxRequested?.Invoke();
     public void RequestSettings() => SettingsRequested?.Invoke();
     public void RequestQuit() => QuitRequested?.Invoke();
 
@@ -654,7 +755,33 @@ public partial class MainMenu : Control
         _menuButtons.Add(btnPanel);
     }
 
-    private void AddCommanderNameInput(VBoxContainer container)
+    private void AddSubMenuHeader(VBoxContainer container, string text)
+    {
+        Label header = new Label();
+        header.Text = text;
+        header.HorizontalAlignment = HorizontalAlignment.Center;
+        header.AddThemeFontOverride("font", PixelFont);
+        header.AddThemeFontSizeOverride("font_size", 16);
+        header.AddThemeColorOverride("font_color", AccentGold);
+        header.MouseFilter = MouseFilterEnum.Ignore;
+
+        HBoxContainer headerWrapper = new HBoxContainer();
+        headerWrapper.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        headerWrapper.Alignment = BoxContainer.AlignmentMode.Center;
+        headerWrapper.MouseFilter = MouseFilterEnum.Ignore;
+        headerWrapper.AddChild(header);
+        container.AddChild(headerWrapper);
+
+        // Small spacer below header
+        Control spacer = new Control();
+        spacer.CustomMinimumSize = new Vector2(0, 8);
+        spacer.MouseFilter = MouseFilterEnum.Ignore;
+        container.AddChild(spacer);
+    }
+
+    private LineEdit? _joinCodeInput;
+
+    private void AddJoinCodeInput(VBoxContainer container)
     {
         // Outer wrapper to center the row horizontally
         HBoxContainer wrapper = new HBoxContainer();
@@ -672,44 +799,37 @@ public partial class MainMenu : Control
         panelStyle.BorderWidthTop = 2;
         panelStyle.BorderWidthRight = 2;
         panelStyle.BorderWidthBottom = 4;
-        panelStyle.BorderColor = AccentGreen;
-        panelStyle.ContentMarginLeft = 20;
-        panelStyle.ContentMarginRight = 20;
+        panelStyle.BorderColor = AccentGold;
+        panelStyle.ContentMarginLeft = 12;
+        panelStyle.ContentMarginRight = 12;
         panelStyle.ContentMarginTop = 6;
         panelStyle.ContentMarginBottom = 6;
         panel.AddThemeStyleboxOverride("panel", panelStyle);
         wrapper.AddChild(panel);
 
-        // Inner row: label + text input
+        // Inner row: label + text input + join button
         HBoxContainer row = new HBoxContainer();
         row.Alignment = BoxContainer.AlignmentMode.Center;
-        row.AddThemeConstantOverride("separation", 12);
+        row.AddThemeConstantOverride("separation", 8);
         panel.AddChild(row);
 
-        Label nameLabel = new Label();
-        nameLabel.Text = "NAME:";
-        nameLabel.AddThemeFontOverride("font", PixelFont);
-        nameLabel.AddThemeFontSizeOverride("font_size", 12);
-        nameLabel.AddThemeColorOverride("font_color", TextSecondary);
-        nameLabel.MouseFilter = MouseFilterEnum.Ignore;
-        row.AddChild(nameLabel);
+        Label codeLabel = new Label();
+        codeLabel.Text = "CODE:";
+        codeLabel.AddThemeFontOverride("font", PixelFont);
+        codeLabel.AddThemeFontSizeOverride("font_size", 11);
+        codeLabel.AddThemeColorOverride("font_color", TextSecondary);
+        codeLabel.MouseFilter = MouseFilterEnum.Ignore;
+        row.AddChild(codeLabel);
 
-        // Spacer to push input to the right
-        Control spacer = new Control();
-        spacer.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        spacer.MouseFilter = MouseFilterEnum.Ignore;
-        row.AddChild(spacer);
-
-        _commanderNameInput = new LineEdit();
-        _commanderNameInput.Text = "Green";
-        _commanderNameInput.PlaceholderText = "Enter name...";
-        _commanderNameInput.CustomMinimumSize = new Vector2(180, 32);
-        _commanderNameInput.MaxLength = 20;
-        _commanderNameInput.AddThemeFontOverride("font", PixelFont);
-        _commanderNameInput.AddThemeFontSizeOverride("font_size", 11);
-        _commanderNameInput.AddThemeColorOverride("font_color", TextPrimary);
-        _commanderNameInput.AddThemeColorOverride("font_placeholder_color", TextSecondary);
-        _commanderNameInput.MouseFilter = MouseFilterEnum.Stop;
+        _joinCodeInput = new LineEdit();
+        _joinCodeInput.PlaceholderText = "ENTER CODE";
+        _joinCodeInput.CustomMinimumSize = new Vector2(140, 32);
+        _joinCodeInput.MaxLength = LobbyCodeLength;
+        _joinCodeInput.AddThemeFontOverride("font", PixelFont);
+        _joinCodeInput.AddThemeFontSizeOverride("font_size", 12);
+        _joinCodeInput.AddThemeColorOverride("font_color", TextPrimary);
+        _joinCodeInput.AddThemeColorOverride("font_placeholder_color", TextSecondary);
+        _joinCodeInput.MouseFilter = MouseFilterEnum.Stop;
         // Style with square corners and dark background
         StyleBoxFlat inputStyle = CreatePanelStyle(new Color(0.04f, 0.06f, 0.08f, 0.95f), 0);
         inputStyle.BorderWidthTop = 1;
@@ -721,20 +841,33 @@ public partial class MainMenu : Control
         inputStyle.ContentMarginRight = 8;
         inputStyle.ContentMarginTop = 4;
         inputStyle.ContentMarginBottom = 4;
-        _commanderNameInput.AddThemeStyleboxOverride("normal", inputStyle);
+        _joinCodeInput.AddThemeStyleboxOverride("normal", inputStyle);
         // Focus style
         StyleBoxFlat focusStyle = CreatePanelStyle(new Color(0.06f, 0.08f, 0.10f, 0.95f), 0);
         focusStyle.BorderWidthTop = 1;
         focusStyle.BorderWidthBottom = 1;
         focusStyle.BorderWidthLeft = 1;
         focusStyle.BorderWidthRight = 1;
-        focusStyle.BorderColor = AccentGreen;
+        focusStyle.BorderColor = AccentGold;
         focusStyle.ContentMarginLeft = 8;
         focusStyle.ContentMarginRight = 8;
         focusStyle.ContentMarginTop = 4;
         focusStyle.ContentMarginBottom = 4;
-        _commanderNameInput.AddThemeStyleboxOverride("focus", focusStyle);
-        row.AddChild(_commanderNameInput);
+        _joinCodeInput.AddThemeStyleboxOverride("focus", focusStyle);
+        _joinCodeInput.TextSubmitted += (_) => OnJoinWithCode();
+        row.AddChild(_joinCodeInput);
+
+        // JOIN button
+        Button joinBtn = new Button();
+        joinBtn.Text = "JOIN";
+        joinBtn.CustomMinimumSize = new Vector2(72, 32);
+        joinBtn.AddThemeFontOverride("font", PixelFont);
+        joinBtn.AddThemeFontSizeOverride("font_size", 11);
+        joinBtn.AddThemeColorOverride("font_color", AccentGold);
+        joinBtn.AddThemeColorOverride("font_hover_color", TextPrimary);
+        joinBtn.MouseFilter = MouseFilterEnum.Stop;
+        joinBtn.Pressed += OnJoinWithCode;
+        row.AddChild(joinBtn);
 
         // Start invisible for stagger animation (matches menu buttons)
         panel.Modulate = new Color(1, 1, 1, 0);
@@ -882,10 +1015,37 @@ public partial class MainMenu : Control
         return style;
     }
 
+    // =====================================================================
+    // PANEL SWITCHING (Main Menu <-> Play Online <-> Host / Join)
+    // =====================================================================
+    private void ShowPanel(VBoxContainer? panelToShow)
+    {
+        if (_mainButtonContainer != null) _mainButtonContainer.Visible = false;
+        if (_playOnlinePanel != null) _playOnlinePanel.Visible = false;
+        if (_hostPanel != null) _hostPanel.Visible = false;
+        if (_joinPanel != null) _joinPanel.Visible = false;
+
+        if (panelToShow != null) panelToShow.Visible = true;
+    }
+
+    // =====================================================================
+    // LOBBY CODE GENERATION
+    // =====================================================================
+    private string GenerateLobbyCode()
+    {
+        char[] code = new char[LobbyCodeLength];
+        for (int i = 0; i < LobbyCodeLength; i++)
+        {
+            code[i] = CodeChars[_rng.RandiRange(0, CodeChars.Length - 1)];
+        }
+        return new string(code);
+    }
+
     // --- Button Handlers ---
     private void OnPlayOnlinePressed()
     {
         PlayOnlineRequested?.Invoke();
+        ShowPanel(_playOnlinePanel);
     }
 
     private void OnPlayBotsPressed()
@@ -903,53 +1063,153 @@ public partial class MainMenu : Control
         Visible = false;
     }
 
-    private void OnSandboxPressed()
+    private void OnHostPressed()
     {
-        SandboxRequested?.Invoke();
-    }
-
-    private void OnAssetsPressed()
-    {
-        AssetsRequested?.Invoke();
-        ShowAssetViewer();
-    }
-
-    private void ShowAssetViewer()
-    {
-        if (_assetViewer != null) return;
-
-        // Hide main menu content (keep this node visible so _Process still runs, but hide children)
-        if (_contentContainer != null) _contentContainer.Visible = false;
-        if (_fallingBlockLayer != null) _fallingBlockLayer.Visible = false;
-
-        // Hide the title blocks
-        foreach (var block in _titleBlocks)
+        // Reset host panel state
+        if (_lobbyCodeLabel != null)
         {
-            block.Visible = false;
+            _lobbyCodeLabel.Text = "";
+            _lobbyCodeLabel.Visible = false;
+        }
+        if (_statusLabel != null)
+        {
+            _statusLabel.Text = "";
+            _statusLabel.Visible = false;
+        }
+        ShowPanel(_hostPanel);
+    }
+
+    private void OnHostOpenLobby()
+    {
+        _generatedLobbyCode = GenerateLobbyCode();
+        StartHosting(MatchVisibility.Public);
+    }
+
+    private void OnHostPrivateLobby()
+    {
+        _generatedLobbyCode = GenerateLobbyCode();
+        StartHosting(MatchVisibility.Private);
+    }
+
+    private void StartHosting(MatchVisibility visibility)
+    {
+        // Configure and start the network host
+        NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
+        LobbyManager? lobbyManager = GetTree().Root.GetNodeOrNull<LobbyManager>("Main/LobbyManager");
+        GameManager? gameManager = GetTree().Root.GetNodeOrNull<GameManager>("Main");
+
+        if (netManager != null)
+        {
+            Error err = netManager.Host();
+            if (err != Error.Ok)
+            {
+                GD.PrintErr($"[MainMenu] Failed to host: {err}");
+                if (_statusLabel != null)
+                {
+                    _statusLabel.Text = $"HOST FAILED: {err}";
+                    _statusLabel.AddThemeColorOverride("font_color", AccentRed);
+                    _statusLabel.Visible = true;
+                }
+                return;
+            }
         }
 
-        _assetViewer = new AssetViewer();
-        _assetViewer.Name = "AssetViewer";
-        AddChild(_assetViewer);
-        _assetViewer.BackRequested += OnAssetViewerBack;
+        if (lobbyManager != null)
+        {
+            MatchSettings settings = new MatchSettings { Visibility = visibility };
+            string lobbyName = visibility == MatchVisibility.Public
+                ? "Open Lobby"
+                : $"Private [{_generatedLobbyCode}]";
+            lobbyManager.ConfigureLobby(lobbyName, settings);
+        }
+
+        // Show the lobby code prominently
+        if (_lobbyCodeLabel != null)
+        {
+            _lobbyCodeLabel.Text = $"CODE: {_generatedLobbyCode}";
+            _lobbyCodeLabel.Visible = true;
+        }
+
+        string visibilityText = visibility == MatchVisibility.Public ? "OPEN" : "PRIVATE";
+        if (_statusLabel != null)
+        {
+            _statusLabel.Text = $"{visibilityText} LOBBY CREATED  -  WAITING FOR PLAYERS...";
+            _statusLabel.AddThemeColorOverride("font_color", TextSecondary);
+            _statusLabel.Visible = true;
+        }
+
+        GD.Print($"[MainMenu] Hosting {visibilityText} lobby with code: {_generatedLobbyCode}");
+        HostGameRequested?.Invoke(visibility == MatchVisibility.Public);
     }
 
-    private void OnAssetViewerBack()
+    private void OnJoinPressed()
     {
-        if (_assetViewer == null) return;
+        ShowPanel(_joinPanel);
+    }
 
-        _assetViewer.BackRequested -= OnAssetViewerBack;
-        _assetViewer.QueueFree();
-        _assetViewer = null;
+    private void OnJoinRandom()
+    {
+        GD.Print("[MainMenu] Joining random open lobby...");
 
-        // Restore main menu content
-        if (_contentContainer != null) _contentContainer.Visible = true;
-        if (_fallingBlockLayer != null) _fallingBlockLayer.Visible = true;
-
-        foreach (var block in _titleBlocks)
+        // Attempt to connect to a known address (placeholder: localhost for now).
+        // In a real implementation this would query a matchmaking server or Steam lobby list.
+        NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
+        if (netManager != null)
         {
-            block.Visible = true;
+            Error err = netManager.Join("127.0.0.1");
+            if (err != Error.Ok)
+            {
+                GD.PrintErr($"[MainMenu] Failed to join random: {err}");
+                return;
+            }
         }
+
+        JoinRandomRequested?.Invoke();
+    }
+
+    private void OnJoinWithCode()
+    {
+        string code = _joinCodeInput?.Text?.Trim().ToUpperInvariant() ?? string.Empty;
+        if (string.IsNullOrEmpty(code))
+        {
+            GD.Print("[MainMenu] No lobby code entered.");
+            return;
+        }
+
+        GD.Print($"[MainMenu] Joining lobby with code: {code}");
+
+        // Attempt to connect (placeholder: localhost for now).
+        // In a real implementation the code would be resolved to an IP/lobby ID
+        // via a matchmaking service or Steam lobby metadata lookup.
+        NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
+        if (netManager != null)
+        {
+            Error err = netManager.Join("127.0.0.1");
+            if (err != Error.Ok)
+            {
+                GD.PrintErr($"[MainMenu] Failed to join with code: {err}");
+                return;
+            }
+        }
+
+        JoinWithCodeRequested?.Invoke(code);
+    }
+
+    private void OnBackToMainMenu()
+    {
+        ShowPanel(_mainButtonContainer);
+    }
+
+    private void OnBackToPlayOnline()
+    {
+        // If we were hosting, shut down the network so we don't leave a dangling server
+        NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
+        if (netManager != null && netManager.IsOnline)
+        {
+            netManager.Shutdown();
+        }
+
+        ShowPanel(_playOnlinePanel);
     }
 
     private void OnQuitPressed()
@@ -961,5 +1221,11 @@ public partial class MainMenu : Control
     private void OnPhaseChanged(PhaseChangedEvent payload)
     {
         Visible = payload.CurrentPhase == GamePhase.Menu;
+
+        // Reset to main button view when returning to menu
+        if (payload.CurrentPhase == GamePhase.Menu)
+        {
+            ShowPanel(_mainButtonContainer);
+        }
     }
 }

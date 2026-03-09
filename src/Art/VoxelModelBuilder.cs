@@ -15,12 +15,13 @@ public class VoxelModelBuilder
         Vector3I.Left,    // -X
         Vector3I.Up,      // +Y
         Vector3I.Down,    // -Y
-        Vector3I.Forward, // +Z  (Godot forward is -Z, but we use +Z here for back face)
-        Vector3I.Back,    // -Z
+        Vector3I.Back,    // +Z face → check +Z neighbor (Back = (0,0,+1) in Godot)
+        Vector3I.Forward, // -Z face → check -Z neighbor (Forward = (0,0,-1) in Godot)
     };
 
     // Each face has 4 vertices (as offsets from voxel origin) and a normal.
-    // Vertices are wound clockwise when viewed from outside (Godot 4 front-face convention).
+    // Indices 0,1,2 / 0,2,3 produce CCW winding when viewed from outside (Godot 4 front-face).
+    // This matches ChunkMesher's proven-correct winding order.
     private static readonly Vector3[][] FaceVertices =
     {
         // +X face
@@ -45,6 +46,15 @@ public class VoxelModelBuilder
         Vector3.Down,     // -Y
         Vector3.Back,     // +Z face outward normal is (0,0,+1) = Back in Godot
         Vector3.Forward,  // -Z face outward normal is (0,0,-1) = Forward in Godot
+    };
+
+    // UV coordinates for each quad vertex (standard 0-1 mapping per face)
+    private static readonly Vector2[] FaceUVs =
+    {
+        new(0, 1),
+        new(0, 0),
+        new(1, 0),
+        new(1, 1),
     };
 
     /// <summary>
@@ -77,6 +87,7 @@ public class VoxelModelBuilder
         List<Vector3> vertices = new();
         List<Vector3> normals = new();
         List<Color> colors = new();
+        List<Vector2> uvs = new();
         List<int> indices = new();
 
         RandomNumberGenerator rng = new();
@@ -131,15 +142,17 @@ public class VoxelModelBuilder
                             vertices.Add(basePos + fv[v] * VoxelSize);
                             normals.Add(normal);
                             colors.Add(voxelColor.Value);
+                            uvs.Add(FaceUVs[v]);
                         }
 
-                        // Two triangles per quad — clockwise winding for Godot 4 front faces
+                        // Two triangles per quad — CCW winding for Godot 4 front faces
+                        // Matches ChunkMesher's proven-correct pattern: 0,1,2 / 0,2,3
                         indices.Add(baseIndex);
-                        indices.Add(baseIndex + 2);
                         indices.Add(baseIndex + 1);
-                        indices.Add(baseIndex);
-                        indices.Add(baseIndex + 3);
                         indices.Add(baseIndex + 2);
+                        indices.Add(baseIndex);
+                        indices.Add(baseIndex + 2);
+                        indices.Add(baseIndex + 3);
                     }
                 }
             }
@@ -155,6 +168,7 @@ public class VoxelModelBuilder
         arrays.Resize((int)Mesh.ArrayType.Max);
         arrays[(int)Mesh.ArrayType.Vertex] = vertices.ToArray();
         arrays[(int)Mesh.ArrayType.Normal] = normals.ToArray();
+        arrays[(int)Mesh.ArrayType.TexUV] = uvs.ToArray();
         arrays[(int)Mesh.ArrayType.Color] = colors.ToArray();
         arrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
 
@@ -199,6 +213,9 @@ public class VoxelModelBuilder
 
     /// <summary>
     /// Create a StandardMaterial3D suitable for voxel art with vertex colors.
+    /// Uses CullMode.Disabled so both face sides render — small voxel models
+    /// don't benefit from back-face culling and Disabled guarantees no missing
+    /// faces regardless of camera angle.
     /// </summary>
     public static StandardMaterial3D CreateVoxelMaterial(float metallic = 0.0f, float roughness = 0.8f)
     {
@@ -206,6 +223,8 @@ public class VoxelModelBuilder
         mat.VertexColorUseAsAlbedo = true;
         mat.Metallic = metallic;
         mat.Roughness = roughness;
+        mat.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+        mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.PerPixel;
         return mat;
     }
 
@@ -222,7 +241,7 @@ public class VoxelModelBuilder
 
         ShaderMaterial mat = new();
         mat.Shader = shader;
-        mat.SetShaderParameter("tint", Colors.White);
+        mat.SetShaderParameter("team_color", Colors.White);
         return mat;
     }
 

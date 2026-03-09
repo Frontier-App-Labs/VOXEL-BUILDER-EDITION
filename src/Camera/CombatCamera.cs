@@ -23,6 +23,7 @@ public partial class CombatCamera : Camera3D
         WeaponPOV,
         TopDown,
         Targeting,
+        RailgunBeam,
     }
 
     // --- Tuning exports ---
@@ -37,7 +38,7 @@ public partial class CombatCamera : Camera3D
     public float FollowLookAhead { get; set; } = 2f;
 
     [Export]
-    public float ImpactHoldTime { get; set; } = 1.5f;
+    public float ImpactHoldTime { get; set; } = 2.5f;
 
     [Export]
     public float KillCamDuration { get; set; } = 2.5f;
@@ -127,8 +128,10 @@ public partial class CombatCamera : Camera3D
     [Export]
     public float TopDownZoomSpeed { get; set; } = 2f;
 
-    /// <summary>Minimum camera Y position to prevent going under the map.</summary>
-    private const float MinCameraHeight = 2.0f;
+    /// <summary>Minimum camera Y position to prevent going under the map.
+    /// Ground surface is at Y = PrototypeGroundThickness * MicrovoxelMeters = 3.0m,
+    /// so we keep the camera at least 1m above ground to avoid clipping.</summary>
+    private const float MinCameraHeight = 4.0f;
 
     // --- Internal state ---
     public Mode CurrentMode { get; private set; } = Mode.Inactive;
@@ -179,6 +182,13 @@ public partial class CombatCamera : Camera3D
     private bool _targetingRmbDown;
     private bool _targetingRmbDragged;
 
+    // Railgun beam cam
+    private Vector3 _railBeamStart;
+    private Vector3 _railBeamEnd;
+    private float _railBeamTimer;
+    private float _railBeamHoldTime = 0.5f;
+    private float _preRailBeamTimeScale;
+
     // Top-down
     private Vector3 _topDownCenter;
     private bool _topDownDragging;
@@ -207,6 +217,14 @@ public partial class CombatCamera : Camera3D
         Current = true;
         SetProcess(true);
         SetProcessUnhandledInput(true);
+
+        // Ensure the camera is never below minimum height when activated
+        if (GlobalPosition.Y < MinCameraHeight)
+        {
+            Vector3 pos = GlobalPosition;
+            pos.Y = MinCameraHeight;
+            GlobalPosition = pos;
+        }
     }
 
     public void Deactivate()
@@ -267,7 +285,9 @@ public partial class CombatCamera : Camera3D
         // Cursor stays visible during projectile flight (user may click UI)
     }
 
-    /// <summary>Transition to view the impact point. Applies brief slow-motion.</summary>
+    /// <summary>Transition to view the impact point. Applies brief slow-motion.
+    /// The camera freezes at its current position and looks at the impact point,
+    /// avoiding any jarring pivot or swing when the projectile explodes.</summary>
     public void ImpactCam(Vector3 impactPoint, float radius)
     {
         if (!_isActive)
@@ -285,9 +305,10 @@ public partial class CombatCamera : Camera3D
         _preImpactTimeScale = (float)Engine.TimeScale;
         Engine.TimeScale = 0.5;
 
-        // Position camera at a good vantage to see the impact
-        float viewDist = Mathf.Max(6f, radius * 2.5f);
-        _targetPosition = impactPoint + new Vector3(viewDist * 0.5f, viewDist * 0.6f, viewDist * 0.5f);
+        // Freeze the camera at its current position (the last follow position)
+        // so there is no jarring pivot/swing when the projectile explodes.
+        // Only redirect the look-at toward the impact point.
+        _targetPosition = GlobalPosition;
         _targetLookAt = impactPoint;
     }
 
@@ -388,6 +409,78 @@ public partial class CombatCamera : Camera3D
     }
 
     /// <summary>
+    /// Dramatic side-view camera for railgun hitscan beam. Snaps to a position perpendicular
+    /// to the beam path so the full beam is visible, holds briefly, then transitions to
+    /// Impact mode at the endpoint.
+    /// </summary>
+    public void RailgunBeamCam(Vector3 start, Vector3 end)
+    {
+        if (CurrentMode == Mode.WeaponPOV || CurrentMode == Mode.Targeting)
+        {
+            ReleaseMouse();
+        }
+
+        if (!_isActive)
+        {
+            Activate();
+        }
+
+        CurrentMode = Mode.RailgunBeam;
+        _povWeapon = null;
+        _povAiming = null;
+        _railBeamStart = start;
+        _railBeamEnd = end;
+        _railBeamTimer = 0f;
+
+        // Brief slow-mo for dramatic emphasis
+        _preRailBeamTimeScale = (float)Engine.TimeScale;
+        Engine.TimeScale = 0.4;
+
+        // Compute a side-view camera position perpendicular to the beam
+        Vector3 beamDir = (end - start).Normalized();
+        Vector3 beamMidpoint = (start + end) * 0.5f;
+        float beamLength = start.DistanceTo(end);
+
+        // Get a perpendicular vector (cross with Up, fall back to Right if beam is vertical)
+        Vector3 side = beamDir.Cross(Vector3.Up).Normalized();
+        if (side.LengthSquared() < 0.001f)
+        {
+            side = beamDir.Cross(Vector3.Right).Normalized();
+        }
+
+        // Position camera to the side, far enough to see the whole beam.
+        // Distance scales with beam length so longer beams are still fully visible.
+        float sideDistance = Mathf.Max(beamLength * 0.6f, 5f);
+        float elevationOffset = Mathf.Max(beamLength * 0.15f, 1.5f);
+        Vector3 cameraPos = beamMidpoint + side * sideDistance + Vector3.Up * elevationOffset;
+
+        _targetPosition = cameraPos;
+        _targetLookAt = beamMidpoint;
+
+        // Snap the camera immediately to avoid a long lerp from a distant position
+        GlobalPosition = cameraPos;
+        _currentLookAt = beamMidpoint;
+        if (GlobalPosition.DistanceSquaredTo(beamMidpoint) > 0.01f)
+        {
+            LookAt(beamMidpoint, Vector3.Up);
+        }
+
+        // Slightly wide FOV to capture the full beam path
+        _targetFov = ImpactFov;
+        Fov = ImpactFov;
+    }
+
+    /// <summary>
+    /// Updates the targeting pivot point without leaving targeting mode.
+    /// Used when the player cycles to a different enemy base during targeting.
+    /// The camera smoothly transitions to orbit around the new pivot.
+    /// </summary>
+    public void SetTargetingPivot(Vector3 pivot)
+    {
+        _targetingPivot = pivot;
+    }
+
+    /// <summary>
     /// Top-down spectator view: overhead camera centered on the arena.
     /// Allows panning and zoom but no aiming.
     /// </summary>
@@ -451,10 +544,23 @@ public partial class CombatCamera : Camera3D
     public event Action? ExitWeaponPOVRequested;
 
     /// <summary>
+    /// Fired when the player presses Tab/E (next, +1) or Q (prev, -1) during targeting
+    /// to cycle through enemy bases. The int parameter is the cycle direction.
+    /// </summary>
+    public event Action<int>? TargetCycleRequested;
+
+    /// <summary>
     /// Fired when the player left-clicks during targeting mode.
     /// Passes the mouse position for raycasting by the GameManager.
     /// </summary>
     public event Action<Vector2>? TargetClickRequested;
+
+    /// <summary>
+    /// Fired when a cinematic camera mode (impact, kill cam) finishes and the camera
+    /// would normally return to FreeLook orbit. GameManager subscribes to this to
+    /// switch back to the FreeFlyCamera for WASD movement instead.
+    /// </summary>
+    public event Action? CinematicFinished;
 
     // ------------------------------------------------------------------
     // Input
@@ -624,10 +730,24 @@ public partial class CombatCamera : Camera3D
         }
 
         // ESC cancels targeting
-        if (@event is InputEventKey keyEvent && keyEvent.Pressed && keyEvent.Keycode == Key.Escape)
+        if (@event is InputEventKey keyEvent && keyEvent.Pressed)
         {
-            ExitWeaponPOVRequested?.Invoke();
-            GetViewport().SetInputAsHandled();
+            if (keyEvent.Keycode == Key.Escape)
+            {
+                ExitWeaponPOVRequested?.Invoke();
+                GetViewport().SetInputAsHandled();
+            }
+            // Tab/E = cycle to next enemy, Q = cycle to previous enemy
+            else if (keyEvent.Keycode == Key.Tab || keyEvent.Keycode == Key.E)
+            {
+                TargetCycleRequested?.Invoke(1);
+                GetViewport().SetInputAsHandled();
+            }
+            else if (keyEvent.Keycode == Key.Q)
+            {
+                TargetCycleRequested?.Invoke(-1);
+                GetViewport().SetInputAsHandled();
+            }
         }
     }
 
@@ -706,6 +826,9 @@ public partial class CombatCamera : Camera3D
             case Mode.Targeting:
                 ProcessTargeting(realDt);
                 break;
+            case Mode.RailgunBeam:
+                ProcessRailgunBeam(realDt);
+                break;
         }
 
         // Smooth FOV
@@ -734,12 +857,20 @@ public partial class CombatCamera : Camera3D
             _currentLookAt = _currentLookAt.Lerp(_targetLookAt, 1f - Mathf.Exp(-PositionSmoothing * realDt));
             if (GlobalPosition.DistanceSquaredTo(_currentLookAt) > 0.01f)
             {
-                // Use a fallback up vector when the look direction is nearly vertical
-                // to avoid the "Target and up vectors are colinear" warning.
-                Vector3 lookDir = (_currentLookAt - GlobalPosition).Normalized();
-                float dotUp = Mathf.Abs(lookDir.Dot(Vector3.Up));
-                Vector3 upVec = dotUp > 0.99f ? Vector3.Forward : Vector3.Up;
-                LookAt(_currentLookAt, upVec);
+                // Clamp the look direction to never be more than ~80 degrees from
+                // horizontal.  This prevents the up-vector singularity that causes
+                // ugly roll flips (e.g. mortar camera transitioning to impact).
+                Vector3 toTarget = _currentLookAt - GlobalPosition;
+                Vector3 lookDir = toTarget.Normalized();
+                const float MaxVerticalDot = 0.95f; // ~72 degrees
+                float vertDot = lookDir.Dot(Vector3.Up);
+                if (Mathf.Abs(vertDot) > MaxVerticalDot)
+                {
+                    // Pull the look direction back toward horizontal
+                    lookDir.Y = Mathf.Sign(vertDot) * MaxVerticalDot;
+                    lookDir = lookDir.Normalized();
+                }
+                LookAt(GlobalPosition + lookDir * toTarget.Length(), Vector3.Up);
             }
         }
     }
@@ -792,7 +923,22 @@ public partial class CombatCamera : Camera3D
             trailDir = Vector3.Forward;
         }
 
-        _followOffset = (-trailDir * 5f) + (Vector3.Up * 2.5f);
+        if (Mathf.Abs(trailDir.Y) > 0.5f)
+        {
+            // Projectile traveling mostly vertically (mortar arc) — position camera
+            // to the side so the player can see the trajectory and target area below.
+            Vector3 horizontalDir = new Vector3(trailDir.X, 0f, trailDir.Z);
+            if (horizontalDir.LengthSquared() < 0.01f)
+                horizontalDir = Vector3.Forward;
+            horizontalDir = horizontalDir.Normalized();
+            Vector3 sideDir = horizontalDir.Cross(Vector3.Up).Normalized();
+            _followOffset = (sideDir * 8f) + (Vector3.Up * 6f) - (horizontalDir * 3f);
+        }
+        else
+        {
+            _followOffset = (-trailDir * 5f) + (Vector3.Up * 2.5f);
+        }
+
         _targetPosition = pos + _followOffset;
         _targetLookAt = pos + trailDir * FollowLookAhead;
 
@@ -809,7 +955,11 @@ public partial class CombatCamera : Camera3D
         {
             // Restore time scale and transition out
             Engine.TimeScale = _preImpactTimeScale > 0.01f ? _preImpactTimeScale : 1f;
-            FreeLook();
+            // Set to Inactive to prevent re-firing on subsequent frames
+            CurrentMode = Mode.Inactive;
+            // Signal that the cinematic moment is done so GameManager can switch
+            // back to FreeFlyCamera for WASD movement.
+            CinematicFinished?.Invoke();
         }
     }
 
@@ -829,7 +979,11 @@ public partial class CombatCamera : Camera3D
         if (_killCamTimer >= KillCamDuration)
         {
             Engine.TimeScale = _preKillTimeScale > 0.01f ? _preKillTimeScale : 1f;
-            FreeLook();
+            // Set to Inactive to prevent re-firing on subsequent frames
+            CurrentMode = Mode.Inactive;
+            // Signal that the cinematic moment is done so GameManager can switch
+            // back to FreeFlyCamera for WASD movement.
+            CinematicFinished?.Invoke();
         }
     }
 
@@ -889,7 +1043,7 @@ public partial class CombatCamera : Camera3D
         Vector3 desiredPos = _targetingPivot + offset;
 
         // Enforce minimum height: don't go below ground level
-        desiredPos.Y = Mathf.Max(desiredPos.Y, 2.0f);
+        desiredPos.Y = Mathf.Max(desiredPos.Y, MinCameraHeight);
 
         // Enforce arena bounds (typical arena is roughly -30..30 on XZ)
         float arenaHalf = 35f;
@@ -898,6 +1052,23 @@ public partial class CombatCamera : Camera3D
 
         _targetPosition = desiredPos;
         _targetLookAt = _targetingPivot;
+    }
+
+    private void ProcessRailgunBeam(float dt)
+    {
+        _railBeamTimer += dt;
+
+        // During the hold phase, keep looking at the beam midpoint
+        Vector3 beamMidpoint = (_railBeamStart + _railBeamEnd) * 0.5f;
+        _targetLookAt = beamMidpoint;
+
+        if (_railBeamTimer >= _railBeamHoldTime)
+        {
+            // Restore time scale from the beam slow-mo, then transition to Impact
+            // mode at the beam endpoint. ImpactCam will apply its own slow-mo.
+            Engine.TimeScale = _preRailBeamTimeScale > 0.01f ? _preRailBeamTimeScale : 1f;
+            ImpactCam(_railBeamEnd, 2f);
+        }
     }
 
     private void ProcessTopDown(float dt)
@@ -923,9 +1094,53 @@ public partial class CombatCamera : Camera3D
     /// </summary>
     private void ApplyPreset(float yaw, float pitch, float distance, Vector3? pivot = null)
     {
+        bool wasInactive = CurrentMode == Mode.Inactive || !_isActive;
+
         if (CurrentMode == Mode.WeaponPOV || CurrentMode == Mode.Targeting)
         {
             ReleaseMouse();
+        }
+
+        // Set orbit parameters and target FOV BEFORE activation so the snap
+        // position is computed before the camera becomes Current (prevents a
+        // single frame at the old position).
+        _freeLookYaw = yaw;
+        _freeLookPitch = pitch;
+        FreeLookDistance = distance;
+        _targetFov = DefaultFov;
+        if (pivot.HasValue)
+        {
+            _freeLookPivot = pivot.Value;
+        }
+
+        // When transitioning from Inactive (e.g. build-to-combat switch), snap the
+        // camera directly to the computed orbit position so the smoothing lerp doesn't
+        // sweep from (0,0,0) through the ground on its way to the target.
+        // We do this BEFORE Activate() so GlobalPosition is correct when Current is set.
+        if (wasInactive)
+        {
+            Vector3 offset = new Vector3(
+                Mathf.Sin(_freeLookYaw) * Mathf.Cos(_freeLookPitch),
+                -Mathf.Sin(_freeLookPitch),
+                Mathf.Cos(_freeLookYaw) * Mathf.Cos(_freeLookPitch)
+            ).Normalized() * FreeLookDistance;
+
+            Vector3 snapPos = _freeLookPivot + offset;
+            snapPos.Y = Mathf.Max(snapPos.Y, MinCameraHeight);
+            GlobalPosition = snapPos;
+            _targetPosition = snapPos;
+            _targetLookAt = _freeLookPivot;
+            _currentLookAt = _freeLookPivot;
+
+            if (GlobalPosition.DistanceSquaredTo(_currentLookAt) > 0.01f)
+            {
+                Vector3 lookDir = (_currentLookAt - GlobalPosition).Normalized();
+                float dotUp = Mathf.Abs(lookDir.Dot(Vector3.Up));
+                Vector3 upVec = dotUp > 0.99f ? Vector3.Forward : Vector3.Up;
+                LookAt(_currentLookAt, upVec);
+            }
+
+            Fov = _targetFov;
         }
 
         if (!_isActive)
@@ -936,15 +1151,6 @@ public partial class CombatCamera : Camera3D
         CurrentMode = Mode.FreeLook;
         _povWeapon = null;
         _povAiming = null;
-        _targetFov = DefaultFov;
-
-        _freeLookYaw = yaw;
-        _freeLookPitch = pitch;
-        FreeLookDistance = distance;
-        if (pivot.HasValue)
-        {
-            _freeLookPivot = pivot.Value;
-        }
 
         Input.MouseMode = Input.MouseModeEnum.Visible;
     }

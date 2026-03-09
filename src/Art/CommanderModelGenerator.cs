@@ -228,11 +228,13 @@ public static class CommanderModelGenerator
             }
         }
 
-        // --- Eyes: row 8, front face (z=1) ---
+        // --- Eyes: row 8, front face (z=1) with pupil behind (z=2) ---
         // Left eye
         v[2, 8, 1] = eyeWhite;
+        v[2, 8, 2] = eyePupil;
         // Right eye
-        v[3, 8, 1] = eyePupil;
+        v[3, 8, 1] = eyeWhite;
+        v[3, 8, 2] = eyePupil;
 
         // Eyebrows (row 9) - darker skin
         v[2, 9, 1] = skinShadow;

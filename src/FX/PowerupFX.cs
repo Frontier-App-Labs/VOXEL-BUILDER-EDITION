@@ -38,39 +38,40 @@ public static class PowerupFX
         float halfZ = zoneSize.Z * 0.5f;
         float height = zoneSize.Y * 0.6f;
 
-        // Dense smoke cloud particles — opaque enough to visually cover the base
+        // Dense smoke cloud particles — thick, slow-moving cloud that obscures the base
         GpuParticles3D smoke = new GpuParticles3D();
         smoke.Name = "SmokeCloud";
-        smoke.Amount = 80;
-        smoke.Lifetime = 4.0f;
+        smoke.Amount = 200;
+        smoke.Lifetime = 10.0f;
         smoke.Explosiveness = 0.0f;
         smoke.OneShot = false;
         smoke.FixedFps = 30;
         smoke.DrawOrder = GpuParticles3D.DrawOrderEnum.ViewDepth;
 
         ParticleProcessMaterial smokeMat = new ParticleProcessMaterial();
-        smokeMat.Direction = new Vector3(0, 0.2f, 0);
+        smokeMat.Direction = new Vector3(0, 0.1f, 0);
         smokeMat.Spread = 180f;
-        smokeMat.InitialVelocityMin = 0.05f;
-        smokeMat.InitialVelocityMax = 0.25f;
-        smokeMat.Gravity = new Vector3(0, 0.05f, 0); // very gentle upward drift
-        smokeMat.ScaleMin = 4.0f;
-        smokeMat.ScaleMax = 8.0f;
+        smokeMat.InitialVelocityMin = 0.01f;
+        smokeMat.InitialVelocityMax = 0.06f;
+        smokeMat.Gravity = new Vector3(0, 0.02f, 0); // barely perceptible upward drift
+        smokeMat.ScaleMin = 6.0f;
+        smokeMat.ScaleMax = 14.0f;
         smokeMat.EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Box;
-        smokeMat.EmissionBoxExtents = new Vector3(halfX, height * 0.4f, halfZ);
-        smokeMat.DampingMin = 3f;
-        smokeMat.DampingMax = 5f;
+        smokeMat.EmissionBoxExtents = new Vector3(halfX, height * 0.5f, halfZ);
+        smokeMat.DampingMin = 8f;
+        smokeMat.DampingMax = 12f;
 
-        // Color ramp: thick grey smoke that fades at the edges
+        // Color ramp: thick, opaque grey smoke that lingers and fades slowly at edges
         Gradient colorGrad = new Gradient();
-        colorGrad.SetColor(0, new Color(0.65f, 0.65f, 0.65f, 0.0f));
-        colorGrad.SetColor(1, new Color(0.55f, 0.55f, 0.55f, 0.0f));
+        colorGrad.SetColor(0, new Color(0.6f, 0.6f, 0.6f, 0.0f));
+        colorGrad.SetColor(1, new Color(0.5f, 0.5f, 0.5f, 0.0f));
         colorGrad.SetOffset(0, 0f);
         colorGrad.SetOffset(1, 1f);
-        colorGrad.AddPoint(0.1f, new Color(0.6f, 0.6f, 0.6f, 0.6f));
-        colorGrad.AddPoint(0.4f, new Color(0.6f, 0.6f, 0.6f, 0.7f));
-        colorGrad.AddPoint(0.7f, new Color(0.55f, 0.55f, 0.55f, 0.55f));
-        colorGrad.AddPoint(0.9f, new Color(0.5f, 0.5f, 0.5f, 0.2f));
+        colorGrad.AddPoint(0.05f, new Color(0.6f, 0.6f, 0.6f, 0.75f));
+        colorGrad.AddPoint(0.2f, new Color(0.58f, 0.58f, 0.58f, 0.85f));
+        colorGrad.AddPoint(0.5f, new Color(0.55f, 0.55f, 0.55f, 0.85f));
+        colorGrad.AddPoint(0.8f, new Color(0.52f, 0.52f, 0.52f, 0.7f));
+        colorGrad.AddPoint(0.95f, new Color(0.5f, 0.5f, 0.5f, 0.3f));
         GradientTexture1D colorTex = new GradientTexture1D();
         colorTex.Gradient = colorGrad;
         smokeMat.ColorRamp = colorTex;
@@ -78,14 +79,14 @@ public static class PowerupFX
         smoke.ProcessMaterial = smokeMat;
 
         SphereMesh smokeSphere = new SphereMesh();
-        smokeSphere.Radius = 1.5f;
-        smokeSphere.Height = 3f;
+        smokeSphere.Radius = 2.5f;
+        smokeSphere.Height = 5f;
         smokeSphere.RadialSegments = 16;
         smokeSphere.Rings = 8;
 
         StandardMaterial3D smokeVisual = new StandardMaterial3D();
         smokeVisual.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-        smokeVisual.AlbedoColor = new Color(0.7f, 0.7f, 0.7f, 0.7f);
+        smokeVisual.AlbedoColor = new Color(0.65f, 0.65f, 0.65f, 0.8f);
         smokeVisual.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
         smokeVisual.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
         smokeSphere.Material = smokeVisual;

@@ -117,6 +117,39 @@ public static class VoxelCharacterBuilder
         knee.AddChild(shinMesh);
     }
 
+    /// <summary>
+    /// Replaces the StandardMaterial3D on every MeshInstance3D descendant with
+    /// the commander_toon ShaderMaterial, setting the team_color uniform.
+    /// Call after Build() to give troops the same toon look as the Commander.
+    /// </summary>
+    public static void ApplyToonMaterial(Node3D root, Color teamColor)
+    {
+        ShaderMaterial? toonMat = VoxelModelBuilder.CreateToonMaterial();
+        if (toonMat == null)
+        {
+            return; // shader not found — keep the StandardMaterial3D fallback
+        }
+
+        toonMat.SetShaderParameter("team_color", new Color(teamColor.R, teamColor.G, teamColor.B, 1f));
+
+        ApplyToonMaterialRecursive(root, toonMat);
+    }
+
+    private static void ApplyToonMaterialRecursive(Node node, ShaderMaterial toonMat)
+    {
+        if (node is MeshInstance3D meshInst)
+        {
+            // Each MeshInstance3D gets its own copy so uniforms can vary per-instance
+            // if needed later (e.g., per-part panic_level).
+            meshInst.MaterialOverride = (ShaderMaterial)toonMat.Duplicate();
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            ApplyToonMaterialRecursive(child, toonMat);
+        }
+    }
+
     private static MeshInstance3D BuildPart(BodyPartDefinition part, float voxelSize, float jitter)
     {
         VoxelModelBuilder builder = new VoxelModelBuilder();
@@ -129,10 +162,12 @@ public static class VoxelCharacterBuilder
         meshInst.Name = part.Name;
         meshInst.Mesh = mesh;
 
-        // Back-face culling enabled — winding order is correct (clockwise front faces)
+        // Use MaterialOverride (not SetSurfaceOverrideMaterial) for reliable
+        // material application. SetSurfaceOverrideMaterial(0, mat) silently
+        // fails if the mesh has no surfaces (empty body parts), and in Godot 4
+        // MaterialOverride takes precedence over all surface materials anyway.
         StandardMaterial3D mat = VoxelModelBuilder.CreateVoxelMaterial();
-        mat.CullMode = BaseMaterial3D.CullModeEnum.Back;
-        meshInst.SetSurfaceOverrideMaterial(0, mat);
+        meshInst.MaterialOverride = mat;
 
         // Offset the mesh so the pivot point is at the joint
         meshInst.Position = -part.PivotVoxelCoords * voxelSize;

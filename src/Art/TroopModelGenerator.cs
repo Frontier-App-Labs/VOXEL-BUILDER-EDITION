@@ -516,10 +516,7 @@ public static class TroopModelGenerator
         // Face
         head[1, 0, 0] = Skin; head[1, 1, 0] = Skin;
         head[0, 1, 0] = SkinShadow; head[2, 1, 0] = SkinShadow;
-        // Goggles (row 2)
-        head[0, 2, 0] = goggleFrame; head[1, 2, 0] = goggleFrame; head[2, 2, 0] = goggleFrame;
-        head[0, 1, 0] = goggleLens; head[2, 1, 0] = goggleLens;
-        // Cap
+        // Cap (painted first so goggles can overwrite front face)
         for (int x = 0; x < 3; x++)
             for (int z = 0; z < 3; z++)
                 head[x, 2, z] = uniformDark;
@@ -527,7 +524,9 @@ public static class TroopModelGenerator
             for (int y = 0; y < 3; y++)
                 for (int z = 1; z < 3; z++)
                     head[x, y, z] ??= uniformDark;
-        // Goggle lenses override
+        // Goggle frames (row 2, front face) - painted after cap
+        head[0, 2, 0] = goggleFrame; head[1, 2, 0] = goggleFrame; head[2, 2, 0] = goggleFrame;
+        // Goggle lenses (row 1, front face)
         head[0, 1, 0] = goggleLens; head[2, 1, 0] = goggleLens;
 
         // ── TORSO (3x3x2) slim ──

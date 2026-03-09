@@ -399,47 +399,46 @@ public partial class GameOverlayUI : Control
     {
         HighlightCameraButton(index);
 
+        if (_freeFlyCamera == null)
+        {
+            return;
+        }
+
+        // During combat, ensure FreeFlyCamera is the active camera when applying presets.
+        // Deactivate CombatCamera if it was active (e.g. during targeting).
         if (_currentPhase == GamePhase.Combat && _combatCamera != null)
         {
-            // Apply presets to CombatCamera during combat
-            switch (index)
-            {
-                case 0: _combatCamera.PresetTopDown(); break;
-                case 1: _combatCamera.PresetFront(); break;
-                case 2: _combatCamera.PresetSide(); break;
-                case 3: _combatCamera.PresetLowAngle(); break;
-                case 4: _combatCamera.PresetFreeLook(); break;
-            }
+            _combatCamera.Deactivate();
+            _freeFlyCamera.ResetToFullArenaBounds();
+            _freeFlyCamera.Activate();
         }
-        else if (_currentPhase == GamePhase.Building && _freeFlyCamera != null)
+
+        // Apply presets to FreeFlyCamera using TransitionToLookTarget
+        Vector3 arenaCenter = new Vector3(0f, 6f, 0f);
+        switch (index)
         {
-            // Apply presets to FreeFlyCamera during build phase using TransitionToLookTarget
-            Vector3 buildCenter = new Vector3(0f, 6f, 0f);
-            switch (index)
-            {
-                case 0: // Top Down
-                    _freeFlyCamera.TransitionToLookTarget(
-                        new Vector3(buildCenter.X, 40f, buildCenter.Z + 0.1f),
-                        buildCenter);
-                    break;
-                case 1: // Front
-                    _freeFlyCamera.TransitionToLookTarget(
-                        buildCenter + new Vector3(0f, 4f, 28f),
-                        buildCenter);
-                    break;
-                case 2: // Side
-                    _freeFlyCamera.TransitionToLookTarget(
-                        buildCenter + new Vector3(28f, 4f, 0f),
-                        buildCenter);
-                    break;
-                case 3: // Low Angle
-                    _freeFlyCamera.TransitionToLookTarget(
-                        new Vector3(buildCenter.X + 5f, 1.5f, buildCenter.Z + 15f),
-                        buildCenter);
-                    break;
-                case 4: // Free Look (no transition, just release)
-                    break;
-            }
+            case 0: // Top Down
+                _freeFlyCamera.TransitionToLookTarget(
+                    new Vector3(arenaCenter.X, 40f, arenaCenter.Z + 0.1f),
+                    arenaCenter);
+                break;
+            case 1: // Front
+                _freeFlyCamera.TransitionToLookTarget(
+                    arenaCenter + new Vector3(0f, 4f, 28f),
+                    arenaCenter);
+                break;
+            case 2: // Side
+                _freeFlyCamera.TransitionToLookTarget(
+                    arenaCenter + new Vector3(28f, 4f, 0f),
+                    arenaCenter);
+                break;
+            case 3: // Low Angle
+                _freeFlyCamera.TransitionToLookTarget(
+                    new Vector3(arenaCenter.X + 5f, 1.5f, arenaCenter.Z + 15f),
+                    arenaCenter);
+                break;
+            case 4: // Free Look (no transition, just release)
+                break;
         }
     }
 

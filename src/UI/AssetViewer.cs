@@ -382,7 +382,7 @@ public partial class AssetViewer : Control
             // Build a simple colored cube mesh
             var mesh = CreateColoredCubeMesh(color);
 
-            var tile = CreateTile(name, info, mesh, null);
+            var tile = CreateTile(name, info, mesh, VoxelModelBuilder.CreateVoxelMaterial());
             _tiles.Add(tile);
         }
     }
@@ -507,7 +507,7 @@ public partial class AssetViewer : Control
         // Position camera based on character size
         float charHeight = def.VoxelSize * 14f; // approximate
         camera.Position = new Vector3(0, charHeight * 0.5f, charHeight * 3.5f);
-        camera.LookAt(new Vector3(0, charHeight * 0.4f, 0), Vector3.Up);
+        SafeLookAt(camera, new Vector3(0, charHeight * 0.4f, 0));
 
         // Name label
         var nameLabel = new Label();
@@ -785,7 +785,7 @@ public partial class AssetViewer : Control
         // Camera
         var camera = new Camera3D();
         camera.Position = new Vector3(0, 0.5f, 2.0f);
-        camera.LookAt(new Vector3(0, 0.3f, 0), Vector3.Up);
+        SafeLookAt(camera, new Vector3(0, 0.3f, 0));
         camera.Fov = 35f;
         camera.Current = true;
         world.AddChild(camera);
@@ -793,7 +793,7 @@ public partial class AssetViewer : Control
         // Lighting
         var dirLight = new DirectionalLight3D();
         dirLight.Position = new Vector3(2, 3, 2);
-        dirLight.LookAt(Vector3.Zero, Vector3.Up);
+        SafeLookAt(dirLight, Vector3.Zero);
         dirLight.LightEnergy = 1.2f;
         dirLight.ShadowEnabled = false;
         world.AddChild(dirLight);
@@ -801,7 +801,7 @@ public partial class AssetViewer : Control
         // Ambient fill light from below-left
         var fillLight = new DirectionalLight3D();
         fillLight.Position = new Vector3(-2, -1, 1);
-        fillLight.LookAt(Vector3.Zero, Vector3.Up);
+        SafeLookAt(fillLight, Vector3.Zero);
         fillLight.LightEnergy = 0.4f;
         fillLight.LightColor = new Color(0.6f, 0.7f, 1.0f);
         fillLight.ShadowEnabled = false;
@@ -830,7 +830,7 @@ public partial class AssetViewer : Control
         float cameraDistance = Mathf.Max(1.2f, maxDim * 2.5f);
         float cameraHeight = center.Y > 0 ? 0.5f : aabb.Size.Y * 0.5f;
         camera.Position = new Vector3(0, cameraHeight, cameraDistance);
-        camera.LookAt(new Vector3(0, cameraHeight * 0.4f, 0), Vector3.Up);
+        SafeLookAt(camera, new Vector3(0, cameraHeight * 0.4f, 0));
 
         // Name label
         var nameLabel = new Label();
@@ -1041,5 +1041,18 @@ public partial class AssetViewer : Control
             // SubViewport cleanup is handled by Godot's tree when QueueFree is called
             // on the parent grid container's children
         }
+    }
+
+    /// <summary>
+    /// Sets a node's rotation to look at a target position without requiring the node
+    /// to be inside the scene tree (unlike Node3D.LookAt which throws an error).
+    /// </summary>
+    private static void SafeLookAt(Node3D node, Vector3 target)
+    {
+        Vector3 dir = (target - node.Position).Normalized();
+        if (dir.LengthSquared() < 0.001f) return;
+        float yaw = Mathf.Atan2(-dir.X, -dir.Z);
+        float pitch = -Mathf.Asin(Mathf.Clamp(dir.Y, -1f, 1f));
+        node.Rotation = new Vector3(pitch, yaw, 0);
     }
 }

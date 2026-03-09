@@ -16,6 +16,12 @@ public partial class CameraShake : Node
     /// <summary>When false, all shakes are suppressed (e.g. during Menu phase).</summary>
     public bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// Global intensity multiplier applied to all shakes (0 = off, 0.5 = reduced, 1 = full).
+    /// Controlled by the Gameplay settings "Camera Shake" option.
+    /// </summary>
+    public float IntensityMultiplier { get; set; } = 1.0f;
+
     [Export]
     public Camera3D? TargetCamera { get; set; }
 
@@ -119,6 +125,9 @@ public partial class CameraShake : Node
             ResetOffsetOn(cam);
             return;
         }
+
+        // Apply global intensity multiplier from settings
+        combinedIntensity *= IntensityMultiplier;
 
         // Cap combined intensity to prevent wild shaking with many simultaneous explosions
         combinedIntensity = Mathf.Min(combinedIntensity, 2f);

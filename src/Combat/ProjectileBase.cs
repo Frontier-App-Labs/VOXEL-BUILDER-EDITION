@@ -71,6 +71,12 @@ public partial class ProjectileBase : Node3D
         {
             LookAt(GlobalPosition + _velocity.Normalized(), Vector3.Up);
         }
+
+        // Align the visual mesh (built along +Y) so it faces forward (-Z)
+        if (_visual != null)
+        {
+            _visual.Rotation = new Vector3(-Mathf.Pi * 0.5f, 0, 0);
+        }
     }
 
     /// <summary>
@@ -159,11 +165,21 @@ public partial class ProjectileBase : Node3D
             LookAt(GlobalPosition + forward, up);
         }
 
-        // Spin around forward axis
+        // Spin around forward axis.
+        // The visual mesh is built along the +Y axis (nose at top), but
+        // LookAt points the node's -Z toward the velocity. We compose
+        // two rotations via quaternions:
+        //   1. Spin around the model's +Y (long axis) by _spinAngle
+        //   2. Tilt -90° around X to align model +Y with node -Z (forward)
+        // Quaternion multiplication applies spin first (model space), then
+        // tilt, so the projectile spins around its flight axis correctly
+        // without tumbling sideways.
         _spinAngle += _spinSpeed * dt;
         if (_visual != null)
         {
-            _visual.Rotation = new Vector3(0, 0, _spinAngle);
+            Quaternion tilt = new Quaternion(Vector3.Right, -Mathf.Pi * 0.5f);
+            Quaternion spin = new Quaternion(Vector3.Up, _spinAngle);
+            _visual.Quaternion = tilt * spin;
         }
 
         // Check collision with commanders regardless of drill mode
@@ -188,6 +204,32 @@ public partial class ProjectileBase : Node3D
             }
         }
 
+        // Check collision with enemy weapons (direct hits deal full base damage).
+        // Uses the same proximity approach as commanders. Weapons occupy roughly
+        // one build unit (~1m), so a hit radius of 1.0m feels fair.
+        foreach (Node node in GetTree().GetNodesInGroup("Weapons"))
+        {
+            if (node is not WeaponBase weapon || weapon.IsDestroyed)
+            {
+                continue;
+            }
+
+            // Skip friendly weapons so you can't accidentally destroy your own
+            if (weapon.OwnerSlot == _owner)
+            {
+                continue;
+            }
+
+            float distance = weapon.GlobalPosition.DistanceTo(GlobalPosition);
+            if (distance < 1.0f)
+            {
+                // Direct hit: apply full base damage before the explosion
+                weapon.ApplyDamage(_baseDamage);
+                Impact(weapon.GlobalPosition);
+                return;
+            }
+        }
+
         if (_drillMode)
         {
             ProcessDrillCollision(previousPosition, GlobalPosition);
@@ -204,17 +246,65 @@ public partial class ProjectileBase : Node3D
 
     private bool CheckCollisionAlongPath(Vector3 start, Vector3 end, out Vector3 impactPoint)
     {
-        Vector3 delta = end - start;
-        int steps = Mathf.Max(1, Mathf.CeilToInt(delta.Length() / GameConfig.MicrovoxelMeters));
-        for (int index = 1; index <= steps; index++)
+        // Use DDA (Digital Differential Analyzer) voxel traversal so every
+        // voxel cell the path crosses is tested.  The previous interpolation
+        // approach sampled only N evenly-spaced points along the segment and
+        // could skip 1-wide voxels (e.g. tree trunks) on diagonal paths.
+        float scale = GameConfig.MicrovoxelMeters;
+        Vector3 origin = start / scale;
+        Vector3 dest = end / scale;
+        Vector3 direction = dest - origin;
+        float totalDist = direction.Length();
+        if (totalDist < 1e-6f)
         {
-            float t = index / (float)steps;
-            Vector3 samplePoint = start + (delta * t);
-            if (_world!.GetVoxel(MathHelpers.WorldToMicrovoxel(samplePoint)).IsSolid)
+            impactPoint = end;
+            return false;
+        }
+        direction /= totalDist; // normalize
+
+        int x = Mathf.FloorToInt(origin.X);
+        int y = Mathf.FloorToInt(origin.Y);
+        int z = Mathf.FloorToInt(origin.Z);
+
+        int stepX = direction.X >= 0 ? 1 : -1;
+        int stepY = direction.Y >= 0 ? 1 : -1;
+        int stepZ = direction.Z >= 0 ? 1 : -1;
+
+        float tMaxX = direction.X != 0 ? ((direction.X > 0 ? (x + 1) - origin.X : x - origin.X) / direction.X) : float.MaxValue;
+        float tMaxY = direction.Y != 0 ? ((direction.Y > 0 ? (y + 1) - origin.Y : y - origin.Y) / direction.Y) : float.MaxValue;
+        float tMaxZ = direction.Z != 0 ? ((direction.Z > 0 ? (z + 1) - origin.Z : z - origin.Z) / direction.Z) : float.MaxValue;
+
+        float tDeltaX = direction.X != 0 ? Mathf.Abs(1.0f / direction.X) : float.MaxValue;
+        float tDeltaY = direction.Y != 0 ? Mathf.Abs(1.0f / direction.Y) : float.MaxValue;
+        float tDeltaZ = direction.Z != 0 ? Mathf.Abs(1.0f / direction.Z) : float.MaxValue;
+
+        float t = 0f;
+        int maxIterations = (int)(totalDist * 2) + 2;
+
+        for (int i = 0; i < maxIterations; i++)
+        {
+            Vector3I micro = new Vector3I(x, y, z);
+            if (_world!.GetVoxel(micro).IsSolid)
             {
-                impactPoint = samplePoint;
+                // Return the world-space point where the ray entered this voxel
+                impactPoint = start + (end - start) * Mathf.Clamp(t / totalDist, 0f, 1f);
                 return true;
             }
+
+            // Advance to the next voxel boundary
+            if (tMaxX < tMaxY)
+            {
+                if (tMaxX < tMaxZ) { t = tMaxX; x += stepX; tMaxX += tDeltaX; }
+                else { t = tMaxZ; z += stepZ; tMaxZ += tDeltaZ; }
+            }
+            else
+            {
+                if (tMaxY < tMaxZ) { t = tMaxY; y += stepY; tMaxY += tDeltaY; }
+                else { t = tMaxZ; z += stepZ; tMaxZ += tDeltaZ; }
+            }
+
+            if (t > totalDist)
+                break;
         }
 
         impactPoint = end;
@@ -224,18 +314,44 @@ public partial class ProjectileBase : Node3D
     /// <summary>
     /// Drill collision: instead of stopping on first solid hit, destroy voxels
     /// in the path and keep going until penetration is exhausted.
+    /// Uses DDA voxel traversal to visit every cell the path crosses (same fix
+    /// as CheckCollisionAlongPath — prevents skipping thin structures).
     /// </summary>
     private void ProcessDrillCollision(Vector3 start, Vector3 end)
     {
-        Vector3 delta = end - start;
-        int steps = Mathf.Max(1, Mathf.CeilToInt(delta.Length() / GameConfig.MicrovoxelMeters));
+        float scale = GameConfig.MicrovoxelMeters;
+        Vector3 origin = start / scale;
+        Vector3 dest = end / scale;
+        Vector3 direction = dest - origin;
+        float totalDist = direction.Length();
+        if (totalDist < 1e-6f)
+            return;
+        direction /= totalDist;
 
-        for (int index = 1; index <= steps; index++)
+        int x = Mathf.FloorToInt(origin.X);
+        int y = Mathf.FloorToInt(origin.Y);
+        int z = Mathf.FloorToInt(origin.Z);
+
+        int stepX = direction.X >= 0 ? 1 : -1;
+        int stepY = direction.Y >= 0 ? 1 : -1;
+        int stepZ = direction.Z >= 0 ? 1 : -1;
+
+        float tMaxX = direction.X != 0 ? ((direction.X > 0 ? (x + 1) - origin.X : x - origin.X) / direction.X) : float.MaxValue;
+        float tMaxY = direction.Y != 0 ? ((direction.Y > 0 ? (y + 1) - origin.Y : y - origin.Y) / direction.Y) : float.MaxValue;
+        float tMaxZ = direction.Z != 0 ? ((direction.Z > 0 ? (z + 1) - origin.Z : z - origin.Z) / direction.Z) : float.MaxValue;
+
+        float tDeltaX = direction.X != 0 ? Mathf.Abs(1.0f / direction.X) : float.MaxValue;
+        float tDeltaY = direction.Y != 0 ? Mathf.Abs(1.0f / direction.Y) : float.MaxValue;
+        float tDeltaZ = direction.Z != 0 ? Mathf.Abs(1.0f / direction.Z) : float.MaxValue;
+
+        float t = 0f;
+        int maxIterations = (int)(totalDist * 2) + 2;
+
+        for (int i = 0; i < maxIterations; i++)
         {
-            float t = index / (float)steps;
-            Vector3 samplePoint = start + (delta * t);
-            Vector3I micro = MathHelpers.WorldToMicrovoxel(samplePoint);
+            Vector3I micro = new Vector3I(x, y, z);
             VoxelValue voxel = _world!.GetVoxel(micro);
+            Vector3 samplePoint = start + (end - start) * Mathf.Clamp(t / totalDist, 0f, 1f);
 
             if (voxel.IsSolid)
             {
@@ -253,6 +369,10 @@ public partial class ProjectileBase : Node3D
                     _drillInsideSolid = true;
                     _drillHasBored = true;
                 }
+
+                // Spawn debris flying outward from the bored voxel
+                Color debrisColor = VoxelMaterials.GetPreviewColor(voxel.Material);
+                DebrisFX.SpawnDebris(GetTree().Root, samplePoint, debrisColor, samplePoint - _velocity.Normalized() * 0.5f, 2, voxel.Material);
 
                 // Destroy the voxel
                 _world.SetVoxel(micro, VoxelValue.Air, _owner);
@@ -281,6 +401,21 @@ public partial class ProjectileBase : Node3D
                     }
                 }
             }
+
+            // Advance to the next voxel boundary
+            if (tMaxX < tMaxY)
+            {
+                if (tMaxX < tMaxZ) { t = tMaxX; x += stepX; tMaxX += tDeltaX; }
+                else { t = tMaxZ; z += stepZ; tMaxZ += tDeltaZ; }
+            }
+            else
+            {
+                if (tMaxY < tMaxZ) { t = tMaxY; y += stepY; tMaxY += tDeltaY; }
+                else { t = tMaxZ; z += stepZ; tMaxZ += tDeltaZ; }
+            }
+
+            if (t > totalDist)
+                break;
         }
     }
 

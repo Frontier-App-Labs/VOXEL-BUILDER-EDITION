@@ -5,7 +5,7 @@ using VoxelSiege.Core;
 
 namespace VoxelSiege.Army;
 
-public enum TroopAIState { Idle, Marching, Breaching, Attacking, Retreating, Dead }
+public enum TroopAIState { Idle, ExitingBase, Marching, Breaching, Attacking, Returning, EnteringBase, Dead }
 
 public partial class TroopEntity : Node3D
 {
@@ -14,9 +14,18 @@ public partial class TroopEntity : Node3D
     public int CurrentHP { get; private set; }
     public TroopAIState AIState { get; private set; } = TroopAIState.Idle;
     public Vector3I CurrentMicrovoxel { get; set; }
+    public Vector3I HomeMicrovoxel { get; private set; }
     public PlayerSlot TargetEnemy { get; set; }
     public List<Vector3I>? CurrentPath { get; set; }
     public int PathIndex { get; set; }
+    /// <summary>Whether the troop has completed its attack and should return home.</summary>
+    public bool HasAttacked { get; set; }
+
+    /// <summary>Total damage this troop has dealt so far. Dies when it reaches MaxDamageDealt.</summary>
+    public int DamageDealt { get; private set; }
+
+    /// <summary>Remaining ticks before this troop dies automatically.</summary>
+    public int RemainingLifespan { get; set; } = GameConfig.TroopLifespanTicks;
 
     private Node3D? _modelRoot;
     private VoxelAnimator? _animator;
@@ -32,6 +41,7 @@ public partial class TroopEntity : Node3D
         Type = type;
         CurrentHP = TroopDefinitions.Get(type).MaxHP;
         CurrentMicrovoxel = startMicrovoxel;
+        HomeMicrovoxel = startMicrovoxel;
 
         // Build character model using existing generators
         CharacterDefinition charDef = type switch
@@ -43,6 +53,7 @@ public partial class TroopEntity : Node3D
         };
 
         _modelRoot = VoxelCharacterBuilder.Build(charDef);
+        VoxelCharacterBuilder.ApplyToonMaterial(_modelRoot, teamColor);
         AddChild(_modelRoot);
 
         _animator = new VoxelAnimator();
@@ -96,16 +107,47 @@ public partial class TroopEntity : Node3D
         return false;
     }
 
+    /// <summary>
+    /// Records damage dealt by this troop. If total damage dealt reaches MaxDamageDealt, the troop dies.
+    /// </summary>
+    public void RecordDamageDealt(int amount)
+    {
+        DamageDealt += amount;
+        int maxDamage = TroopDefinitions.Get(Type).MaxDamageDealt;
+        if (maxDamage > 0 && DamageDealt >= maxDamage)
+        {
+            // Troop has exhausted its damage potential — kill it
+            ApplyDamage(CurrentHP, null);
+        }
+    }
+
+    /// <summary>
+    /// Decrements lifespan by one tick. Returns true if the troop died from expiration.
+    /// </summary>
+    public bool TickLifespan()
+    {
+        if (CurrentHP <= 0 || AIState == TroopAIState.Dead) return false;
+        RemainingLifespan--;
+        if (RemainingLifespan <= 0)
+        {
+            ApplyDamage(CurrentHP, null);
+            return true;
+        }
+        return false;
+    }
+
     public void SetAIState(TroopAIState state)
     {
         AIState = state;
         var animState = state switch
         {
             TroopAIState.Idle => VoxelAnimator.AnimState.Idle,
+            TroopAIState.ExitingBase => VoxelAnimator.AnimState.Walk,
             TroopAIState.Marching => VoxelAnimator.AnimState.Walk,
             TroopAIState.Breaching => VoxelAnimator.AnimState.Attack,
             TroopAIState.Attacking => VoxelAnimator.AnimState.Attack,
-            TroopAIState.Retreating => VoxelAnimator.AnimState.Panic,
+            TroopAIState.Returning => VoxelAnimator.AnimState.Walk,
+            TroopAIState.EnteringBase => VoxelAnimator.AnimState.Walk,
             TroopAIState.Dead => VoxelAnimator.AnimState.Flinch,
             _ => VoxelAnimator.AnimState.Idle,
         };

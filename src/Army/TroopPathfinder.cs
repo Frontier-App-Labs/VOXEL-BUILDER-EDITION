@@ -15,6 +15,11 @@ public class TroopPathfinder
         new(-1, 0, 0),
         new( 0, 0, 1),
         new( 0, 0,-1),
+        // Diagonals for smoother terrain navigation
+        new( 1, 0, 1),
+        new( 1, 0,-1),
+        new(-1, 0, 1),
+        new(-1, 0,-1),
     };
 
     public List<Vector3I>? FindPath(
@@ -22,13 +27,17 @@ public class TroopPathfinder
         Vector3I start,
         Vector3I goal,
         Func<Vector3I, bool>? isDoorForOwner = null,
-        int maxNodes = 5000)
+        int maxNodes = 15000)
     {
         if (start == goal)
             return new List<Vector3I> { start };
 
-        if (!IsWalkable(world, start, isDoorForOwner) || !IsWalkable(world, goal, isDoorForOwner))
+        if (!IsWalkable(world, start, isDoorForOwner))
             return null;
+
+        // If the exact goal isn't walkable, allow pathfinding to the closest
+        // reachable position (within AttackRange of the goal)
+        bool goalWalkable = IsWalkable(world, goal, isDoorForOwner);
 
         var openSet = new PriorityQueue();
         var cameFrom = new Dictionary<Vector3I, Vector3I>();
@@ -38,6 +47,9 @@ public class TroopPathfinder
         openSet.Enqueue(start, Heuristic(start, goal));
 
         int nodesExplored = 0;
+        // Track the closest node to goal in case we can't reach it exactly
+        Vector3I closestNode = start;
+        int closestDist = Heuristic(start, goal);
 
         while (openSet.Count > 0)
         {
@@ -45,9 +57,18 @@ public class TroopPathfinder
             nodesExplored++;
 
             if (nodesExplored > maxNodes)
+            {
+                // Return path to closest reachable node if we got reasonably close
+                if (closestDist <= 50 && closestNode != start)
+                    return ReconstructPath(cameFrom, closestNode);
                 return null;
+            }
 
             if (current == goal)
+                return ReconstructPath(cameFrom, current);
+
+            // If the exact goal isn't walkable, accept being adjacent to it
+            if (!goalWalkable && Heuristic(current, goal) <= 20)
                 return ReconstructPath(cameFrom, current);
 
             foreach (var (neighbor, moveCost) in GetNeighbors(world, current, isDoorForOwner))
@@ -60,9 +81,21 @@ public class TroopPathfinder
                     gScore[neighbor] = tentativeG;
                     int fScore = tentativeG + Heuristic(neighbor, goal);
                     openSet.Enqueue(neighbor, fScore);
+
+                    // Track closest approach to goal
+                    int h = Heuristic(neighbor, goal);
+                    if (h < closestDist)
+                    {
+                        closestDist = h;
+                        closestNode = neighbor;
+                    }
                 }
             }
         }
+
+        // Exhausted search — return path to closest node if reasonably close
+        if (closestDist <= 50 && closestNode != start)
+            return ReconstructPath(cameFrom, closestNode);
 
         return null;
     }
@@ -75,24 +108,44 @@ public class TroopPathfinder
         foreach (Vector3I offset in HorizontalNeighbors)
         {
             Vector3I flat = new Vector3I(current.X + offset.X, current.Y, current.Z + offset.Z);
+            bool isDiagonal = offset.X != 0 && offset.Z != 0;
+            int baseCost = isDiagonal ? 14 : 10; // 14 ~= 10 * sqrt(2), scaled by 10 for integer math
 
             // 1. Flat move: same Y level
             if (IsWalkable(world, flat, isDoorForOwner))
             {
-                yield return (flat, 1);
+                yield return (flat, baseCost);
                 continue;
             }
 
-            // 2. Step-up: check one voxel higher
-            Vector3I up = new Vector3I(flat.X, flat.Y + 1, flat.Z);
-            if (IsWalkable(world, up, isDoorForOwner))
+            // Skip step-up/step-down for diagonal moves (troops can only step up/down cardinally)
+            if (isDiagonal)
+                continue;
+
+            // 2. Step-up: check up to 2 voxels higher (troops can jump 2 blocks)
+            for (int stepUp = 1; stepUp <= 2; stepUp++)
             {
-                // Also need clearance at current Y+2 to step up (headroom above current pos)
-                Vector3I headroom = new Vector3I(current.X, current.Y + 2, current.Z);
-                if (IsPassable(world, headroom, isDoorForOwner))
+                Vector3I up = new Vector3I(flat.X, flat.Y + stepUp, flat.Z);
+                if (IsWalkable(world, up, isDoorForOwner))
                 {
-                    yield return (up, 2);
-                    continue;
+                    // Need clearance above current position for the full step-up height,
+                    // plus 2 blocks of headroom at the destination
+                    bool hasClearance = true;
+                    for (int c = 2; c <= stepUp + 1; c++)
+                    {
+                        Vector3I headroom = new Vector3I(current.X, current.Y + c, current.Z);
+                        if (!IsPassable(world, headroom, isDoorForOwner))
+                        {
+                            hasClearance = false;
+                            break;
+                        }
+                    }
+
+                    if (hasClearance)
+                    {
+                        yield return (up, 10 + stepUp * 10); // step-up costs scale with height
+                        break; // found a valid step-up, don't check higher
+                    }
                 }
             }
 
@@ -116,7 +169,7 @@ public class TroopPathfinder
 
                     if (clearPath)
                     {
-                        yield return (down, 1 + drop);
+                        yield return (down, 10 + drop * 10);
                     }
 
                     break; // Found ground, stop scanning
@@ -143,9 +196,19 @@ public class TroopPathfinder
             && IsPassable(world, new Vector3I(pos.X, pos.Y + 1, pos.Z), isDoorForOwner);
     }
 
+    /// <summary>
+    /// Octile distance heuristic scaled to match movement costs (cardinal=10, diagonal=14).
+    /// Admissible and consistent for the grid with diagonal movement.
+    /// </summary>
     private static int Heuristic(Vector3I a, Vector3I b)
     {
-        return Math.Abs(a.X - b.X) + Math.Abs(a.Y - b.Y) + Math.Abs(a.Z - b.Z);
+        int dx = Math.Abs(a.X - b.X);
+        int dy = Math.Abs(a.Y - b.Y);
+        int dz = Math.Abs(a.Z - b.Z);
+        // Octile distance on XZ plane + vertical component
+        int minXZ = Math.Min(dx, dz);
+        int maxXZ = Math.Max(dx, dz);
+        return 14 * minXZ + 10 * (maxXZ - minXZ) + 10 * dy;
     }
 
     private static List<Vector3I> ReconstructPath(Dictionary<Vector3I, Vector3I> cameFrom, Vector3I current)

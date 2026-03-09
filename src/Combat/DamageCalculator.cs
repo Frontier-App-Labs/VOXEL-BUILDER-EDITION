@@ -7,13 +7,21 @@ namespace VoxelSiege.Combat;
 /// Pure-function damage calculations for explosions, railgun penetration,
 /// and commander proximity damage. Accounts for material resistance,
 /// ricochet chance, and sand blast absorption.
+///
+/// Design goal: explosions should blow satisfying craters in structures.
+/// Soft materials (Dirt, Wood, Glass, Sand, Ice, Leaves, Bark) should be
+/// destroyed in one hit at close range. Medium materials (Stone, Brick)
+/// should be destroyed at the blast center and heavily damaged at the edges.
+/// Hard materials (Concrete, Metal, ReinforcedSteel, ArmorPlate, Obsidian)
+/// should take visible damage but require 2-3 direct hits to destroy,
+/// giving players a reason to build with expensive materials.
 /// </summary>
 public static class DamageCalculator
 {
     /// <summary>
     /// Sand reduces the effective blast radius by this fraction.
     /// </summary>
-    private const float SandBlastReduction = 0.4f;
+    private const float SandBlastReduction = 0.40f;
 
     /// <summary>
     /// Damage reduction per penetration depth level for the railgun (multiplicative).
@@ -22,10 +30,16 @@ public static class DamageCalculator
     private const float RailgunPenetrationFalloff = 0.7f;
 
     /// <summary>
-    /// Calculates explosion damage to a voxel based on linear falloff from
+    /// Calculates explosion damage to a voxel based on smooth falloff from
     /// the blast center and material resistance.
-    /// Sand blocks absorb blast energy (reduce effective radius).
-    /// Materials with RicochetChance > 0 can deflect some damage.
+    /// Damage is compared directly to material MaxHitPoints so that the
+    /// base-damage stat of a weapon represents its destructive *capability*
+    /// rather than a raw subtraction. A base-damage of 100 at the center
+    /// of the blast (distance 0) will one-shot any material with
+    /// MaxHP &lt;= 100 after resistance.
+    ///
+    /// Falloff uses a linear curve from the center of the blast to
+    /// the edges.
     /// </summary>
     public static int CalculateExplosionDamage(int baseDamage, float radius, float distance, VoxelMaterialType material)
     {
@@ -36,7 +50,7 @@ public static class DamageCalculator
 
         float effectiveRadius = radius;
 
-        // Sand absorbs blast energy, reducing the effective radius
+        // Sand absorbs blast energy, reducing the effective radius slightly
         if (material == VoxelMaterialType.Sand)
         {
             effectiveRadius *= (1f - SandBlastReduction);
@@ -46,16 +60,19 @@ public static class DamageCalculator
             }
         }
 
-        float falloff = 1f - Mathf.Clamp(distance / effectiveRadius, 0f, 1f);
+        // Linear falloff: full damage at center, drops off toward edges.
+        float t = Mathf.Clamp(distance / effectiveRadius, 0f, 1f);
+        float falloff = 1f - t;
 
         VoxelMaterialDefinition definition = VoxelMaterials.GetDefinition(material);
 
-        // Material resistance: heavier materials resist more damage
+        // Material resistance: capped at 75% for the heaviest materials.
+        // Weight 2.8 (Obsidian) -> resistance 0.28; Weight 0.5 (Wood) -> 0.05
         float materialResistance = Mathf.Clamp(definition.Weight * 0.1f, 0f, 0.75f);
         float damage = baseDamage * falloff * (1f - materialResistance);
 
-        // Ricochet chance: materials like Metal, ReinforcedSteel, ArmorPlate, Obsidian
-        // can deflect a portion of explosion damage
+        // Ricochet: armored materials deflect a portion of
+        // explosion damage. This is on top of material resistance.
         if (definition.RicochetChance > 0f)
         {
             damage *= (1f - definition.RicochetChance);
@@ -94,11 +111,11 @@ public static class DamageCalculator
         float depthMultiplier = Mathf.Pow(RailgunPenetrationFalloff, penetrationDepth - 1);
         float damage = baseDamage * depthMultiplier;
 
-        // Material resistance
+        // Material resistance: same capped formula as explosions (max 75%)
         float materialResistance = Mathf.Clamp(definition.Weight * 0.1f, 0f, 0.75f);
         damage *= (1f - materialResistance);
 
-        // Ricochet chance can deflect damage from hard materials
+        // Ricochet chance for railgun
         if (definition.RicochetChance > 0f)
         {
             damage *= (1f - definition.RicochetChance);

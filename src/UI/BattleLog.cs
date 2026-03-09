@@ -20,6 +20,7 @@ public partial class BattleLog : Control
     private static readonly Color ColorTurnChange = Colors.White;
     private static readonly Color ColorWeaponFired = new Color("FFD700");
     private static readonly Color ColorCommanderDamaged = new Color("FF8C00");
+    private static readonly Color ColorCommanderCritical = new Color("FF2222");
     private static readonly Color ColorCommanderKilled = new Color("FF4444");
     private static readonly Color ColorPhaseChange = new Color("00CED1");
     private static readonly Color ColorVoxelDestruction = new Color("AAAAAA");
@@ -285,7 +286,14 @@ public partial class BattleLog : Control
     {
         string playerName = GetPlayerDisplayName(payload.Player);
         int maxHp = GameConfig.CommanderHP;
-        AddEntry($"{playerName}'s Commander hit! (HP: {payload.RemainingHealth}/{maxHp})", ColorCommanderDamaged);
+        if (payload.IsCriticalHit)
+        {
+            AddEntry($"CRITICAL HIT! {playerName}'s Commander -{payload.Damage} HP! (HP: {payload.RemainingHealth}/{maxHp})", ColorCommanderCritical);
+        }
+        else
+        {
+            AddEntry($"{playerName}'s Commander hit! (HP: {payload.RemainingHealth}/{maxHp})", ColorCommanderDamaged);
+        }
     }
 
     private void OnCommanderKilled(CommanderKilledEvent payload)

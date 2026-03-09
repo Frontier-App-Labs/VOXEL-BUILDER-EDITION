@@ -5,13 +5,25 @@ using VoxelSiege.Art;
 namespace VoxelSiege.Commander;
 
 /// <summary>
-/// Ragdoll body part descriptor used during setup.
+/// Ragdoll body part descriptor used during setup (legacy flat model).
 /// </summary>
 public struct RagdollPartInfo
 {
     public string Name;
     public MeshInstance3D SourceMesh;
     public CommanderBodyPartRegion Region;
+    public float Mass;
+}
+
+/// <summary>
+/// Ragdoll body part descriptor for skeleton-based models.
+/// Uses the joint's global position for placement instead of region offsets.
+/// </summary>
+public struct RagdollSkeletonPart
+{
+    public string Name;
+    public MeshInstance3D? SourceMesh;
+    public Node3D? Joint;
     public float Mass;
 }
 
@@ -23,7 +35,7 @@ public struct RagdollPartInfo
 /// </summary>
 public partial class CommanderRagdoll : Node3D
 {
-    private const float VoxelSize = 0.1f;
+    private const float VoxelSize = 0.08f;
     private const float SettledVelocityThreshold = 0.15f;
     private const float SettledAngularThreshold = 0.3f;
     private const float MinSettledTime = 1.5f;
@@ -34,11 +46,11 @@ public partial class CommanderRagdoll : Node3D
     private const float ArmMass = 0.8f;
     private const float LegMass = 1.5f;
 
-    // Comedy physics tweaks
-    private const float BounceFactor = 0.4f;
-    private const float FrictionFactor = 0.6f;
-    private const float RandomSpinMax = 12f;
-    private const float DeathImpulseMultiplier = 1.5f;
+    // Physics tweaks
+    private const float BounceFactor = 0.3f;
+    private const float FrictionFactor = 0.7f;
+    private const float RandomSpinMax = 6f;
+    private const float DeathImpulseMultiplier = 1.0f;
 
     private readonly List<RigidBody3D> _bodies = new();
     private float _settledTimer;
@@ -98,45 +110,252 @@ public partial class CommanderRagdoll : Node3D
         CreateHipJoint(bodyMap["LeftLeg"], bodyMap["Torso"], bodyParts, true);
         CreateHipJoint(bodyMap["RightLeg"], bodyMap["Torso"], bodyParts, false);
 
-        // Apply death impulse - the SPECTACULAR part
-        Vector3 mainImpulse = impulseDirection.Normalized() * impulseForce * DeathImpulseMultiplier;
-        // Add upward component so the body launches satisfyingly
-        mainImpulse += Vector3.Up * impulseForce * 0.6f;
+        // Apply death impulse - directional force away from the damage source
+        Vector3 dir = impulseDirection.Normalized();
+
+        // Clamp the upward component so the body doesn't shoot straight up.
+        // Allow a small upward lift but keep the force mostly horizontal/directional.
+        float maxUpComponent = 0.35f;
+        if (dir.Y > maxUpComponent)
+        {
+            dir.Y = maxUpComponent;
+            dir = dir.Normalized();
+        }
+
+        Vector3 mainImpulse = dir * impulseForce * DeathImpulseMultiplier;
+        // Add a modest upward nudge so the body lifts off the ground slightly
+        mainImpulse += Vector3.Up * impulseForce * 0.15f;
 
         foreach (RigidBody3D body in _bodies)
         {
-            // Main directional impulse
-            body.ApplyCentralImpulse(mainImpulse * body.Mass);
+            // Main directional impulse (not scaled by mass - heavier parts
+            // should move less, not more)
+            body.ApplyCentralImpulse(mainImpulse);
 
-            // Random spin for comedy - each part spins differently
+            // Random spin for tumbling - each part spins differently
             Vector3 randomTorque = new Vector3(
                 (GD.Randf() - 0.5f) * RandomSpinMax,
                 (GD.Randf() - 0.5f) * RandomSpinMax,
                 (GD.Randf() - 0.5f) * RandomSpinMax
             );
-            body.ApplyTorqueImpulse(randomTorque * body.Mass);
+            body.ApplyTorqueImpulse(randomTorque);
 
-            // Extra per-part variation so they separate amusingly
+            // Small per-part variation so they separate naturally
             Vector3 scatter = new Vector3(
-                (GD.Randf() - 0.5f) * impulseForce * 0.3f,
-                GD.Randf() * impulseForce * 0.2f,
-                (GD.Randf() - 0.5f) * impulseForce * 0.3f
+                (GD.Randf() - 0.5f) * impulseForce * 0.15f,
+                (GD.Randf() - 0.5f) * impulseForce * 0.08f,
+                (GD.Randf() - 0.5f) * impulseForce * 0.15f
             );
             body.ApplyCentralImpulse(scatter);
         }
 
-        // Head gets extra dramatic launch - it should fly the farthest
+        // Head gets a bit of extra kick for dramatic flair (but not absurd)
         if (bodyMap.TryGetValue("Head", out RigidBody3D? head))
         {
-            head.ApplyCentralImpulse(Vector3.Up * impulseForce * 0.8f + mainImpulse * 0.5f);
+            head.ApplyCentralImpulse(mainImpulse * 0.3f + Vector3.Up * impulseForce * 0.1f);
             head.ApplyTorqueImpulse(new Vector3(
-                (GD.Randf() - 0.5f) * RandomSpinMax * 2f,
-                (GD.Randf() - 0.5f) * RandomSpinMax * 2f,
-                (GD.Randf() - 0.5f) * RandomSpinMax * 2f
+                (GD.Randf() - 0.5f) * RandomSpinMax * 1.5f,
+                (GD.Randf() - 0.5f) * RandomSpinMax * 1.5f,
+                (GD.Randf() - 0.5f) * RandomSpinMax * 1.5f
             ));
         }
 
         Visible = true;
+    }
+
+    /// <summary>
+    /// Activate the ragdoll from skeleton-based body parts.
+    /// Each part's position is derived from the joint's global transform relative to the
+    /// Commander's transform, instead of region center offsets.
+    /// </summary>
+    public void ActivateFromSkeleton(
+        RagdollSkeletonPart[] parts,
+        Transform3D commanderGlobalTransform,
+        Vector3 impulseDirection,
+        float impulseForce)
+    {
+        if (IsActive)
+        {
+            return;
+        }
+
+        IsActive = true;
+        _settledTimer = 0f;
+        GlobalTransform = commanderGlobalTransform;
+
+        // Create RigidBody3D for each part
+        Dictionary<string, RigidBody3D> bodyMap = new();
+        foreach (RagdollSkeletonPart part in parts)
+        {
+            if (part.SourceMesh == null || part.Joint == null)
+            {
+                continue;
+            }
+
+            RigidBody3D body = CreateSkeletonBodyPart(part, commanderGlobalTransform);
+            bodyMap[part.Name] = body;
+            _bodies.Add(body);
+            AddChild(body);
+        }
+
+        // Connect parts with joints (simple distance-based connections)
+        bodyMap.TryGetValue("Torso", out RigidBody3D? torsoBody);
+
+        if (torsoBody != null && bodyMap.TryGetValue("Head", out RigidBody3D? headBody))
+        {
+            CreateSimpleJoint("NeckJoint", headBody, torsoBody,
+                (headBody.Position + torsoBody.Position) * 0.5f,
+                Mathf.DegToRad(30f), Mathf.DegToRad(45f), Mathf.DegToRad(30f));
+        }
+
+        if (torsoBody != null && bodyMap.TryGetValue("LeftArm", out RigidBody3D? leftArmBody))
+        {
+            CreateSimpleJoint("LeftShoulderJoint", leftArmBody, torsoBody,
+                (leftArmBody.Position + torsoBody.Position) * 0.5f,
+                Mathf.DegToRad(90f), Mathf.DegToRad(90f), Mathf.DegToRad(45f));
+        }
+
+        if (torsoBody != null && bodyMap.TryGetValue("RightArm", out RigidBody3D? rightArmBody))
+        {
+            CreateSimpleJoint("RightShoulderJoint", rightArmBody, torsoBody,
+                (rightArmBody.Position + torsoBody.Position) * 0.5f,
+                Mathf.DegToRad(90f), Mathf.DegToRad(90f), Mathf.DegToRad(45f));
+        }
+
+        if (torsoBody != null && bodyMap.TryGetValue("LeftLeg", out RigidBody3D? leftLegBody))
+        {
+            CreateSimpleJoint("LeftHipJoint", leftLegBody, torsoBody,
+                (leftLegBody.Position + torsoBody.Position) * 0.5f,
+                Mathf.DegToRad(60f), Mathf.DegToRad(15f), Mathf.DegToRad(20f));
+        }
+
+        if (torsoBody != null && bodyMap.TryGetValue("RightLeg", out RigidBody3D? rightLegBody))
+        {
+            CreateSimpleJoint("RightHipJoint", rightLegBody, torsoBody,
+                (rightLegBody.Position + torsoBody.Position) * 0.5f,
+                Mathf.DegToRad(60f), Mathf.DegToRad(15f), Mathf.DegToRad(20f));
+        }
+
+        // Apply death impulse
+        ApplyDeathImpulse(impulseDirection, impulseForce, bodyMap);
+
+        Visible = true;
+    }
+
+    /// <summary>
+    /// Create a ragdoll body part from a skeleton joint and its mesh child.
+    /// </summary>
+    private RigidBody3D CreateSkeletonBodyPart(RagdollSkeletonPart part, Transform3D commanderTransform)
+    {
+        RigidBody3D body = new();
+        body.Name = $"Ragdoll_{part.Name}";
+        body.Mass = part.Mass;
+        body.GravityScale = 1.0f;
+        body.ContinuousCd = true;
+        body.ContactMonitor = true;
+        body.MaxContactsReported = 4;
+
+        PhysicsMaterial physicsMat = new();
+        physicsMat.Bounce = BounceFactor;
+        physicsMat.Friction = FrictionFactor;
+        body.PhysicsMaterialOverride = physicsMat;
+
+        body.LinearDamp = 0.3f;
+        body.AngularDamp = 0.5f;
+
+        // Position from the joint's global position relative to the commander
+        Vector3 localPos = commanderTransform.AffineInverse() * part.Joint!.GlobalPosition;
+        body.Position = localPos;
+
+        // Clone the mesh
+        MeshInstance3D meshInstance = new();
+        meshInstance.Name = "Mesh";
+        meshInstance.Mesh = part.SourceMesh!.Mesh;
+        if (part.SourceMesh.MaterialOverride != null)
+        {
+            meshInstance.MaterialOverride = (Material)part.SourceMesh.MaterialOverride.Duplicate();
+        }
+        // The mesh position from the skeleton (pivot offset)
+        meshInstance.Position = part.SourceMesh.Position;
+        body.AddChild(meshInstance);
+
+        // Create collision shape from mesh AABB
+        Aabb aabb = part.SourceMesh.Mesh?.GetAabb() ?? new Aabb(Vector3.Zero, Vector3.One * 0.1f);
+        // Account for the mesh offset
+        Vector3 meshOffset = part.SourceMesh.Position;
+        CollisionShape3D collisionShape = new();
+        collisionShape.Name = "Collision";
+        collisionShape.Shape = new BoxShape3D { Size = aabb.Size };
+        collisionShape.Position = meshOffset + aabb.GetCenter();
+        body.AddChild(collisionShape);
+
+        body.CollisionLayer = 4;
+        body.CollisionMask = 1 | 2;
+
+        return body;
+    }
+
+    /// <summary>
+    /// Create a simple 6DOF joint between two ragdoll bodies at a given position.
+    /// </summary>
+    private void CreateSimpleJoint(string name, RigidBody3D bodyA, RigidBody3D bodyB,
+        Vector3 position, float xRange, float yRange, float zRange)
+    {
+        Generic6DofJoint3D joint = new();
+        joint.Name = name;
+        joint.Position = position;
+        joint.NodeA = bodyB.GetPath();
+        joint.NodeB = bodyA.GetPath();
+        SetLinearLimits(joint, 0f);
+        SetAngularLimits(joint, xRange, yRange, zRange);
+        AddChild(joint);
+    }
+
+    /// <summary>
+    /// Apply the death impulse to all ragdoll bodies.
+    /// </summary>
+    private void ApplyDeathImpulse(Vector3 impulseDirection, float impulseForce, Dictionary<string, RigidBody3D> bodyMap)
+    {
+        Vector3 dir = impulseDirection.Normalized();
+        float maxUpComponent = 0.35f;
+        if (dir.Y > maxUpComponent)
+        {
+            dir.Y = maxUpComponent;
+            dir = dir.Normalized();
+        }
+
+        Vector3 mainImpulse = dir * impulseForce * DeathImpulseMultiplier;
+        mainImpulse += Vector3.Up * impulseForce * 0.15f;
+
+        foreach (RigidBody3D body in _bodies)
+        {
+            body.ApplyCentralImpulse(mainImpulse);
+
+            Vector3 randomTorque = new Vector3(
+                (GD.Randf() - 0.5f) * RandomSpinMax,
+                (GD.Randf() - 0.5f) * RandomSpinMax,
+                (GD.Randf() - 0.5f) * RandomSpinMax
+            );
+            body.ApplyTorqueImpulse(randomTorque);
+
+            Vector3 scatter = new Vector3(
+                (GD.Randf() - 0.5f) * impulseForce * 0.15f,
+                (GD.Randf() - 0.5f) * impulseForce * 0.08f,
+                (GD.Randf() - 0.5f) * impulseForce * 0.15f
+            );
+            body.ApplyCentralImpulse(scatter);
+        }
+
+        // Head gets extra kick for dramatic flair
+        if (bodyMap.TryGetValue("Head", out RigidBody3D? head))
+        {
+            head.ApplyCentralImpulse(mainImpulse * 0.3f + Vector3.Up * impulseForce * 0.1f);
+            head.ApplyTorqueImpulse(new Vector3(
+                (GD.Randf() - 0.5f) * RandomSpinMax * 1.5f,
+                (GD.Randf() - 0.5f) * RandomSpinMax * 1.5f,
+                (GD.Randf() - 0.5f) * RandomSpinMax * 1.5f
+            ));
+        }
     }
 
     /// <summary>
@@ -218,7 +437,7 @@ public partial class CommanderRagdoll : Node3D
         RigidBody3D body = new();
         body.Name = $"Ragdoll_{part.Name}";
         body.Mass = part.Mass;
-        body.GravityScale = 1.2f; // Slightly heavier than normal for satisfying falls
+        body.GravityScale = 1.0f; // Normal gravity for realistic ragdoll falls
         body.ContinuousCd = true; // Prevent tunneling through thin walls
         body.ContactMonitor = true;
         body.MaxContactsReported = 4;

@@ -182,9 +182,12 @@ public partial class ScoreboardUI : Control
         statusLabel.MouseFilter = MouseFilterEnum.Ignore;
         nameRow.AddChild(statusLabel);
 
-        // HP bar — clip contents to prevent fill from overflowing
-        PanelContainer barBg = CreateStyledPanel(new Color(0.15f, 0.15f, 0.15f), 0);
+        // HP bar — use Panel (not PanelContainer) so child anchors work for fill sizing
+        Panel barBg = new Panel();
         barBg.Name = "BarBg";
+        StyleBoxFlat barBgStyle = new StyleBoxFlat();
+        barBgStyle.BgColor = new Color(0.15f, 0.15f, 0.15f);
+        barBg.AddThemeStyleboxOverride("panel", barBgStyle);
         barBg.CustomMinimumSize = new Vector2(0, 6);
         barBg.ClipContents = true;
         barBg.MouseFilter = MouseFilterEnum.Ignore;
@@ -233,6 +236,13 @@ public partial class ScoreboardUI : Control
 
     private void UpdatePlayerEntry(Control entry, PlayerData player)
     {
+        // Update name (may change during build phase when the player enters a name)
+        Label? nameLabel = FindDescendant<Label>(entry, "Name");
+        if (nameLabel != null)
+        {
+            nameLabel.Text = player.DisplayName;
+        }
+
         // Update status
         Label? status = FindDescendant<Label>(entry, "Status");
         if (status != null)
@@ -255,6 +265,10 @@ public partial class ScoreboardUI : Control
         {
             float percent = Mathf.Clamp(player.CommanderHealth / (float)GameConfig.CommanderHP, 0f, 1f);
             barFill.AnchorRight = percent;
+            // Reset offset after anchor change — Godot 4 preserves the absolute
+            // position by adjusting offsets when anchors change, which prevents
+            // the bar from visually shrinking.
+            barFill.OffsetRight = 0;
         }
 
         // Update weapon count

@@ -15,7 +15,7 @@ public partial class Mortar : WeaponBase
     /// <summary>
     /// Extra upward velocity bias to force a high arc trajectory.
     /// </summary>
-    private const float ArcBiasY = 0.6f;
+    private const float ArcBiasY = 0.25f;
 
     public Mortar()
     {
@@ -23,7 +23,7 @@ public partial class Mortar : WeaponBase
         Cost = 600;
         BaseDamage = 25;
         BlastRadiusMicrovoxels = 6f;
-        ProjectileSpeed = 22f;
+        ProjectileSpeed = 30f;
         CooldownTurns = 0;
     }
 

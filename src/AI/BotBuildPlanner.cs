@@ -42,6 +42,12 @@ public sealed class BotBuildPlan
 /// Generates fortress designs for bot players based on difficulty level.
 /// Each difficulty produces structurally distinct, randomized fortresses
 /// that stay within budget and maintain ground connectivity.
+///
+/// Building improvements:
+/// - Thicker walls (2-3 blocks deep) around the commander
+/// - Roof/ceiling over the commander
+/// - Weapons placed on elevated positions for better angles
+/// - No purely decorative builds — every block is structural or protective
 /// </summary>
 public sealed class BotBuildPlanner
 {
@@ -80,7 +86,7 @@ public sealed class BotBuildPlanner
     // ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Simple rectangular box (8x5x8 build units).
+    /// Simple rectangular box (8x5x8 build units) with solid roof.
     /// Random cheap materials. Commander roughly at center.
     /// 1-2 weapons on top.
     /// </summary>
@@ -134,6 +140,45 @@ public sealed class BotBuildPlanner
         Vector3I commanderPos = shellStart + new Vector3I(width / 2, 1, depth / 2);
         plan.CommanderBuildUnit = commanderPos;
 
+        // Extra inner wall around commander (2-block-deep protection)
+        int innerW = Math.Min(5, width - 2);
+        int innerH = Math.Min(height - 1, 4);
+        int innerD = Math.Min(5, depth - 2);
+        if (innerW >= 3 && innerH >= 3 && innerD >= 3)
+        {
+            Vector3I innerStart = commanderPos - new Vector3I(innerW / 2, 0, innerD / 2);
+            Vector3I innerEnd = innerStart + new Vector3I(innerW - 1, innerH - 1, innerD - 1);
+            // Clamp to within the outer shell
+            innerStart = new Vector3I(
+                Math.Max(innerStart.X, shellStart.X + 1),
+                Math.Max(innerStart.Y, shellStart.Y),
+                Math.Max(innerStart.Z, shellStart.Z + 1));
+            innerEnd = new Vector3I(
+                Math.Min(innerEnd.X, shellEnd.X - 1),
+                Math.Min(innerEnd.Y, shellEnd.Y - 1),
+                Math.Min(innerEnd.Z, shellEnd.Z - 1));
+
+            int iw = innerEnd.X - innerStart.X + 1;
+            int ih = innerEnd.Y - innerStart.Y + 1;
+            int id = innerEnd.Z - innerStart.Z + 1;
+            if (iw >= 3 && ih >= 3 && id >= 3)
+            {
+                VoxelMaterialType innerMat = VoxelMaterialType.Stone;
+                int innerCost = EstimateHollowBoxCost(iw, ih, id, innerMat);
+                if (tracker.TrySpend(innerCost))
+                {
+                    plan.Actions.Add(new PlannedBuildAction
+                    {
+                        ToolMode = BuildToolMode.Box,
+                        Material = innerMat,
+                        Start = innerStart,
+                        End = innerEnd,
+                        Hollow = true,
+                    });
+                }
+            }
+        }
+
         // 1-2 weapons on top
         int weaponCount = 1 + rng.Next(2);
         int topY = shellEnd.Y + 1;
@@ -178,7 +223,8 @@ public sealed class BotBuildPlanner
     /// <summary>
     /// L-shaped or cross-shaped base with interior rooms.
     /// Mix of materials. Commander placed in interior room, off-center.
-    /// 2-3 weapons spread across exterior.
+    /// 2-3 block thick walls around the commander. Solid roof overhead.
+    /// 2-3 weapons on elevated positions.
     /// </summary>
     private static BotBuildPlan PlanMediumFortress(BuildZone zone, int budget, Random rng)
     {
@@ -295,20 +341,20 @@ public sealed class BotBuildPlanner
             });
         }
 
-        // Interior reinforced core around commander
-        int coreW = 3;
-        int coreH = 3;
-        int coreD = 3;
-        // Place commander off-center in the main block
+        // ── Commander placed off-center ──
         int cmdOffX = mainW / 2 + (rng.Next(3) - 1); // center +/- 1
         int cmdOffZ = mainD / 2 + (rng.Next(3) - 1);
-        cmdOffX = Math.Clamp(cmdOffX, 2, mainW - 3);
-        cmdOffZ = Math.Clamp(cmdOffZ, 2, mainD - 3);
+        cmdOffX = Math.Clamp(cmdOffX, 3, mainW - 4);
+        cmdOffZ = Math.Clamp(cmdOffZ, 3, mainD - 4);
 
         Vector3I cmdPos = mainStart + new Vector3I(cmdOffX, 1, cmdOffZ);
         plan.CommanderBuildUnit = cmdPos;
 
-        // Build reinforced shell around commander
+        // ── 2-layer reinforced shell around commander (thick walls) ──
+        // Inner layer: concrete 3x3x3
+        int coreW = 3;
+        int coreH = 3;
+        int coreD = 3;
         Vector3I coreStart = cmdPos - new Vector3I(1, 0, 1);
         Vector3I coreEnd = cmdPos + new Vector3I(1, coreH - 1, 1);
         VoxelMaterialType coreMaterial = VoxelMaterialType.Concrete;
@@ -325,7 +371,74 @@ public sealed class BotBuildPlanner
             });
         }
 
-        // Interior dividing wall for variety
+        // Outer reinforcement layer: 5x4x5 around the core (2-block thick total)
+        Vector3I rsStart = coreStart - Vector3I.One;
+        Vector3I rsEnd = coreEnd + Vector3I.One;
+        rsStart = new Vector3I(
+            Math.Max(rsStart.X, mainStart.X + 1),
+            Math.Max(rsStart.Y, mainStart.Y),
+            Math.Max(rsStart.Z, mainStart.Z + 1));
+        rsEnd = new Vector3I(
+            Math.Min(rsEnd.X, mainEnd.X - 1),
+            Math.Min(rsEnd.Y, mainEnd.Y - 1),
+            Math.Min(rsEnd.Z, mainEnd.Z - 1));
+
+        int rsW = rsEnd.X - rsStart.X + 1;
+        int rsH = rsEnd.Y - rsStart.Y + 1;
+        int rsD = rsEnd.Z - rsStart.Z + 1;
+        if (rsW >= 4 && rsH >= 3 && rsD >= 4)
+        {
+            VoxelMaterialType rsMat = VoxelMaterialType.Metal;
+            int rsCost = EstimateHollowBoxCost(rsW, rsH, rsD, rsMat);
+            if (tracker.TrySpend(rsCost))
+            {
+                plan.Actions.Add(new PlannedBuildAction
+                {
+                    ToolMode = BuildToolMode.Box,
+                    Material = rsMat,
+                    Start = rsStart,
+                    End = rsEnd,
+                    Hollow = true,
+                });
+            }
+        }
+
+        // ── Extra roof layer over the commander area (solid ceiling) ──
+        int roofW = Math.Min(7, mainW - 2);
+        int roofD = Math.Min(7, mainD - 2);
+        Vector3I roofStart = new Vector3I(
+            cmdPos.X - roofW / 2,
+            mainEnd.Y, // At top of the structure
+            cmdPos.Z - roofD / 2);
+        Vector3I roofEnd = roofStart + new Vector3I(roofW - 1, 0, roofD - 1);
+        roofStart = new Vector3I(
+            Math.Max(roofStart.X, mainStart.X),
+            roofStart.Y,
+            Math.Max(roofStart.Z, mainStart.Z));
+        roofEnd = new Vector3I(
+            Math.Min(roofEnd.X, mainEnd.X),
+            roofEnd.Y,
+            Math.Min(roofEnd.Z, mainEnd.Z));
+
+        int roofFloorW = roofEnd.X - roofStart.X + 1;
+        int roofFloorD = roofEnd.Z - roofStart.Z + 1;
+        if (roofFloorW >= 3 && roofFloorD >= 3)
+        {
+            int roofCost = roofFloorW * roofFloorD * VoxelMaterials.GetDefinition(VoxelMaterialType.Concrete).Cost;
+            if (tracker.TrySpend(roofCost))
+            {
+                plan.Actions.Add(new PlannedBuildAction
+                {
+                    ToolMode = BuildToolMode.Floor,
+                    Material = VoxelMaterialType.Concrete,
+                    Start = roofStart,
+                    End = roofEnd,
+                    Hollow = false,
+                });
+            }
+        }
+
+        // Interior dividing wall for structural support
         if (tracker.CanSpend(EstimateWallCost(mainW, mainH, VoxelMaterialType.Concrete)))
         {
             int wallZ = mainStart.Z + mainD / 2 + (rng.Next(3) - 1);
@@ -344,15 +457,35 @@ public sealed class BotBuildPlanner
             }
         }
 
-        // 2-3 weapons spread across the fortress
+        // ── 2-3 weapons on elevated positions ──
         int weaponCount = 2 + rng.Next(2);
         string[] mediumWeapons = { "cannon", "mortar", "cannon", "railgun" };
         int topY = mainEnd.Y + 1;
 
+        // Build small elevated platforms for weapons (1 block higher than roof)
+        int elevatedY = topY + 1;
         List<Vector3I> weaponPositions = new List<Vector3I>();
+
         for (int i = 0; i < weaponCount; i++)
         {
             Vector3I candidatePos = GenerateWeaponPosition(mainStart, mainEnd, wingStart, wingEnd, topY, rng, i, weaponPositions, cmdPos);
+
+            // Try to build a small pedestal under the weapon for elevation
+            Vector3I pedestalPos = new Vector3I(candidatePos.X, topY, candidatePos.Z);
+            int pedestalCost = VoxelMaterials.GetDefinition(VoxelMaterialType.Stone).Cost;
+            if (tracker.TrySpend(pedestalCost))
+            {
+                plan.Actions.Add(new PlannedBuildAction
+                {
+                    ToolMode = BuildToolMode.Single,
+                    Material = VoxelMaterialType.Stone,
+                    Start = pedestalPos,
+                    End = pedestalPos,
+                    Hollow = false,
+                });
+                candidatePos = new Vector3I(candidatePos.X, elevatedY, candidatePos.Z);
+            }
+
             string weaponId = mediumWeapons[rng.Next(mediumWeapons.Length)];
             int weaponCost = GetWeaponCost(weaponId);
             if (tracker.TrySpend(weaponCost))
@@ -380,8 +513,9 @@ public sealed class BotBuildPlanner
     // ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Complex multi-room fortress with thick walls, strategic material layering,
-    /// obsidian/reinforced steel commander chamber, decoy rooms, and 3-4 weapons.
+    /// Complex multi-room fortress with 3-block-thick walls, strategic material
+    /// layering, solid multi-layer roof, obsidian/reinforced steel commander
+    /// chamber, decoy rooms, and 3-4 weapons on elevated positions.
     /// </summary>
     private static BotBuildPlan PlanHardFortress(BuildZone zone, int budget, Random rng)
     {
@@ -419,7 +553,7 @@ public sealed class BotBuildPlanner
             });
         }
 
-        // ── Layer 2: Inner reinforced shell (concrete) ──
+        // ── Layer 2: Inner reinforced shell (concrete) — 2 blocks inside outer ──
         int innerW = outerW - 4;
         int innerH = outerH - 2;
         int innerD = outerD - 4;
@@ -437,6 +571,29 @@ public sealed class BotBuildPlanner
                     Material = innerMat,
                     Start = innerStart,
                     End = innerEnd,
+                    Hollow = true,
+                });
+            }
+        }
+
+        // ── Layer 3: Third layer of protection (metal) — 3 blocks from outer ──
+        int thirdW = outerW - 6;
+        int thirdH = outerH - 2;
+        int thirdD = outerD - 6;
+        if (thirdW >= 5 && thirdH >= 4 && thirdD >= 5)
+        {
+            Vector3I thirdStart = outerStart + new Vector3I(3, 0, 3);
+            Vector3I thirdEnd = thirdStart + new Vector3I(thirdW - 1, thirdH - 1, thirdD - 1);
+            VoxelMaterialType thirdMat = VoxelMaterialType.Metal;
+            int thirdCost = EstimateHollowBoxCost(thirdW, thirdH, thirdD, thirdMat);
+            if (tracker.TrySpend(thirdCost))
+            {
+                plan.Actions.Add(new PlannedBuildAction
+                {
+                    ToolMode = BuildToolMode.Box,
+                    Material = thirdMat,
+                    Start = thirdStart,
+                    End = thirdEnd,
                     Hollow = true,
                 });
             }
@@ -465,8 +622,8 @@ public sealed class BotBuildPlanner
                 break;
         }
 
-        cmdOffX = Math.Clamp(cmdOffX, 3, outerW - 4);
-        cmdOffZ = Math.Clamp(cmdOffZ, 3, outerD - 4);
+        cmdOffX = Math.Clamp(cmdOffX, 4, outerW - 5);
+        cmdOffZ = Math.Clamp(cmdOffZ, 4, outerD - 5);
 
         Vector3I cmdPos = outerStart + new Vector3I(cmdOffX, 1, cmdOffZ);
         plan.CommanderBuildUnit = cmdPos;
@@ -498,7 +655,7 @@ public sealed class BotBuildPlanner
             });
         }
 
-        // Additional reinforced steel wrapping around the vault
+        // Additional reinforced steel wrapping around the vault (2nd layer)
         Vector3I rsStart = vaultStart - Vector3I.One;
         Vector3I rsEnd = vaultEnd + Vector3I.One;
         rsStart = new Vector3I(
@@ -528,6 +685,76 @@ public sealed class BotBuildPlanner
                     Hollow = true,
                 });
             }
+        }
+
+        // 3rd layer around the vault for maximum protection (concrete)
+        Vector3I rs2Start = rsStart - Vector3I.One;
+        Vector3I rs2End = rsEnd + Vector3I.One;
+        rs2Start = new Vector3I(
+            Math.Max(rs2Start.X, outerStart.X + 1),
+            Math.Max(rs2Start.Y, outerStart.Y),
+            Math.Max(rs2Start.Z, outerStart.Z + 1));
+        rs2End = new Vector3I(
+            Math.Min(rs2End.X, outerEnd.X - 1),
+            Math.Min(rs2End.Y, outerEnd.Y - 1),
+            Math.Min(rs2End.Z, outerEnd.Z - 1));
+
+        int rs2W = rs2End.X - rs2Start.X + 1;
+        int rs2H = rs2End.Y - rs2Start.Y + 1;
+        int rs2D = rs2End.Z - rs2Start.Z + 1;
+        if (rs2W >= 5 && rs2H >= 3 && rs2D >= 5)
+        {
+            VoxelMaterialType rs2Mat = VoxelMaterialType.Concrete;
+            int rs2Cost = EstimateHollowBoxCost(rs2W, rs2H, rs2D, rs2Mat);
+            if (tracker.TrySpend(rs2Cost))
+            {
+                plan.Actions.Add(new PlannedBuildAction
+                {
+                    ToolMode = BuildToolMode.Box,
+                    Material = rs2Mat,
+                    Start = rs2Start,
+                    End = rs2End,
+                    Hollow = true,
+                });
+            }
+        }
+
+        // ── Solid multi-layer roof over the commander ──
+        // Layer 1: concrete roof spanning the inner area
+        int roofW = Math.Min(outerW - 2, 12);
+        int roofD = Math.Min(outerD - 2, 12);
+        Vector3I roof1Start = new Vector3I(
+            outerStart.X + (outerW - roofW) / 2,
+            outerEnd.Y, // top of the structure
+            outerStart.Z + (outerD - roofD) / 2);
+        Vector3I roof1End = roof1Start + new Vector3I(roofW - 1, 0, roofD - 1);
+        int roof1Cost = roofW * roofD * VoxelMaterials.GetDefinition(VoxelMaterialType.Concrete).Cost;
+        if (tracker.TrySpend(roof1Cost))
+        {
+            plan.Actions.Add(new PlannedBuildAction
+            {
+                ToolMode = BuildToolMode.Floor,
+                Material = VoxelMaterialType.Concrete,
+                Start = roof1Start,
+                End = roof1End,
+                Hollow = false,
+            });
+        }
+
+        // Layer 2: metal roof on top of the concrete roof
+        Vector3I roof2Start = roof1Start + new Vector3I(0, 1, 0);
+        Vector3I roof2End = roof1End + new Vector3I(0, 1, 0);
+        int roof2Cost = roofW * roofD * VoxelMaterials.GetDefinition(VoxelMaterialType.Metal).Cost;
+        if (tracker.TrySpend(roof2Cost))
+        {
+            plan.Actions.Add(new PlannedBuildAction
+            {
+                ToolMode = BuildToolMode.Floor,
+                Material = VoxelMaterialType.Metal,
+                Start = roof2Start,
+                End = roof2End,
+                Hollow = false,
+            });
         }
 
         // ── Decoy rooms: reinforced rooms that look important but are empty ──
@@ -638,21 +865,21 @@ public sealed class BotBuildPlanner
             });
         }
 
-        // ── 3-4 weapons in strategic positions ──
+        // ── 3-4 weapons in strategic elevated positions ──
         int weaponCount = 3 + rng.Next(2);
         string[] hardWeapons = { "cannon", "mortar", "railgun", "drill", "missile" };
-        int topY = outerEnd.Y + 1;
+        int topY = outerEnd.Y + 2; // Above the double roof
 
         List<Vector3I> wpPositions = new List<Vector3I>();
 
-        // Place weapons at corners and strategic positions
+        // Build elevated weapon platforms at corners and strategic positions
         Vector3I[] preferredPositions =
         {
-            new Vector3I(outerStart.X + 1, topY, outerStart.Z),                // front-left
-            new Vector3I(outerEnd.X - 1, topY, outerStart.Z),                  // front-right
-            new Vector3I(outerStart.X + outerW / 2, topY, outerStart.Z),       // front-center
-            new Vector3I(outerStart.X + 1, topY, outerEnd.Z),                  // back-left
-            new Vector3I(outerEnd.X - 1, topY, outerEnd.Z),                    // back-right
+            new Vector3I(outerStart.X + 1, outerEnd.Y + 1, outerStart.Z),                // front-left
+            new Vector3I(outerEnd.X - 1, outerEnd.Y + 1, outerStart.Z),                  // front-right
+            new Vector3I(outerStart.X + outerW / 2, outerEnd.Y + 1, outerStart.Z),       // front-center
+            new Vector3I(outerStart.X + 1, outerEnd.Y + 1, outerEnd.Z),                  // back-left
+            new Vector3I(outerEnd.X - 1, outerEnd.Y + 1, outerEnd.Z),                    // back-right
         };
 
         // Shuffle preferred positions for variety
@@ -670,6 +897,22 @@ public sealed class BotBuildPlanner
                 continue;
             }
 
+            // Build a small pedestal for elevation
+            Vector3I pedestalBase = new Vector3I(wPos.X, outerEnd.Y + 1, wPos.Z);
+            int pedestalCost = VoxelMaterials.GetDefinition(VoxelMaterialType.Stone).Cost * 2; // 2 blocks
+            if (tracker.TrySpend(pedestalCost))
+            {
+                plan.Actions.Add(new PlannedBuildAction
+                {
+                    ToolMode = BuildToolMode.Box,
+                    Material = VoxelMaterialType.Stone,
+                    Start = pedestalBase,
+                    End = pedestalBase + new Vector3I(0, 1, 0),
+                    Hollow = false,
+                });
+                wPos = pedestalBase + new Vector3I(0, 2, 0);
+            }
+
             // Strategic weapon selection
             string weaponId = SelectStrategicWeapon(wPos, outerStart, outerEnd, hardWeapons, rng);
             int wCost = GetWeaponCost(weaponId);
@@ -683,7 +926,7 @@ public sealed class BotBuildPlanner
         // Ensure at least one weapon
         if (plan.WeaponPlacements.Count == 0)
         {
-            Vector3I fallback = new Vector3I(outerStart.X + 1, topY, outerStart.Z);
+            Vector3I fallback = new Vector3I(outerStart.X + 1, outerEnd.Y + 1, outerStart.Z);
             if (tracker.TrySpend(GetWeaponCost("cannon")))
             {
                 plan.WeaponPlacements.Add((fallback, "cannon"));

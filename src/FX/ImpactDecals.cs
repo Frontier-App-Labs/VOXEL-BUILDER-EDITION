@@ -14,10 +14,10 @@ public partial class ImpactDecals : Node3D
     private static readonly Queue<MeshInstance3D> _pool = new();
     private static ImpactDecals? _instance;
 
-    private const float DecalLifetime = 10f;
-    private const float FadeStartTime = 6f;
-    private const float SurfaceOffset = 0.01f;
-    private const int MaxDecals = 50;
+    private const float DecalLifetime = 6f;
+    private const float FadeStartTime = 3f;
+    private const float SurfaceOffset = 0.02f;
+    private const int MaxDecals = 60;
 
     private struct DecalEntry
     {
@@ -119,11 +119,12 @@ public partial class ImpactDecals : Node3D
         quad.Size = new Vector2(1f, 1f); // Will be resized per-spawn
 
         StandardMaterial3D mat = new StandardMaterial3D();
-        mat.AlbedoColor = new Color(0.08f, 0.06f, 0.04f, 0.7f);
+        mat.AlbedoColor = new Color(0.05f, 0.04f, 0.03f, 0.35f);
         mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
         mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
         mat.NoDepthTest = false;
         mat.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+        mat.RenderPriority = -2; // Render behind most geometry to reduce visual clutter
         quad.Material = mat;
 
         mesh.Mesh = quad;
@@ -134,7 +135,7 @@ public partial class ImpactDecals : Node3D
 
     private void SpawnInternal(Vector3 position, Vector3 normal, float radius)
     {
-        float decalSize = Mathf.Clamp(radius * 1.2f, 0.3f, 4f);
+        float decalSize = Mathf.Clamp(radius * 0.8f, 0.2f, 2f);
 
         MeshInstance3D mesh = AcquireDecalMesh();
 
@@ -146,7 +147,7 @@ public partial class ImpactDecals : Node3D
 
         // Reset material alpha
         StandardMaterial3D mat = (StandardMaterial3D)((QuadMesh)mesh.Mesh).Material!;
-        mat.AlbedoColor = new Color(0.08f, 0.06f, 0.04f, 0.7f);
+        mat.AlbedoColor = new Color(0.05f, 0.04f, 0.03f, 0.35f);
 
         // Position slightly offset from surface to avoid z-fighting
         mesh.GlobalPosition = position + (normal.Normalized() * SurfaceOffset);

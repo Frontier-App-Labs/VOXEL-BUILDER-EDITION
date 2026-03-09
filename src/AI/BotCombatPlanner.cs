@@ -9,6 +9,7 @@ using VoxelSiege.Networking;
 using VoxelSiege.Utility;
 using VoxelSiege.Voxel;
 using CommanderActor = VoxelSiege.Commander.Commander;
+using VoxelValue = VoxelSiege.Voxel.Voxel;
 
 namespace VoxelSiege.AI;
 
@@ -22,6 +23,12 @@ public sealed class BotCombatPlanner
     private readonly Dictionary<PlayerSlot, List<Vector3I>> _hitHistory = new Dictionary<PlayerSlot, List<Vector3I>>();
     private readonly Dictionary<PlayerSlot, int> _hitCounts = new Dictionary<PlayerSlot, int>();
     private PlayerSlot? _lastTargetSlot;
+
+    /// <summary>
+    /// Tracks how much damage each enemy has dealt TO this bot, used to
+    /// compute threat level for weighted target selection.
+    /// </summary>
+    private readonly Dictionary<PlayerSlot, int> _damageReceivedFrom = new Dictionary<PlayerSlot, int>();
 
     // ─────────────────────────────────────────────────
     //  PUBLIC API
@@ -53,8 +60,23 @@ public sealed class BotCombatPlanner
         BuildZone enemyZone,
         PlayerSlot enemySlot,
         BotDifficulty difficulty,
-        Random rng)
+        Random rng,
+        VoxelWorld? world = null)
     {
+        // Before aiming, check if the hit history target area is already destroyed.
+        // If so, clear the stale history so the bot picks a fresh target instead of
+        // repeatedly shooting at the same empty crater.
+        if (world != null && _hitHistory.TryGetValue(enemySlot, out var history) && history.Count > 0)
+        {
+            Vector3 cluster = CalculateDamageCluster(history);
+            Vector3I clusterMicro = MathHelpers.WorldToMicrovoxel(cluster);
+            if (!HasSolidVoxelsNearby(world, clusterMicro, 4))
+            {
+                // Previous target area is blown out — clear history to force new targeting
+                history.Clear();
+            }
+        }
+
         return difficulty switch
         {
             BotDifficulty.Easy => AimEasyAtZone(weapon, enemyZone, rng),
@@ -126,12 +148,30 @@ public sealed class BotCombatPlanner
     }
 
     /// <summary>
+    /// Records damage dealt TO this bot by a specific enemy, building a
+    /// threat profile that influences target selection.
+    /// </summary>
+    public void RecordDamageReceived(PlayerSlot attackerSlot, int damage)
+    {
+        _damageReceivedFrom[attackerSlot] = _damageReceivedFrom.GetValueOrDefault(attackerSlot) + damage;
+    }
+
+    /// <summary>
+    /// Returns the threat score (total damage received) from a specific enemy.
+    /// </summary>
+    public int GetThreatFrom(PlayerSlot enemySlot)
+    {
+        return _damageReceivedFrom.GetValueOrDefault(enemySlot);
+    }
+
+    /// <summary>
     /// Resets combat history for a new match.
     /// </summary>
     public void ResetHistory()
     {
         _hitHistory.Clear();
         _hitCounts.Clear();
+        _damageReceivedFrom.Clear();
         _lastTargetSlot = null;
     }
 
@@ -570,45 +610,191 @@ public sealed class BotCombatPlanner
         return MathHelpers.MicrovoxelToWorld(point);
     }
 
+    /// <summary>
+    /// Checks whether there are any solid voxels within a cube of the given
+    /// radius around a microvoxel position. Used to detect if a previously-hit
+    /// area has been fully destroyed (crater detection).
+    /// </summary>
+    private static bool HasSolidVoxelsNearby(VoxelWorld world, Vector3I center, int radius)
+    {
+        for (int z = center.Z - radius; z <= center.Z + radius; z += 2)
+        {
+            for (int y = center.Y - radius; y <= center.Y + radius; y += 2)
+            {
+                for (int x = center.X - radius; x <= center.X + radius; x += 2)
+                {
+                    if (world.GetVoxel(new Vector3I(x, y, z)).IsSolid)
+                        return true;
+                }
+            }
+        }
+        return false;
+    }
+
     // ─────────────────────────────────────────────────
     //  STATIC HELPERS (used by GameManager.ExecuteBotTurn)
     // ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Selects an enemy target based on bot difficulty. Static version used
-    /// directly by GameManager when no persistent BotController is available.
+    /// Selects an enemy target using a weighted random system that considers
+    /// health, threat level, and randomness. Static version used directly by
+    /// GameManager when no persistent BotController is available.
     /// </summary>
+    /// <param name="enemies">Alive enemy players.</param>
+    /// <param name="difficulty">Bot difficulty (controls how strategic the weighting is).</param>
+    /// <param name="rng">Random number generator.</param>
+    /// <param name="threatScores">
+    /// Optional per-enemy threat score (damage they dealt to this bot).
+    /// Pass null when no threat data is available.
+    /// </param>
+    /// <param name="botZoneCenter">
+    /// Optional world-space position of this bot's build zone center, used
+    /// for distance weighting. Pass null to skip distance factor.
+    /// </param>
     public static (PlayerSlot Slot, PlayerData Data) SelectTargetStatic(
         List<(PlayerSlot Slot, PlayerData Data)> enemies,
         BotDifficulty difficulty,
-        Random rng)
+        Random rng,
+        Dictionary<PlayerSlot, int>? threatScores = null,
+        Vector3? botZoneCenter = null)
     {
         if (enemies.Count == 1)
         {
             return enemies[0];
         }
 
-        switch (difficulty)
+        // --- Compute a weight for each enemy ---
+        // Higher weight = more likely to be chosen.
+        float[] weights = new float[enemies.Count];
+
+        // Determine max values for normalization
+        int maxHealth = enemies.Max(e => e.Data.CommanderHealth);
+        int maxThreat = 0;
+        if (threatScores != null)
         {
-            case BotDifficulty.Easy:
-                return enemies[rng.Next(enemies.Count)];
-
-            case BotDifficulty.Medium:
-                // Target the weakest enemy (lowest commander health)
-                return enemies.OrderBy(e => e.Data.CommanderHealth).First();
-
-            case BotDifficulty.Hard:
-                // Finish off near-death enemies, otherwise target the strongest
-                var nearDeath = enemies.Where(e => e.Data.CommanderHealth <= 30).ToList();
-                if (nearDeath.Count > 0)
-                {
-                    return nearDeath.OrderBy(e => e.Data.CommanderHealth).First();
-                }
-                return enemies.OrderByDescending(e => e.Data.CommanderHealth).First();
-
-            default:
-                return enemies[0];
+            foreach (var e in enemies)
+            {
+                int t = threatScores.GetValueOrDefault(e.Slot);
+                if (t > maxThreat) maxThreat = t;
+            }
         }
+
+        float maxDist = 0f;
+        if (botZoneCenter.HasValue)
+        {
+            foreach (var e in enemies)
+            {
+                Vector3I mid = e.Data.AssignedBuildZone.OriginMicrovoxels
+                             + e.Data.AssignedBuildZone.SizeMicrovoxels / 2;
+                float dist = (MathHelpers.MicrovoxelToWorld(mid) - botZoneCenter.Value).Length();
+                if (dist > maxDist) maxDist = dist;
+            }
+        }
+
+        for (int i = 0; i < enemies.Count; i++)
+        {
+            var e = enemies[i];
+
+            // ------ Health factor ------
+            // Lower health -> higher weight (easier to finish off)
+            // Normalized so a dead-ish target (health 1) gets ~1.0, full health gets ~0.1
+            float healthFactor = maxHealth > 0
+                ? 1f - (float)e.Data.CommanderHealth / (maxHealth + 1)
+                : 0.5f;
+
+            // ------ Threat factor ------
+            // Enemies that dealt more damage to us are higher priority
+            float threatFactor = 0f;
+            if (threatScores != null && maxThreat > 0)
+            {
+                threatFactor = (float)threatScores.GetValueOrDefault(e.Slot) / maxThreat;
+            }
+
+            // ------ Distance factor ------
+            // Closer enemies are slightly preferred
+            float distanceFactor = 0.5f; // neutral default
+            if (botZoneCenter.HasValue && maxDist > 0.001f)
+            {
+                Vector3I mid = e.Data.AssignedBuildZone.OriginMicrovoxels
+                             + e.Data.AssignedBuildZone.SizeMicrovoxels / 2;
+                float dist = (MathHelpers.MicrovoxelToWorld(mid) - botZoneCenter.Value).Length();
+                distanceFactor = 1f - dist / (maxDist + 0.001f);
+            }
+
+            // ------ Random factor ------
+            float randomFactor = (float)rng.NextDouble();
+
+            // ------ Combine with difficulty-dependent weights ------
+            float weight;
+            switch (difficulty)
+            {
+                case BotDifficulty.Easy:
+                    // Easy bots are mostly random with slight preference for closer targets
+                    weight = randomFactor * 1.0f
+                           + distanceFactor * 0.2f
+                           + healthFactor * 0.1f;
+                    break;
+
+                case BotDifficulty.Medium:
+                    // Medium bots consider health and threat with moderate randomness
+                    weight = healthFactor * 0.35f
+                           + threatFactor * 0.25f
+                           + distanceFactor * 0.15f
+                           + randomFactor * 0.25f;
+                    break;
+
+                case BotDifficulty.Hard:
+                    // Hard bots are more strategic: heavy threat & health weighting,
+                    // but still not fully deterministic
+                    weight = healthFactor * 0.30f
+                           + threatFactor * 0.35f
+                           + distanceFactor * 0.15f
+                           + randomFactor * 0.20f;
+
+                    // Bonus: strongly prefer finishing off near-death enemies
+                    if (e.Data.CommanderHealth <= 30)
+                    {
+                        weight += 0.5f;
+                    }
+                    break;
+
+                default:
+                    weight = randomFactor;
+                    break;
+            }
+
+            // Ensure weight is positive for the weighted random pick
+            weights[i] = Math.Max(weight, 0.01f);
+        }
+
+        // --- Weighted random selection ---
+        return WeightedRandomPick(enemies, weights, rng);
+    }
+
+    /// <summary>
+    /// Picks an element from the list using weighted random selection.
+    /// </summary>
+    private static T WeightedRandomPick<T>(List<T> items, float[] weights, Random rng)
+    {
+        float totalWeight = 0f;
+        for (int i = 0; i < weights.Length; i++)
+        {
+            totalWeight += weights[i];
+        }
+
+        float roll = (float)rng.NextDouble() * totalWeight;
+        float cumulative = 0f;
+        for (int i = 0; i < items.Count; i++)
+        {
+            cumulative += weights[i];
+            if (roll <= cumulative)
+            {
+                return items[i];
+            }
+        }
+
+        // Fallback (floating point edge case)
+        return items[^1];
     }
 
     /// <summary>
@@ -738,5 +924,369 @@ public sealed class BotCombatPlanner
         }
 
         return MathHelpers.MicrovoxelToWorld(target);
+    }
+
+    // ─────────────────────────────────────────────────
+    //  PRIORITIZED TARGET SELECTION
+    // ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// Describes the priority level of the chosen target, used for logging
+    /// and to inform scatter adjustments.
+    /// </summary>
+    public enum TargetPriority
+    {
+        Commander,
+        Weapon,
+        StructuralSupport,
+        LargeMass,
+        RandomSolid,
+    }
+
+    /// <summary>
+    /// Result of <see cref="FindPrioritizedTarget"/>: a world-space position
+    /// to aim at, plus metadata about what was targeted and why.
+    /// </summary>
+    public readonly struct PrioritizedTarget
+    {
+        public readonly Vector3 Position;
+        public readonly TargetPriority Priority;
+        public readonly string Description;
+
+        public PrioritizedTarget(Vector3 position, TargetPriority priority, string description)
+        {
+            Position = position;
+            Priority = priority;
+            Description = description;
+        }
+    }
+
+    /// <summary>
+    /// Master targeting method implementing the full priority chain:
+    ///   1. Commander  — if the enemy commander position is known and reachable
+    ///   2. Weapons    — target enemy weapons to disarm them
+    ///   3. Large masses / structural supports — cause maximum collapse
+    ///   4. Random solid voxels — fallback
+    ///
+    /// A small random chance (scaled by difficulty) can skip a higher priority
+    /// so that bots don't all behave identically.
+    /// </summary>
+    /// <param name="world">Voxel world for raycast / voxel queries.</param>
+    /// <param name="zone">The enemy's build zone.</param>
+    /// <param name="enemySlot">The enemy player slot (for weapon lookup).</param>
+    /// <param name="enemyData">The enemy's PlayerData (for commander position).</param>
+    /// <param name="weapon">The weapon the bot is about to fire.</param>
+    /// <param name="sceneTree">Scene tree for GetNodesInGroup lookups.</param>
+    /// <param name="difficulty">Bot difficulty level.</param>
+    /// <param name="rng">Random number generator.</param>
+    /// <param name="enemyCommander">
+    /// Optional reference to the live Commander node. When provided and valid
+    /// the method uses its GlobalPosition for LOS checks.
+    /// </param>
+    public static PrioritizedTarget FindPrioritizedTarget(
+        VoxelWorld world,
+        BuildZone zone,
+        PlayerSlot enemySlot,
+        PlayerData enemyData,
+        WeaponBase weapon,
+        SceneTree sceneTree,
+        BotDifficulty difficulty,
+        Random rng,
+        CommanderActor? enemyCommander = null)
+    {
+        // ── Randomness knobs per difficulty ──────────────────────────
+        // "skipChance" is the probability that the bot ignores a valid
+        // higher-priority target and falls through to the next tier.
+        // This prevents all bots from laser-focusing the same target.
+        float skipChance = difficulty switch
+        {
+            BotDifficulty.Easy   => 0.50f, // Easy bots miss obvious targets half the time
+            BotDifficulty.Medium => 0.20f, // Medium bots occasionally miss
+            BotDifficulty.Hard   => 0.05f, // Hard bots almost never miss an opportunity
+            _                    => 0.30f,
+        };
+
+        // ────────────────────────────────────────────────────────────
+        //  PRIORITY 1 — Commander
+        // ────────────────────────────────────────────────────────────
+        if (rng.NextDouble() > skipChance) // Only skip with skipChance probability
+        {
+            Vector3? commanderWorldPos = null;
+
+            // Prefer the live node position if available
+            if (enemyCommander != null && GodotObject.IsInstanceValid(enemyCommander))
+            {
+                commanderWorldPos = enemyCommander.GlobalPosition;
+            }
+            else if (enemyData.CommanderMicrovoxelPosition.HasValue)
+            {
+                commanderWorldPos = MathHelpers.MicrovoxelToWorld(enemyData.CommanderMicrovoxelPosition.Value);
+            }
+
+            if (commanderWorldPos.HasValue)
+            {
+                Vector3 cmdPos = commanderWorldPos.Value;
+                Vector3 toCmd = cmdPos - weapon.GlobalPosition;
+                float dist = toCmd.Length();
+
+                if (dist > 0.1f)
+                {
+                    Vector3 dir = toCmd / dist;
+
+                    // Direct line-of-sight check (no solid voxels in the way)
+                    bool hasLOS = !world.RaycastVoxel(weapon.GlobalPosition, dir, dist, out _, out _);
+
+                    // For lobbing weapons (mortar, missile) we don't require strict
+                    // LOS because they arc over obstacles.
+                    bool isLobWeapon = weapon.WeaponId == "mortar" || weapon.WeaponId == "missile";
+
+                    if (hasLOS || isLobWeapon)
+                    {
+                        return new PrioritizedTarget(
+                            cmdPos,
+                            TargetPriority.Commander,
+                            hasLOS ? "direct LOS to commander" : "lobbing over obstacles at commander");
+                    }
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────
+        //  PRIORITY 2 — Enemy weapons
+        // ────────────────────────────────────────────────────────────
+        if (rng.NextDouble() > skipChance)
+        {
+            List<WeaponBase> enemyWeapons = new List<WeaponBase>();
+            foreach (Node node in sceneTree.GetNodesInGroup("Weapons"))
+            {
+                if (node is WeaponBase wb
+                    && GodotObject.IsInstanceValid(wb)
+                    && !wb.IsDestroyed
+                    && wb.OwnerSlot == enemySlot)
+                {
+                    enemyWeapons.Add(wb);
+                }
+            }
+
+            if (enemyWeapons.Count > 0)
+            {
+                // Score each weapon: prefer weapons that are closer, more dangerous,
+                // and within line of sight.
+                WeaponBase? bestTarget = null;
+                float bestScore = float.MinValue;
+
+                foreach (WeaponBase ew in enemyWeapons)
+                {
+                    Vector3 toWeapon = ew.GlobalPosition - weapon.GlobalPosition;
+                    float dist = toWeapon.Length();
+                    if (dist < 0.1f) continue;
+
+                    float score = 0f;
+
+                    // LOS bonus: strongly prefer targets we can actually hit directly
+                    Vector3 dir = toWeapon / dist;
+                    bool hasLOS = !world.RaycastVoxel(weapon.GlobalPosition, dir, dist, out _, out _);
+                    bool isLobWeapon = weapon.WeaponId == "mortar" || weapon.WeaponId == "missile";
+
+                    if (!hasLOS && !isLobWeapon)
+                    {
+                        continue; // Can't hit this weapon — skip it
+                    }
+
+                    score += hasLOS ? 5f : 2f;
+
+                    // Distance penalty: closer is better (normalize by max weapon range)
+                    score -= dist * 0.05f;
+
+                    // Threat bonus: higher-damage weapons are more important to destroy
+                    score += ew.BaseDamage * 0.1f;
+
+                    // Small random factor for variety
+                    score += (float)rng.NextDouble() * 2f;
+
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestTarget = ew;
+                    }
+                }
+
+                if (bestTarget != null)
+                {
+                    return new PrioritizedTarget(
+                        bestTarget.GlobalPosition,
+                        TargetPriority.Weapon,
+                        $"targeting enemy {bestTarget.WeaponId}");
+                }
+            }
+        }
+
+        // ────────────────────────────────────────────────────────────
+        //  PRIORITY 3 — Structural supports / large masses
+        // ────────────────────────────────────────────────────────────
+        // Scan the enemy zone for solid voxels and analyze their distribution
+        // to find structural weak points (low supports) or dense clusters.
+        {
+            Vector3I origin = zone.OriginMicrovoxels;
+            Vector3I size = zone.SizeMicrovoxels;
+            Vector3I max = origin + size;
+            int step = GameConfig.MicrovoxelsPerBuildUnit;
+
+            // Collect solid voxels with a coarse scan
+            List<Vector3I> solidPositions = new List<Vector3I>(128);
+            // Also track per-column counts for structural analysis
+            // Key: (x, z) pair, Value: list of Y coordinates
+            Dictionary<(int X, int Z), List<int>> columns = new Dictionary<(int, int), List<int>>(64);
+
+            for (int z = origin.Z; z < max.Z; z += step)
+            {
+                for (int x = origin.X; x < max.X; x += step)
+                {
+                    for (int y = origin.Y; y < max.Y; y += step)
+                    {
+                        Vector3I pos = new Vector3I(x, y, z);
+                        VoxelValue voxel = world.GetVoxel(pos);
+                        if (voxel.IsSolid)
+                        {
+                            solidPositions.Add(pos);
+                            var key = (x, z);
+                            if (!columns.TryGetValue(key, out List<int>? yList))
+                            {
+                                yList = new List<int>();
+                                columns[key] = yList;
+                            }
+                            yList.Add(y);
+                        }
+                    }
+                }
+            }
+
+            if (solidPositions.Count == 0)
+            {
+                // Structure fully destroyed — aim at zone center
+                Vector3I center = origin + size / 2;
+                return new PrioritizedTarget(
+                    MathHelpers.MicrovoxelToWorld(center),
+                    TargetPriority.RandomSolid,
+                    "no structure remaining — zone center");
+            }
+
+            // --- 3a: Structural supports (Hard & Medium) ---
+            // Find thin load-bearing columns: columns with many voxels above
+            // resting on a narrow base. Destroying the base causes cascading collapse.
+            if (difficulty >= BotDifficulty.Medium && rng.NextDouble() > skipChance)
+            {
+                // Find columns that are tall (support lots of mass) — the base
+                // voxel of such a column is a high-value structural target
+                Vector3I bestSupport = solidPositions[0];
+                float bestSupportScore = float.MinValue;
+                bool foundSupport = false;
+
+                Vector3 zoneCenter = MathHelpers.MicrovoxelToWorld(origin + size / 2);
+                Vector3 toWeaponDir = (weapon.GlobalPosition - zoneCenter).Normalized();
+
+                foreach (var kvp in columns)
+                {
+                    List<int> yValues = kvp.Value;
+                    if (yValues.Count < 2) continue; // Not a significant column
+
+                    yValues.Sort();
+                    int baseY = yValues[0];
+                    int height = yValues[^1] - baseY;
+
+                    // Score: taller columns are better targets, prefer weapon-facing side
+                    Vector3I basePos = new Vector3I(kvp.Key.X, baseY, kvp.Key.Z);
+                    Vector3 baseWorld = MathHelpers.MicrovoxelToWorld(basePos);
+                    Vector3 fromCenter = (baseWorld - zoneCenter).Normalized();
+                    float facingBonus = fromCenter.Dot(toWeaponDir) * 3f;
+
+                    float score = height * 2f + facingBonus + (float)rng.NextDouble() * 1.5f;
+
+                    if (score > bestSupportScore)
+                    {
+                        bestSupportScore = score;
+                        bestSupport = basePos;
+                        foundSupport = true;
+                    }
+                }
+
+                if (foundSupport)
+                {
+                    return new PrioritizedTarget(
+                        MathHelpers.MicrovoxelToWorld(bestSupport),
+                        TargetPriority.StructuralSupport,
+                        "targeting structural support column base");
+                }
+            }
+
+            // --- 3b: Large mass cluster ---
+            // Find the densest cluster of voxels — maximizes splash damage
+            if (rng.NextDouble() > skipChance)
+            {
+                // Divide the zone into a 3x3x3 grid of sectors, count voxels in each
+                int sectorsPerAxis = 3;
+                int[,,] sectorCounts = new int[sectorsPerAxis, sectorsPerAxis, sectorsPerAxis];
+                Vector3[,,] sectorSums = new Vector3[sectorsPerAxis, sectorsPerAxis, sectorsPerAxis];
+
+                float invSizeX = (float)sectorsPerAxis / Math.Max(size.X, 1);
+                float invSizeY = (float)sectorsPerAxis / Math.Max(size.Y, 1);
+                float invSizeZ = (float)sectorsPerAxis / Math.Max(size.Z, 1);
+
+                foreach (Vector3I p in solidPositions)
+                {
+                    int sx = Math.Clamp((int)((p.X - origin.X) * invSizeX), 0, sectorsPerAxis - 1);
+                    int sy = Math.Clamp((int)((p.Y - origin.Y) * invSizeY), 0, sectorsPerAxis - 1);
+                    int sz = Math.Clamp((int)((p.Z - origin.Z) * invSizeZ), 0, sectorsPerAxis - 1);
+
+                    sectorCounts[sx, sy, sz]++;
+                    Vector3 w = MathHelpers.MicrovoxelToWorld(p);
+                    sectorSums[sx, sy, sz] += w;
+                }
+
+                // Find the sector with the most voxels
+                int bestCount = 0;
+                int bsx = 0, bsy = 0, bsz = 0;
+                for (int sx = 0; sx < sectorsPerAxis; sx++)
+                {
+                    for (int sy = 0; sy < sectorsPerAxis; sy++)
+                    {
+                        for (int sz = 0; sz < sectorsPerAxis; sz++)
+                        {
+                            int count = sectorCounts[sx, sy, sz];
+                            // Add a small random factor so bots don't always pick the same sector
+                            int adjustedCount = count + rng.Next(3);
+                            if (adjustedCount > bestCount)
+                            {
+                                bestCount = adjustedCount;
+                                bsx = sx;
+                                bsy = sy;
+                                bsz = sz;
+                            }
+                        }
+                    }
+                }
+
+                if (bestCount > 0 && sectorCounts[bsx, bsy, bsz] > 0)
+                {
+                    int realCount = sectorCounts[bsx, bsy, bsz];
+                    Vector3 centroid = sectorSums[bsx, bsy, bsz] / realCount;
+                    return new PrioritizedTarget(
+                        centroid,
+                        TargetPriority.LargeMass,
+                        $"targeting dense voxel cluster ({realCount} voxels in sector)");
+                }
+            }
+
+            // ────────────────────────────────────────────────────────
+            //  PRIORITY 4 — Random / fallback
+            // ────────────────────────────────────────────────────────
+            {
+                Vector3I randomTarget = solidPositions[rng.Next(solidPositions.Count)];
+                return new PrioritizedTarget(
+                    MathHelpers.MicrovoxelToWorld(randomTarget),
+                    TargetPriority.RandomSolid,
+                    "random solid voxel (fallback)");
+            }
+        }
     }
 }

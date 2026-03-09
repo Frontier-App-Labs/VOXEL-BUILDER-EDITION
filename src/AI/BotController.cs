@@ -149,7 +149,7 @@ public partial class BotController : Node
 
         // Calculate aim
         AimUpdatePayload aim = _combatPlanner.CreateAimExtended(
-            weapon, enemyZone, targetSlot, Difficulty, _rng);
+            weapon, enemyZone, targetSlot, Difficulty, _rng, world);
 
         // Apply aim to the aiming system
         aimingSystem.YawRadians = aim.YawRadians;
@@ -179,6 +179,30 @@ public partial class BotController : Node
     //  TARGET SELECTION
     // ─────────────────────────────────────────────────
 
+    /// <summary>
+    /// Records damage dealt to this bot by an attacker, building a threat
+    /// profile used for weighted target selection.
+    /// </summary>
+    public void RecordDamageReceived(PlayerSlot attackerSlot, int damage)
+    {
+        _combatPlanner.RecordDamageReceived(attackerSlot, damage);
+    }
+
+    /// <summary>
+    /// Returns a dictionary of threat scores (damage received from each enemy).
+    /// Used by GameManager for the static target-selection path.
+    /// </summary>
+    public Dictionary<PlayerSlot, int> GetThreatScores(
+        List<(PlayerSlot Slot, PlayerData Data)> enemies)
+    {
+        Dictionary<PlayerSlot, int> scores = new Dictionary<PlayerSlot, int>();
+        foreach (var e in enemies)
+        {
+            scores[e.Slot] = _combatPlanner.GetThreatFrom(e.Slot);
+        }
+        return scores;
+    }
+
     private (PlayerSlot Slot, PlayerData Data) SelectTarget(
         List<(PlayerSlot Slot, PlayerData Data)> enemies)
     {
@@ -187,31 +211,16 @@ public partial class BotController : Node
             return enemies[0];
         }
 
-        switch (Difficulty)
+        // Build threat scores from the combat planner's damage-received history
+        Dictionary<PlayerSlot, int> threatScores = new Dictionary<PlayerSlot, int>();
+        foreach (var e in enemies)
         {
-            case BotDifficulty.Easy:
-                // Easy: pick random enemy
-                return enemies[_rng.Next(enemies.Count)];
-
-            case BotDifficulty.Medium:
-                // Medium: target the weakest enemy (lowest commander health)
-                return enemies.OrderBy(e => e.Data.CommanderHealth).First();
-
-            case BotDifficulty.Hard:
-                // Hard: target the strongest remaining enemy to eliminate threats,
-                // unless one is close to death (finish them off)
-                var nearDeath = enemies.Where(e => e.Data.CommanderHealth <= 30).ToList();
-                if (nearDeath.Count > 0)
-                {
-                    return nearDeath.OrderBy(e => e.Data.CommanderHealth).First();
-                }
-
-                // Otherwise target the one with the most remaining health
-                return enemies.OrderByDescending(e => e.Data.CommanderHealth).First();
-
-            default:
-                return enemies[0];
+            threatScores[e.Slot] = _combatPlanner.GetThreatFrom(e.Slot);
         }
+
+        // Use the shared weighted random selection system
+        return BotCombatPlanner.SelectTargetStatic(
+            enemies, Difficulty, _rng, threatScores, botZoneCenter: null);
     }
 
     // ─────────────────────────────────────────────────

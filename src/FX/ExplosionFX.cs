@@ -61,7 +61,7 @@ public partial class ExplosionFX : Node3D
     private static TorusMesh? _cachedShockwaveTorus;
 
     // ── Object pool ────────────────────────────────────────────────
-    private const int PoolSize = 8;
+    private const int PoolSize = 20;
     private static readonly Queue<ExplosionFX> _pool = new();
 
     // ================================================================

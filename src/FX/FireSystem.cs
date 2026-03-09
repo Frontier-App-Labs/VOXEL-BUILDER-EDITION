@@ -34,8 +34,8 @@ public partial class FireSystem : Node
     };
 
     // ── Pooled particle emitters & lights ────────────────────────────────
-    private const int MaxFireParticles = 50;
-    private const int MaxFireLights = 10;
+    private const int MaxFireParticles = 100;
+    private const int MaxFireLights = 20;
     private const float SpreadChance = 0.4f;
     private const float IntensityPerTick = 0.15f;
     private const float FuelConsumeRate = 0.5f;
@@ -263,7 +263,7 @@ public partial class FireSystem : Node
                 // Group into connected components and spawn FallingChunks
                 Vector3 explosionCenter = (min + max) * 0.5f;
                 List<List<Vector3I>> components = FallingChunk.GroupConnectedComponents(
-                    new HashSet<Vector3I>(disconnected));
+                    new HashSet<Vector3I>(disconnected), world);
 
                 foreach (List<Vector3I> component in components)
                 {
@@ -393,6 +393,8 @@ public partial class FireSystem : Node
         particles.OneShot = false;
         particles.FixedFps = 30;
         particles.DrawOrder = GpuParticles3D.DrawOrderEnum.Lifetime;
+        // Keep fire visuals animating between turns — damage is turn-based only
+        particles.ProcessMode = ProcessModeEnum.Always;
 
         // Process material — controls particle motion
         ParticleProcessMaterial processMat = GetOrCreateFireProcessMaterial();
@@ -435,6 +437,7 @@ public partial class FireSystem : Node
         light.OmniRange = 3.0f;
         light.OmniAttenuation = 1.5f;
         light.ShadowEnabled = false; // Performance: no shadows from fire lights
+        light.ProcessMode = ProcessModeEnum.Always;
         AddChild(light);
         return light;
     }

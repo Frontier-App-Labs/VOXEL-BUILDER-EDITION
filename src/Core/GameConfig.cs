@@ -17,7 +17,7 @@ public static class GameConfig
     public const float MicrovoxelMeters = BuildUnitMeters / MicrovoxelsPerBuildUnit;
     public const int PrototypeArenaWidth = 128;
     public const int PrototypeArenaDepth = 128;
-    public const int PrototypeGroundThickness = 4;
+    public const int PrototypeGroundThickness = 6;
     public const int PrototypeBuildZoneWidth = 32;
     public const int PrototypeBuildZoneHeight = 24;
     public const int PrototypeBuildZoneDepth = 32;
@@ -30,11 +30,11 @@ public static class GameConfig
     public const int MaxObsidianBlocks = 20;
 
     public const float DefaultTurnTime = 60f;
-    public const int MaxDebrisObjects = 200;
-    public const int MaxVisualDebris = 500;
+    public const int MaxDebrisObjects = 500;
+    public const int MaxVisualDebris = 1000;
     public const int MaxGpuParticlesGlobal = 500;
-    public const float DebrisDespawnTime = 5f;
-    public const int MaxRuinObjects = 1000;
+    public const float DebrisDespawnTime = 8f;
+    public const int MaxRuinObjects = 2000;
     public const float SlowMoTimeScale = 0.3f;
     public const float SlowMoDuration = 2f;
     public const float FireSpreadInterval = 1f;
@@ -48,10 +48,23 @@ public static class GameConfig
     public const float TroopMeleeRange = 2f;       // microvoxels
     public const float TroopMoveLerpDuration = 0.3f; // seconds for smooth movement
     public const int MaxDoorsPerPlayer = 4;
+    public const int TroopLifespanTicks = 6;        // ticks before a deployed troop dies automatically
 
     public const int CommanderHP = 100;
     public const int MinBlocksAroundCommander = 6;
     public const int MinWeaponCommanderGap = 2;
+    public const float MaxWeaponPlacementRange = 60f; // build units from zone center – allows terrain placement
+
+    // Commander fall damage
+    public const float CommanderGravity = 9.8f;
+    public const float CommanderFallDamageMinHeight = 2f;   // metres – no damage below this
+    public const float CommanderFallDamagePerMeter = 10f;    // HP per metre fallen above threshold
+    public const float CommanderVoidKillY = -10f;            // instant death below this world Y
+
+    // Commander critical direct hit
+    public const float CommanderDirectHitMultiplier = 2.5f;  // damage multiplier for direct projectile/beam hits
+    public const float CommanderCriticalShakeIntensity = 1.2f;
+    public const float CommanderCriticalShakeDuration = 0.5f;
 
     public const int NetTickRate = 20;
     public const int MaxPlayers = 4;

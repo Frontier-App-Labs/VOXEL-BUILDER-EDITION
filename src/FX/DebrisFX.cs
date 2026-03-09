@@ -34,15 +34,18 @@ public partial class DebrisFX : Node3D
     private static PhysicsMaterial? _sharedGlassPhysicsMaterial;
     private static PhysicsMaterial? _sharedMetalPhysicsMaterial;
 
-    // Spawn queuing: max 5 debris spawns per frame
-    private const int MaxSpawnsPerFrame = 5;
+    // Spawn queuing: max 20 debris spawns per frame for responsive explosion debris
+    private const int MaxSpawnsPerFrame = 20;
     private int _spawnsThisFrame;
     private readonly Queue<QueuedSpawn> _spawnQueue = new();
 
     // Settling thresholds
     private const float SettleVelocityThreshold = 0.5f;
     private const float SettleTimeRequired = 0.3f;
-    private const float VisualGroundThreshold = 0.05f;
+
+    // Ground surface Y in world-space meters: top of the PrototypeGroundThickness layer
+    private static readonly float GroundSurfaceY = GameConfig.PrototypeGroundThickness * GameConfig.MicrovoxelMeters;
+    private const float VisualGroundMargin = 0.05f;  // Small margin above ground surface
 
     /// <summary>
     /// Describes the debris shape category based on material type.
@@ -99,6 +102,7 @@ public partial class DebrisFX : Node3D
         public Vector3 ExplosionCenter;
         public int Count;
         public VoxelMaterialType Material;
+        public float VoxelScale; // 0 = use default MicrovoxelMeters
     }
 
     // ── Shared physics materials ────────────────────────────────────────
@@ -217,6 +221,20 @@ public partial class DebrisFX : Node3D
         Core.AudioDirector.Instance?.PlaySFX("debris_impact", position);
     }
 
+    /// <summary>
+    /// Spawns debris at a custom voxel scale instead of the default world MicrovoxelMeters.
+    /// Used for weapon destruction where voxels are much smaller (0.12-0.18m) than
+    /// world voxels (0.5m), so debris pieces match the weapon's actual voxel size.
+    /// </summary>
+    public static void SpawnDebris(Node parent, Vector3 position, Color materialColor, Vector3 explosionCenter, int count, VoxelMaterialType material, float voxelScale)
+    {
+        DebrisFX manager = GetOrCreateManager(parent);
+        manager.EnqueueSpawn(position, materialColor, explosionCenter, count, material, voxelScale);
+
+        // Play retro debris ping sound
+        Core.AudioDirector.Instance?.PlaySFX("debris_impact", position);
+    }
+
     // ── Manager singleton ───────────────────────────────────────────────
 
     private static DebrisFX GetOrCreateManager(Node parent)
@@ -262,39 +280,40 @@ public partial class DebrisFX : Node3D
     }
 
     /// <summary>
-    /// Returns a randomized mesh size for debris based on material shape.
-    /// Glass shards are flat, wood splinters are elongated, etc.
+    /// Returns a mesh size for debris based on material shape.
+    /// Cube debris uses the given voxel size so pieces look like
+    /// actual broken voxel fragments. Specialized shapes (shards, splinters)
+    /// use proportions derived from the voxel size for visual consistency.
+    /// When voxelSize is 0, defaults to MicrovoxelMeters (0.5m) for world voxels.
+    /// Weapon debris passes a smaller scale (0.12-0.18m) so pieces match the weapon.
     /// </summary>
-    private static Vector3 GetDebrisSize(DebrisShape shape)
+    private static Vector3 GetDebrisSize(DebrisShape shape, float voxelSize = 0f)
     {
+        float v = voxelSize > 0f ? voxelSize : GameConfig.MicrovoxelMeters;
+
         return shape switch
         {
-            // Glass shards: flat, angular pieces (thin Y dimension)
+            // Glass/ice shards: flat angular fragments at half-voxel scale
             DebrisShape.Shard => new Vector3(
-                (float)GD.RandRange(0.04, 0.12),
-                (float)GD.RandRange(0.01, 0.03),
-                (float)GD.RandRange(0.06, 0.14)),
+                v * (float)GD.RandRange(0.5, 1.0),
+                v * (float)GD.RandRange(0.08, 0.2),
+                v * (float)GD.RandRange(0.5, 1.0)),
 
-            // Wood splinters: elongated rectangular pieces (long Z dimension)
+            // Wood/bark splinters: elongated pieces, voxel width
             DebrisShape.Splinter => new Vector3(
-                (float)GD.RandRange(0.02, 0.05),
-                (float)GD.RandRange(0.02, 0.04),
-                (float)GD.RandRange(0.10, 0.25)),
+                v * (float)GD.RandRange(0.2, 0.4),
+                v * (float)GD.RandRange(0.2, 0.4),
+                v * (float)GD.RandRange(1.0, 2.0)),
 
-            // Metal chunks: small dense cubes
-            DebrisShape.MetalChunk => new Vector3(
-                (float)GD.RandRange(0.04, 0.10),
-                (float)GD.RandRange(0.04, 0.10),
-                (float)GD.RandRange(0.04, 0.10)),
+            // Metal chunks: dense, exact voxel-sized cubes
+            DebrisShape.MetalChunk => Vector3.One * v,
 
-            // Sand/dirt granules: tiny bits
-            DebrisShape.Granular => new Vector3(
-                (float)GD.RandRange(0.02, 0.06),
-                (float)GD.RandRange(0.02, 0.06),
-                (float)GD.RandRange(0.02, 0.06)),
+            // Sand/dirt granules: quarter to half voxel
+            DebrisShape.Granular => Vector3.One * v * (float)GD.RandRange(0.25, 0.5),
 
-            // Default cubes: standard chunky voxel debris
-            _ => Vector3.One * (float)GD.RandRange(0.05, 0.15),
+            // Default cubes (stone, brick, concrete, etc.): exact microvoxel size.
+            // This ensures debris looks like actual broken voxel pieces.
+            _ => Vector3.One * v,
         };
     }
 
@@ -303,13 +322,14 @@ public partial class DebrisFX : Node3D
     /// </summary>
     private static (float impulseScale, float angularScale, float gravityScale, float mass) GetPhysicsParams(DebrisShape shape)
     {
+        // Masses scaled up to match larger voxel-scale debris sizes
         return shape switch
         {
-            DebrisShape.Shard => (0.8f, 12f, 1.2f, 0.05f),      // Light, spinny glass
-            DebrisShape.Splinter => (1.0f, 10f, 1.3f, 0.08f),    // Tumbling wood pieces
-            DebrisShape.MetalChunk => (0.6f, 6f, 2.0f, 0.3f),    // Heavy, less air time
-            DebrisShape.Granular => (1.2f, 15f, 1.8f, 0.03f),    // Scattered fast
-            _ => (1.0f, 8f, 1.5f, 0.1f),                         // Default cubes
+            DebrisShape.Shard => (0.8f, 8f, 1.2f, 0.2f),       // Light, spinny glass
+            DebrisShape.Splinter => (1.0f, 6f, 1.3f, 0.3f),     // Tumbling wood pieces
+            DebrisShape.MetalChunk => (0.6f, 4f, 2.0f, 1.0f),   // Heavy, less air time
+            DebrisShape.Granular => (1.2f, 10f, 1.8f, 0.1f),    // Scattered fast
+            _ => (1.0f, 6f, 1.5f, 0.4f),                        // Default cubes
         };
     }
 
@@ -370,7 +390,7 @@ public partial class DebrisFX : Node3D
 
     // ── Spawn queuing ───────────────────────────────────────────────────
 
-    private void EnqueueSpawn(Vector3 position, Color color, Vector3 explosionCenter, int count, VoxelMaterialType material)
+    private void EnqueueSpawn(Vector3 position, Color color, Vector3 explosionCenter, int count, VoxelMaterialType material, float voxelScale = 0f)
     {
         _spawnQueue.Enqueue(new QueuedSpawn
         {
@@ -378,11 +398,12 @@ public partial class DebrisFX : Node3D
             Color = color,
             ExplosionCenter = explosionCenter,
             Count = count,
-            Material = material
+            Material = material,
+            VoxelScale = voxelScale
         });
     }
 
-    private void SpawnDebrisInternal(Vector3 position, Color materialColor, Vector3 explosionCenter, int count, VoxelMaterialType material)
+    private void SpawnDebrisInternal(Vector3 position, Color materialColor, Vector3 explosionCenter, int count, VoxelMaterialType material, float voxelScale = 0f)
     {
         Vector3 outwardDir = (position - explosionCenter).Normalized();
         if (outwardDir.LengthSquared() < 0.01f)
@@ -393,6 +414,11 @@ public partial class DebrisFX : Node3D
         double now = Time.GetTicksMsec() / 1000.0;
         DebrisShape shape = GetShapeForMaterial(material);
         (float impulseScale, float angularScale, float gravityScale, float mass) = GetPhysicsParams(shape);
+
+        // Scale factor for custom voxel sizes (e.g. weapon debris at 0.12-0.18m
+        // vs world voxels at 0.5m). Affects spawn jitter, impulse, and mass so
+        // small weapon debris scatters proportionally to its size.
+        float sizeRatio = voxelScale > 0f ? voxelScale / GameConfig.MicrovoxelMeters : 1f;
 
         for (int i = 0; i < count; i++)
         {
@@ -407,26 +433,31 @@ public partial class DebrisFX : Node3D
                         Color = materialColor,
                         ExplosionCenter = explosionCenter,
                         Count = count - i,
-                        Material = material
+                        Material = material,
+                        VoxelScale = voxelScale
                     });
                 }
                 return;
             }
 
-            Vector3 debrisSize = GetDebrisSize(shape);
+            Vector3 debrisSize = GetDebrisSize(shape, voxelScale);
+            float jitter = 0.2f * sizeRatio;
+            float jitterY = 0.3f * sizeRatio;
             Vector3 spawnPos = position + new Vector3(
-                (float)GD.RandRange(-0.2, 0.2),
-                (float)GD.RandRange(0, 0.3),
-                (float)GD.RandRange(-0.2, 0.2));
+                (float)GD.RandRange(-jitter, jitter),
+                (float)GD.RandRange(0, jitterY),
+                (float)GD.RandRange(-jitter, jitter));
             Vector3 rotation = new Vector3(
                 (float)GD.RandRange(0, Mathf.Tau),
                 (float)GD.RandRange(0, Mathf.Tau),
                 (float)GD.RandRange(0, Mathf.Tau));
-            Vector3 impulse = outwardDir * (float)GD.RandRange(2.0, 6.0) * impulseScale;
+            // Reduced impulse so debris tumbles nearby instead of flying far
+            // Scale impulse down for smaller debris so pieces don't fly too far
+            Vector3 impulse = outwardDir * (float)GD.RandRange(1.0, 3.0) * impulseScale * sizeRatio;
             impulse += new Vector3(
-                (float)GD.RandRange(-2.0, 2.0),
-                (float)GD.RandRange(1.5, 5.0),
-                (float)GD.RandRange(-2.0, 2.0));
+                (float)GD.RandRange(-1.0, 1.0) * sizeRatio,
+                (float)GD.RandRange(1.0, 3.0) * sizeRatio,
+                (float)GD.RandRange(-1.0, 1.0) * sizeRatio);
             Vector3 angVel = new Vector3(
                 (float)GD.RandRange(-angularScale, angularScale),
                 (float)GD.RandRange(-angularScale, angularScale),
@@ -441,9 +472,20 @@ public partial class DebrisFX : Node3D
             };
 
             // Try physics debris first (up to MaxDebrisObjects)
+            if (_active.Count >= GameConfig.MaxDebrisObjects)
+            {
+                // At cap — recycle the oldest active physics debris to make room
+                // (force-settle it into a ruin so it persists, then reuse the slot)
+                DebrisEntry oldest = _active[0];
+                ConvertToRuin(oldest);
+                _active.RemoveAt(0);
+            }
+
             if (_active.Count < GameConfig.MaxDebrisObjects)
             {
-                DebrisEntry entry = AcquireDebris(materialColor, shape, debrisSize, gravityScale, mass);
+                // Scale mass proportionally to debris volume (cube of size ratio)
+                float scaledMass = mass * sizeRatio * sizeRatio * sizeRatio;
+                DebrisEntry entry = AcquireDebris(materialColor, shape, debrisSize, gravityScale, scaledMass);
                 entry.SpawnTime = now;
                 entry.Lifetime = lifetime;
                 entry.IsSettled = false;
@@ -454,15 +496,22 @@ public partial class DebrisFX : Node3D
                 entry.Body.Rotation = rotation;
                 entry.Body.LinearVelocity = Vector3.Zero;
                 entry.Body.AngularVelocity = angVel;
-                entry.Body.ApplyImpulse(impulse * mass * 80f);
+                entry.Body.ApplyImpulse(impulse * mass * 20f);
                 entry.Body.Visible = true;
                 entry.Body.Freeze = false;
 
                 _active.Add(entry);
             }
-            // Fall back to visual-only debris (no physics cost)
-            else if (_activeVisual.Count < GameConfig.MaxVisualDebris)
+            else
             {
+                // Fallback: visual-only debris (recycle oldest visual if at cap too)
+                if (_activeVisual.Count >= GameConfig.MaxVisualDebris)
+                {
+                    VisualDebrisEntry oldestVis = _activeVisual[0];
+                    ConvertToVisualRuin(oldestVis);
+                    _activeVisual.RemoveAt(0);
+                }
+
                 VisualDebrisEntry vEntry = AcquireVisualDebris(materialColor, shape, debrisSize);
                 vEntry.SpawnTime = now;
                 vEntry.Lifetime = lifetime;
@@ -477,10 +526,6 @@ public partial class DebrisFX : Node3D
                 vEntry.Root.Visible = true;
 
                 _activeVisual.Add(vEntry);
-            }
-            else
-            {
-                break;
             }
 
             _spawnsThisFrame++;
@@ -499,7 +544,7 @@ public partial class DebrisFX : Node3D
         while (_spawnQueue.Count > 0 && _spawnsThisFrame < MaxSpawnsPerFrame)
         {
             QueuedSpawn queued = _spawnQueue.Dequeue();
-            SpawnDebrisInternal(queued.Position, queued.Color, queued.ExplosionCenter, queued.Count, queued.Material);
+            SpawnDebrisInternal(queued.Position, queued.Color, queued.ExplosionCenter, queued.Count, queued.Material, queued.VoxelScale);
         }
 
         // Update physics debris
@@ -578,7 +623,7 @@ public partial class DebrisFX : Node3D
             // Check if visual debris has settled on the ground
             if (!vEntry.IsSettled)
             {
-                if (vEntry.Root.GlobalPosition.Y <= VisualGroundThreshold &&
+                if (vEntry.Root.GlobalPosition.Y <= GroundSurfaceY + VisualGroundMargin &&
                     vEntry.Velocity.LengthSquared() < SettleVelocityThreshold * SettleVelocityThreshold)
                 {
                     vEntry.SettleTimer += dt;
@@ -615,11 +660,11 @@ public partial class DebrisFX : Node3D
             vEntry.Root.GlobalPosition += vEntry.Velocity * dt;
             vEntry.Root.Rotation += vEntry.AngularVelocity * dt;
 
-            // Simple ground clamp (y=0) with material-appropriate bounce
-            if (vEntry.Root.GlobalPosition.Y < 0)
+            // Simple ground clamp with material-appropriate bounce
+            if (vEntry.Root.GlobalPosition.Y < GroundSurfaceY)
             {
                 Vector3 pos = vEntry.Root.GlobalPosition;
-                pos.Y = 0;
+                pos.Y = GroundSurfaceY;
                 vEntry.Root.GlobalPosition = pos;
 
                 float bounceFactor = vEntry.Shape switch
@@ -653,9 +698,12 @@ public partial class DebrisFX : Node3D
             _activeVisual[i] = vEntry;
         }
 
-        // Enforce ruin cap: remove oldest ruins when limit exceeded
+        // Settled ruins persist permanently — they're frozen (no physics cost).
+        // Only enforce cleanup if we somehow exceed a very large safety limit
+        // to prevent runaway memory in extremely long matches.
+        const int absoluteMax = 10000;
         int totalRuins = _ruins.Count + _visualRuins.Count;
-        while (totalRuins > GameConfig.MaxRuinObjects)
+        while (totalRuins > absoluteMax)
         {
             if (_ruins.Count > 0)
             {
@@ -683,8 +731,9 @@ public partial class DebrisFX : Node3D
         entry.Body.Freeze = true;
         entry.Body.LinearVelocity = Vector3.Zero;
         entry.Body.AngularVelocity = Vector3.Zero;
-        entry.Body.CollisionLayer = 0;
-        entry.Body.CollisionMask = 0;
+        // Keep collision active so other debris can pile on top of settled ruins
+        entry.Body.CollisionLayer = 1 | 4;  // Act as world + debris so others land on us
+        entry.Body.CollisionMask = 0;        // Frozen ruin doesn't need to detect anything itself
         entry.Body.Visible = true;
 
         if (entry.Mesh.GetSurfaceOverrideMaterial(0) is StandardMaterial3D mat)
@@ -748,7 +797,7 @@ public partial class DebrisFX : Node3D
         ruin.Body.Visible = false;
         ruin.Body.Freeze = true;
         ruin.Body.CollisionLayer = 4;
-        ruin.Body.CollisionMask = 1;
+        ruin.Body.CollisionMask = 1 | 4;  // Collide with world AND other debris/frozen chunks
         ruin.Body.LinearVelocity = Vector3.Zero;
         ruin.Body.AngularVelocity = Vector3.Zero;
         _pool.Enqueue(ruin.Body);
@@ -782,7 +831,7 @@ public partial class DebrisFX : Node3D
             body.GravityScale = gravityScale;
             body.PhysicsMaterialOverride = GetPhysicsMaterialForShape(shape);
             body.CollisionLayer = 4;
-            body.CollisionMask = 1;
+            body.CollisionMask = 1 | 4;  // Collide with world AND other debris/frozen chunks for piling
 
             // Update collision shape size
             if (body.GetNode<CollisionShape3D>("Collider") is CollisionShape3D collider &&
@@ -835,7 +884,7 @@ public partial class DebrisFX : Node3D
         rb.AddChild(meshInst);
 
         rb.CollisionLayer = 4;
-        rb.CollisionMask = 1;
+        rb.CollisionMask = 1 | 4;  // Collide with world AND other debris/frozen chunks for piling
 
         AddChild(rb);
         _totalAllocated++;

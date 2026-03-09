@@ -207,6 +207,63 @@ public partial class VoxelWorld : Node3D
         }
     }
 
+    /// <summary>
+    /// Applies a batch of voxel changes (from explosion processing) in one pass.
+    /// Groups writes by chunk to avoid redundant dictionary lookups, and queues
+    /// exactly one remesh per affected chunk. Much faster than calling SetVoxel
+    /// per voxel for large explosions.
+    /// </summary>
+    public void ApplyBulkChanges(List<(Vector3I Position, Voxel NewVoxel)> changes, PlayerSlot? instigator)
+    {
+        if (changes.Count == 0)
+            return;
+
+        var affectedChunks = new Dictionary<Vector3I, VoxelChunk>();
+        var edgeChunks = new HashSet<Vector3I>();
+
+        for (int i = 0; i < changes.Count; i++)
+        {
+            Vector3I worldPos = changes[i].Position;
+            Voxel newVoxel = changes[i].NewVoxel;
+            Vector3I chunkCoords = MathHelpers.WorldToChunk(worldPos);
+
+            if (!affectedChunks.TryGetValue(chunkCoords, out VoxelChunk? chunk))
+            {
+                chunk = GetOrCreateChunk(chunkCoords);
+                affectedChunks[chunkCoords] = chunk;
+            }
+
+            Vector3I local = MathHelpers.WorldToLocal(worldPos);
+            Voxel before = chunk.GetVoxel(local);
+            chunk.SetVoxel(local, newVoxel);
+
+            // Track edge neighbors for remeshing
+            if (local.X == 0) edgeChunks.Add(chunkCoords + Vector3I.Left);
+            if (local.X == GameConfig.ChunkSize - 1) edgeChunks.Add(chunkCoords + Vector3I.Right);
+            if (local.Y == 0) edgeChunks.Add(chunkCoords + Vector3I.Down);
+            if (local.Y == GameConfig.ChunkSize - 1) edgeChunks.Add(chunkCoords + Vector3I.Up);
+            if (local.Z == 0) edgeChunks.Add(chunkCoords + new Vector3I(0, 0, -1));
+            if (local.Z == GameConfig.ChunkSize - 1) edgeChunks.Add(chunkCoords + new Vector3I(0, 0, 1));
+
+            EventBus.Instance?.EmitVoxelChanged(new VoxelChangeEvent(worldPos, before.Data, newVoxel.Data, instigator));
+        }
+
+        // Queue exactly one remesh per affected chunk
+        foreach (Vector3I chunkCoords in affectedChunks.Keys)
+        {
+            QueueRemesh(chunkCoords);
+        }
+
+        // Queue remeshes for edge-neighboring chunks not already in the affected set
+        foreach (Vector3I neighborCoords in edgeChunks)
+        {
+            if (!affectedChunks.ContainsKey(neighborCoords))
+            {
+                QueueRemesh(neighborCoords);
+            }
+        }
+    }
+
     public List<Vector3I> DestroyVoxelsInRadius(Vector3 centerWorld, float radiusMicrovoxels, int damage, PlayerSlot? instigator = null)
     {
         Vector3I center = MathHelpers.WorldToMicrovoxel(centerWorld);
@@ -292,7 +349,11 @@ public partial class VoxelWorld : Node3D
         // connection paths running outside the scan area are still discovered.
         // This prevents false positives (flagging voxels that are connected via
         // voxels just outside the search bounds).
-        const int bfsPadding = 16; // extra microvoxels beyond scan area for BFS
+        // Use a generous padding: at least the full scan width or 64 microvoxels
+        // (32m), whichever is larger. Structures can connect to ground via long
+        // paths (bridges, arches, L-shapes) that route well outside the blast zone.
+        int scanWidth = System.Math.Max(scanMax.X - scanMin.X, System.Math.Max(scanMax.Y - scanMin.Y, scanMax.Z - scanMin.Z));
+        int bfsPadding = System.Math.Max(64, scanWidth); // At least 64 microvoxels, or the full scan width
         Vector3I bfsMin = new Vector3I(scanMin.X - bfsPadding, 0, scanMin.Z - bfsPadding);
         Vector3I bfsMax = new Vector3I(scanMax.X + bfsPadding, scanMax.Y + bfsPadding, scanMax.Z + bfsPadding);
 
@@ -386,15 +447,21 @@ public partial class VoxelWorld : Node3D
         // This ensures there is a wide flat area before mountains begin rising.
         int groundExtent = halfWidth + TerrainDecorator.MountainStartOffset;
 
-        // Sub-layers: Foundation (structural, indestructible)
+        // Bottom layer: Foundation (indestructible bedrock)
         FillBoxBulk(
             new Vector3I(-groundExtent, 0, -groundExtent),
-            new Vector3I(groundExtent, GameConfig.PrototypeGroundThickness - 2, groundExtent),
+            new Vector3I(groundExtent, 0, groundExtent),
             Voxel.Create(VoxelMaterialType.Foundation));
 
-        // Top layer: Dirt (looks like grass)
+        // Y=1 to Y=2: Stone (destructible, creates cool layered craters)
         FillBoxBulk(
-            new Vector3I(-groundExtent, GameConfig.PrototypeGroundThickness - 1, -groundExtent),
+            new Vector3I(-groundExtent, 1, -groundExtent),
+            new Vector3I(groundExtent, 2, groundExtent),
+            Voxel.Create(VoxelMaterialType.Stone));
+
+        // Y=3 to Y=5: Dirt (destructible top layers, looks like grass)
+        FillBoxBulk(
+            new Vector3I(-groundExtent, 3, -groundExtent),
             new Vector3I(groundExtent, GameConfig.PrototypeGroundThickness - 1, groundExtent),
             Voxel.Create(VoxelMaterialType.Dirt));
     }

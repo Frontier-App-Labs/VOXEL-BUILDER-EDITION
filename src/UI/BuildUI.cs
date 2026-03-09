@@ -54,6 +54,8 @@ public partial class BuildUI : Control
         VoxelMaterialType.Sand,
         VoxelMaterialType.Ice,
         VoxelMaterialType.ArmorPlate,
+        VoxelMaterialType.Leaves,
+        VoxelMaterialType.Bark,
     };
 
     // --- Weapon type definitions for the build UI ---
@@ -1226,6 +1228,28 @@ public partial class BuildUI : Control
             _materialButtons[i].AddThemeStyleboxOverride("panel", CreateFlatStyle(bg, 0));
         }
         MaterialSelected?.Invoke(BuildMaterials[index]);
+    }
+
+    /// <summary>
+    /// Updates the visual selection highlight to the given material type without
+    /// firing the MaterialSelected event. Called by GameManager when the material
+    /// is changed externally (e.g. via scroll wheel cycling) so the UI stays in sync.
+    /// </summary>
+    public void SetSelectedMaterialVisual(VoxelMaterialType material)
+    {
+        for (int i = 0; i < BuildMaterials.Length; i++)
+        {
+            if (BuildMaterials[i] == material)
+            {
+                _selectedMaterialIndex = i;
+                for (int j = 0; j < _materialButtons.Count; j++)
+                {
+                    Color bg = j == i ? new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.15f) : new Color(0, 0, 0, 0);
+                    _materialButtons[j].AddThemeStyleboxOverride("panel", CreateFlatStyle(bg, 0));
+                }
+                return;
+            }
+        }
     }
 
     private void SelectBlueprint(int index)

@@ -84,6 +84,7 @@ public sealed class VoxelTextureAtlas
         NormalizedTileSize = new Vector2(1f / tilesPerRow, 1f / tilesPerRow);
         SeedDefaultMappings();
         TryLoadGeneratedTextures();
+        GD.Print($"VoxelTextureAtlas: HasGeneratedTextures={HasGeneratedTextures}, AtlasTexture={(AtlasTexture != null ? "loaded" : "null")}");
     }
 
     /// <summary>
@@ -150,6 +151,7 @@ public sealed class VoxelTextureAtlas
 
             if (tex is null)
             {
+                GD.Print($"VoxelTextureAtlas: Could not load texture for {matType} (tried {path32}, {path64})");
                 continue;
             }
 
@@ -183,6 +185,7 @@ public sealed class VoxelTextureAtlas
 
         if (loadedImages.Count == 0)
         {
+            GD.PrintErr($"VoxelTextureAtlas: No textures loaded! Checked {TextureFileNames.Count} materials in {textureDir}");
             return;
         }
 

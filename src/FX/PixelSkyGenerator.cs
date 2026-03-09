@@ -91,8 +91,24 @@ public static class PixelSkyGenerator
         }
 
         // Fallback to procedural shader
-        GD.Print("[PixelSkyGenerator] Panorama not found, using procedural pixel sky.");
-        return CreatePixelSkyResource(SkyPreset.GoldenHour);
+        GD.Print("[PixelSkyGenerator] Panorama not found, trying procedural pixel sky.");
+        Sky proceduralSky = CreatePixelSkyResource(SkyPreset.GoldenHour);
+        if (proceduralSky.SkyMaterial is ShaderMaterial shaderMat && shaderMat.Shader != null)
+        {
+            return proceduralSky;
+        }
+
+        // Ultimate fallback: built-in ProceduralSkyMaterial (never returns grey)
+        GD.PushWarning("[PixelSkyGenerator] All sky methods failed, using built-in ProceduralSkyMaterial.");
+        ProceduralSkyMaterial builtinSky = new ProceduralSkyMaterial();
+        builtinSky.SkyTopColor = new Color(0.18f, 0.30f, 0.55f);
+        builtinSky.SkyHorizonColor = new Color(0.58f, 0.72f, 0.82f);
+        builtinSky.GroundBottomColor = new Color(0.30f, 0.25f, 0.20f);
+        builtinSky.GroundHorizonColor = new Color(0.55f, 0.55f, 0.50f);
+        Sky fallbackSky = new Sky();
+        fallbackSky.SkyMaterial = builtinSky;
+        fallbackSky.RadianceSize = Sky.RadianceSizeEnum.Size128;
+        return fallbackSky;
     }
 
     // ─────────────────────────────────────────────────

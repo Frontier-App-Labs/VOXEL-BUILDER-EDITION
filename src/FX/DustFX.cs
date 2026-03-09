@@ -1,4 +1,5 @@
 using Godot;
+using System.Collections.Generic;
 using VoxelSiege.Voxel;
 
 namespace VoxelSiege.FX;
@@ -8,14 +9,39 @@ namespace VoxelSiege.FX;
 /// Now material-aware: tints dust to match the destroyed block type.
 /// Grey for stone/concrete, brown for dirt, golden for sand, etc.
 /// Particle resources are cached as static fields.
+/// Uses object pooling to avoid unbounded node creation during heavy combat.
 /// </summary>
 public partial class DustFX : Node3D
 {
     private GpuParticles3D _dust = null!;
+    private bool _initialized;
+    private float _cleanupTimer;
+    private float _cleanupDelay;
+    private bool _active;
 
     // Cached particle resources
     private static CurveTexture? _cachedScaleTex;
     private static SphereMesh? _cachedSphere;
+
+    // Object pool
+    private const int PoolSize = 20;
+    private static readonly Queue<DustFX> _pool = new();
+
+    /// <summary>
+    /// Immediately frees all pooled DustFX instances.
+    /// Call when transitioning between game phases.
+    /// </summary>
+    public static void ClearAll()
+    {
+        while (_pool.Count > 0)
+        {
+            DustFX pooled = _pool.Dequeue();
+            if (IsInstanceValid(pooled))
+            {
+                pooled.Free();
+            }
+        }
+    }
 
     /// <summary>
     /// Spawns a dust cloud effect at the given world position with generic brown/grey tint.
@@ -31,8 +57,26 @@ public partial class DustFX : Node3D
     /// </summary>
     public static DustFX Spawn(Node parent, Vector3 position, float radius, VoxelMaterialType material)
     {
-        DustFX fx = new DustFX();
-        parent.AddChild(fx);
+        DustFX fx;
+        if (_pool.Count > 0)
+        {
+            fx = _pool.Dequeue();
+            if (!GodotObject.IsInstanceValid(fx.GetParent()) || fx.GetParent() != parent)
+            {
+                if (GodotObject.IsInstanceValid(fx.GetParent()))
+                {
+                    fx.GetParent().RemoveChild(fx);
+                }
+                parent.AddChild(fx);
+            }
+            fx.Visible = true;
+            fx.SetProcess(true);
+        }
+        else
+        {
+            fx = new DustFX();
+            parent.AddChild(fx);
+        }
         fx.GlobalPosition = position;
         fx.Initialize(radius, material);
         return fx;
@@ -157,47 +201,106 @@ public partial class DustFX : Node3D
     {
         float scale = Mathf.Clamp(radius, 0.3f, 6f);
 
-        _dust = new GpuParticles3D();
-        _dust.Amount = 12;
-        _dust.Lifetime = 2.5;
-        _dust.Explosiveness = 0.8f;
-        _dust.OneShot = true;
-        _dust.Emitting = true;
+        if (!_initialized)
+        {
+            _dust = new GpuParticles3D();
+            _dust.Amount = 12;
+            _dust.Lifetime = 2.5;
+            _dust.Explosiveness = 0.8f;
+            _dust.OneShot = true;
 
-        ParticleProcessMaterial mat = new ParticleProcessMaterial();
-        mat.Direction = new Vector3(0f, 0.4f, 0f);
-        mat.Spread = 180f;
-        mat.InitialVelocityMin = 0.3f * scale;
-        mat.InitialVelocityMax = 1.2f * scale;
-        mat.Gravity = new Vector3(0f, 0.15f, 0f); // Slight upward float
-        mat.DampingMin = 4f;
-        mat.DampingMax = 4f;
-        mat.EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Sphere;
-        mat.EmissionSphereRadius = 0.3f * scale;
+            ParticleProcessMaterial mat = new ParticleProcessMaterial();
+            mat.Direction = new Vector3(0f, 0.4f, 0f);
+            mat.Spread = 180f;
+            mat.InitialVelocityMin = 0.3f * scale;
+            mat.InitialVelocityMax = 1.2f * scale;
+            mat.Gravity = new Vector3(0f, 0.15f, 0f); // Slight upward float
+            mat.DampingMin = 4f;
+            mat.DampingMax = 4f;
+            mat.EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Sphere;
+            mat.EmissionSphereRadius = 0.3f * scale;
 
-        // Large puffy scale
-        mat.ScaleMin = 0.4f * scale;
-        mat.ScaleMax = 0.8f * scale;
-        mat.ScaleCurve = GetScaleTexture();
+            // Large puffy scale
+            mat.ScaleMin = 0.4f * scale;
+            mat.ScaleMax = 0.8f * scale;
+            mat.ScaleCurve = GetScaleTexture();
 
-        // Material-tinted dust colors
-        (Color start, Color mid, Color end) = GetDustColors(material);
-        Gradient colorGrad = new Gradient();
-        colorGrad.SetColor(0, start);
-        colorGrad.SetColor(1, end);
-        colorGrad.SetOffset(0, 0f);
-        colorGrad.SetOffset(1, 1f);
-        colorGrad.AddPoint(0.4f, mid);
-        GradientTexture1D colorTex = new GradientTexture1D();
-        colorTex.Gradient = colorGrad;
-        mat.ColorRamp = colorTex;
+            // Material-tinted dust colors
+            (Color start, Color mid, Color end) = GetDustColors(material);
+            Gradient colorGrad = new Gradient();
+            colorGrad.SetColor(0, start);
+            colorGrad.SetColor(1, end);
+            colorGrad.SetOffset(0, 0f);
+            colorGrad.SetOffset(1, 1f);
+            colorGrad.AddPoint(0.4f, mid);
+            GradientTexture1D colorTex = new GradientTexture1D();
+            colorTex.Gradient = colorGrad;
+            mat.ColorRamp = colorTex;
 
-        _dust.ProcessMaterial = mat;
-        _dust.DrawPass1 = GetSphere();
+            _dust.ProcessMaterial = mat;
+            _dust.DrawPass1 = GetSphere();
 
-        AddChild(_dust);
+            AddChild(_dust);
+            _dust.Emitting = true;
+            _initialized = true;
+        }
+        else
+        {
+            // Reuse: update particle parameters for new radius/material
+            if (_dust.ProcessMaterial is ParticleProcessMaterial existingMat)
+            {
+                existingMat.InitialVelocityMin = 0.3f * scale;
+                existingMat.InitialVelocityMax = 1.2f * scale;
+                existingMat.EmissionSphereRadius = 0.3f * scale;
+                existingMat.ScaleMin = 0.4f * scale;
+                existingMat.ScaleMax = 0.8f * scale;
 
-        // Use a scene-tree timer instead of per-frame _Process polling
-        GetTree().CreateTimer(3.5).Timeout += () => QueueFree();
+                // Update color ramp for new material
+                (Color start, Color mid, Color end) = GetDustColors(material);
+                Gradient colorGrad = new Gradient();
+                colorGrad.SetColor(0, start);
+                colorGrad.SetColor(1, end);
+                colorGrad.SetOffset(0, 0f);
+                colorGrad.SetOffset(1, 1f);
+                colorGrad.AddPoint(0.4f, mid);
+                GradientTexture1D colorTex = new GradientTexture1D();
+                colorTex.Gradient = colorGrad;
+                existingMat.ColorRamp = colorTex;
+            }
+            _dust.Emitting = true;
+        }
+
+        _cleanupDelay = 3.5f;
+        _cleanupTimer = 0f;
+        _active = true;
+    }
+
+    public override void _Process(double delta)
+    {
+        if (!_active)
+            return;
+
+        _cleanupTimer += (float)delta;
+        if (_cleanupTimer >= _cleanupDelay)
+        {
+            ReturnToPool();
+        }
+    }
+
+    private void ReturnToPool()
+    {
+        _active = false;
+        Visible = false;
+        SetProcess(false);
+        _dust.Emitting = false;
+
+        if (_pool.Count < PoolSize)
+        {
+            _pool.Enqueue(this);
+        }
+        else
+        {
+            QueueFree();
+        }
     }
 }
