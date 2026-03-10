@@ -510,13 +510,37 @@ public partial class LobbyUI : Control
         UpdateLobbyDisplay();
     }
 
+    private float _debugLogTimer;
+
     private void UpdateLobbyDisplay()
     {
         LobbyManager? lobby = LobbyManagerPath is null
             ? GetTree().Root.GetNodeOrNull<LobbyManager>("Main/LobbyManager")
             : GetNodeOrNull<LobbyManager>(LobbyManagerPath);
 
-        if (lobby == null) return;
+        if (lobby == null)
+        {
+            // Log once per second to avoid spam
+            _debugLogTimer += (float)GetProcessDeltaTime();
+            if (_debugLogTimer > 2f)
+            {
+                _debugLogTimer = 0f;
+                GD.PrintErr("[LobbyUI] LobbyManager not found at 'Main/LobbyManager'!");
+            }
+            return;
+        }
+
+        // Periodic debug: log member count
+        _debugLogTimer += (float)GetProcessDeltaTime();
+        if (_debugLogTimer > 3f)
+        {
+            _debugLogTimer = 0f;
+            GD.Print($"[LobbyUI] Lobby '{lobby.LobbyName}' has {lobby.Members.Count} member(s)");
+            foreach (var kvp in lobby.Members)
+            {
+                GD.Print($"  Peer {kvp.Key}: {kvp.Value.DisplayName} (slot {kvp.Value.Slot}, ready={kvp.Value.Ready})");
+            }
+        }
 
         if (_lobbyNameLabel != null)
         {

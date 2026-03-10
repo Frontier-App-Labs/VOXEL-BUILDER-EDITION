@@ -1333,11 +1333,14 @@ public partial class MainMenu : Control
             if (netManager != null)
             {
                 string hostName = netManager.LocalDisplayName;
+                long hostPeerId = netManager.LocalPeerId;
+                GD.Print($"[MainMenu] Adding host to lobby: name='{hostName}', peerId={hostPeerId}, slot=Player1");
                 lobbyManager.AddOrUpdateMember(
-                    netManager.LocalPeerId,
+                    hostPeerId,
                     PlayerSlot.Player1,
                     hostName,
                     false);
+                GD.Print($"[MainMenu] Lobby now has {lobbyManager.Members.Count} member(s)");
             }
         }
 

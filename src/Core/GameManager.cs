@@ -1436,10 +1436,17 @@ public partial class GameManager : Node
     /// </summary>
     private void OnNetworkPeerConnected(long peerId)
     {
-        GD.Print($"[GameManager] Peer connected: {peerId}");
+        GD.Print($"[GameManager] *** Peer connected: {peerId} (IsHost={_networkManager?.IsHost}) ***");
 
         // Host: add peer to lobby when they announce their name (see OnPlayerAnnounced).
         // The host also sees itself connect (peerId=1), which is already handled in StartHosting.
+
+        // If we're the host, broadcast current lobby state to the new peer
+        if (_networkManager?.IsHost == true && _lobbyManager != null)
+        {
+            GD.Print($"[GameManager] Broadcasting lobby state to new peer {peerId}");
+            BroadcastLobbyState();
+        }
     }
 
     /// <summary>
@@ -1549,6 +1556,11 @@ public partial class GameManager : Node
         if (_lobbyManager == null || _networkManager == null || !_networkManager.IsHost) return;
 
         LobbyStatePayload payload = _lobbyManager.BuildStatePayload();
+        GD.Print($"[GameManager] Broadcasting lobby state: {payload.Players.Length} player(s)");
+        foreach (var p in payload.Players)
+        {
+            GD.Print($"  → Peer {p.PeerId}: '{p.DisplayName}' slot={p.SlotIndex} ready={p.IsReady}");
+        }
         byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(payload);
         _networkManager.Rpc(nameof(NetworkManager.BroadcastLobbyState), data);
     }
