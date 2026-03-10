@@ -1341,10 +1341,10 @@ public partial class MainMenu : Control
             }
         }
 
-        // Show "discovering..." while UPnP finds the external IP
+        // Show "discovering..." while we fetch the public IP
         if (_lobbyCodeLabel != null)
         {
-            _lobbyCodeLabel.Text = "SETTING UP...";
+            _lobbyCodeLabel.Text = "DISCOVERING...";
         }
         if (_lobbyCodePanel != null)
         {
@@ -1355,35 +1355,54 @@ public partial class MainMenu : Control
         _hostVisibility = visibility;
         if (_statusLabel != null)
         {
-            _statusLabel.Text = $"{visibilityText} LOBBY  -  DISCOVERING EXTERNAL IP...";
+            _statusLabel.Text = $"{visibilityText} LOBBY  -  GETTING PUBLIC IP...";
             _statusLabel.AddThemeColorOverride("font_color", TextSecondary);
             _statusLabel.Visible = true;
         }
 
-        GD.Print($"[MainMenu] Hosting {visibilityText} lobby — waiting for UPnP...");
+        GD.Print($"[MainMenu] Hosting {visibilityText} lobby — discovering public IP...");
         HostGameRequested?.Invoke(visibility == MatchVisibility.Public);
     }
 
     private MatchVisibility _hostVisibility;
 
     /// <summary>
-    /// Called when NetworkManager discovers the external IP via UPnP.
-    /// Updates the displayed game code with the real external address.
+    /// Called when NetworkManager discovers the public IP.
+    /// Updates the displayed game code with the encoded address.
     /// </summary>
     private void OnExternalIpDiscovered(string externalIp)
     {
+        string visibilityText = _hostVisibility == MatchVisibility.Public ? "OPEN" : "PRIVATE";
+
+        if (externalIp == "UNKNOWN")
+        {
+            GD.PrintErr("[MainMenu] Could not discover public IP.");
+            if (_lobbyCodeLabel != null)
+            {
+                _lobbyCodeLabel.Text = "IP LOOKUP FAILED";
+                _lobbyCodeLabel.AddThemeColorOverride("font_color", AccentRed);
+            }
+            if (_statusLabel != null)
+            {
+                _statusLabel.Text = "COULD NOT DETERMINE PUBLIC IP  -  CHECK INTERNET CONNECTION";
+                _statusLabel.AddThemeColorOverride("font_color", AccentRed);
+            }
+            return;
+        }
+
         _generatedLobbyCode = EncodeIpToCode(externalIp);
-        GD.Print($"[MainMenu] External IP: {externalIp} → code: {_generatedLobbyCode}");
+        GD.Print($"[MainMenu] Public IP: {externalIp} → code: {_generatedLobbyCode}");
 
         if (_lobbyCodeLabel != null)
         {
             _lobbyCodeLabel.Text = $"CODE:  {_generatedLobbyCode}";
+            _lobbyCodeLabel.AddThemeColorOverride("font_color", AccentGreen);
         }
 
-        string visibilityText = _hostVisibility == MatchVisibility.Public ? "OPEN" : "PRIVATE";
         if (_statusLabel != null)
         {
             _statusLabel.Text = $"{visibilityText} LOBBY  -  SHARE THIS CODE WITH FRIENDS";
+            _statusLabel.AddThemeColorOverride("font_color", TextSecondary);
         }
     }
 

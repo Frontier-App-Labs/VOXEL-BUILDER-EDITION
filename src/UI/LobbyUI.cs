@@ -263,19 +263,23 @@ public partial class LobbyUI : Control
         buttonRow.MouseFilter = MouseFilterEnum.Ignore;
         centerBox.AddChild(buttonRow);
 
-        // Leave button
+        // Leave button — voxel style (square corners, thick borders)
         PanelContainer leavePanel = CreateActionButton("LEAVE", AccentRed, () => LeaveLobbyRequested?.Invoke());
         buttonRow.AddChild(leavePanel);
 
-        // Ready button
+        // Ready button — voxel style matching main menu buttons
         PanelContainer readyPanel = new PanelContainer();
-        readyPanel.CustomMinimumSize = new Vector2(200, 50);
-        StyleBoxFlat readyStyle = CreateFlatStyle(new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.15f), 10);
+        readyPanel.CustomMinimumSize = new Vector2(220, 56);
+        StyleBoxFlat readyStyle = CreateFlatStyle(BgDark, 0);
+        readyStyle.BorderWidthLeft = 4;
         readyStyle.BorderWidthTop = 2;
-        readyStyle.BorderWidthBottom = 2;
-        readyStyle.BorderWidthLeft = 2;
         readyStyle.BorderWidthRight = 2;
+        readyStyle.BorderWidthBottom = 4;
         readyStyle.BorderColor = AccentGreen;
+        readyStyle.ContentMarginLeft = 20;
+        readyStyle.ContentMarginRight = 20;
+        readyStyle.ContentMarginTop = 10;
+        readyStyle.ContentMarginBottom = 10;
         readyPanel.AddThemeStyleboxOverride("panel", readyStyle);
         buttonRow.AddChild(readyPanel);
 
@@ -283,22 +287,27 @@ public partial class LobbyUI : Control
         _readyButton.Text = "READY UP";
         _readyButton.Flat = true;
         _readyButton.SetAnchorsPreset(LayoutPreset.FullRect);
-        _readyButton.AddThemeFontSizeOverride("font_size", 20);
+        _readyButton.AddThemeFontOverride("font", PixelFont);
+        _readyButton.AddThemeFontSizeOverride("font_size", 14);
         _readyButton.AddThemeColorOverride("font_color", AccentGreen);
         _readyButton.AddThemeColorOverride("font_hover_color", TextPrimary);
         _readyButton.MouseFilter = MouseFilterEnum.Stop;
         _readyButton.Pressed += () => ReadyToggled?.Invoke();
         readyPanel.AddChild(_readyButton);
 
-        // Start game button (host only)
+        // Start game button (host only) — voxel style
         PanelContainer startPanel = new PanelContainer();
-        startPanel.CustomMinimumSize = new Vector2(180, 50);
-        StyleBoxFlat startStyle = CreateFlatStyle(new Color(AccentGold.R, AccentGold.G, AccentGold.B, 0.12f), 10);
+        startPanel.CustomMinimumSize = new Vector2(200, 56);
+        StyleBoxFlat startStyle = CreateFlatStyle(BgDark, 0);
+        startStyle.BorderWidthLeft = 4;
         startStyle.BorderWidthTop = 2;
-        startStyle.BorderWidthBottom = 2;
-        startStyle.BorderWidthLeft = 2;
         startStyle.BorderWidthRight = 2;
+        startStyle.BorderWidthBottom = 4;
         startStyle.BorderColor = AccentGold;
+        startStyle.ContentMarginLeft = 20;
+        startStyle.ContentMarginRight = 20;
+        startStyle.ContentMarginTop = 10;
+        startStyle.ContentMarginBottom = 10;
         startPanel.AddThemeStyleboxOverride("panel", startStyle);
         buttonRow.AddChild(startPanel);
 
@@ -306,7 +315,8 @@ public partial class LobbyUI : Control
         _startButton.Text = "START GAME";
         _startButton.Flat = true;
         _startButton.SetAnchorsPreset(LayoutPreset.FullRect);
-        _startButton.AddThemeFontSizeOverride("font_size", 18);
+        _startButton.AddThemeFontOverride("font", PixelFont);
+        _startButton.AddThemeFontSizeOverride("font_size", 14);
         _startButton.AddThemeColorOverride("font_color", AccentGold);
         _startButton.AddThemeColorOverride("font_hover_color", TextPrimary);
         _startButton.MouseFilter = MouseFilterEnum.Stop;
@@ -525,21 +535,27 @@ public partial class LobbyUI : Control
     private PanelContainer CreateActionButton(string text, Color accentColor, Action handler)
     {
         PanelContainer btnPanel = new PanelContainer();
-        btnPanel.CustomMinimumSize = new Vector2(120, 50);
+        btnPanel.CustomMinimumSize = new Vector2(140, 56);
 
-        StyleBoxFlat style = CreateFlatStyle(new Color(accentColor.R, accentColor.G, accentColor.B, 0.1f), 10);
-        style.BorderWidthTop = 1;
-        style.BorderWidthBottom = 1;
-        style.BorderWidthLeft = 1;
-        style.BorderWidthRight = 1;
-        style.BorderColor = new Color(accentColor.R, accentColor.G, accentColor.B, 0.3f);
+        // Voxel style: square corners, thick pixelated borders, solid colors
+        StyleBoxFlat style = CreateFlatStyle(BgDark, 0);
+        style.BorderWidthLeft = 4;
+        style.BorderWidthTop = 2;
+        style.BorderWidthRight = 2;
+        style.BorderWidthBottom = 4;
+        style.BorderColor = accentColor;
+        style.ContentMarginLeft = 20;
+        style.ContentMarginRight = 20;
+        style.ContentMarginTop = 10;
+        style.ContentMarginBottom = 10;
         btnPanel.AddThemeStyleboxOverride("panel", style);
 
         Button btn = new Button();
         btn.Text = text;
         btn.Flat = true;
         btn.SetAnchorsPreset(LayoutPreset.FullRect);
-        btn.AddThemeFontSizeOverride("font_size", 16);
+        btn.AddThemeFontOverride("font", PixelFont);
+        btn.AddThemeFontSizeOverride("font_size", 14);
         btn.AddThemeColorOverride("font_color", accentColor);
         btn.AddThemeColorOverride("font_hover_color", TextPrimary);
         btn.MouseFilter = MouseFilterEnum.Stop;

@@ -81,62 +81,150 @@ public partial class NetworkManager : Node
     }
 
     /// <summary>
-    /// Uses UPnP to discover the gateway, forward the game port (UDP),
-    /// and retrieve the external (public) IP address. Runs on a worker
-    /// thread because UPnP discovery can take 2-5 seconds.
+    /// Discovers the public IP via an HTTP request to api.ipify.org (fast, works
+    /// everywhere) and attempts UPnP port forwarding in parallel so friends can
+    /// connect without manual router config.
     /// </summary>
     private void SetupUpnpAsync()
     {
+        // 1) Discover public IP via HTTP (reliable, ~200ms)
+        DiscoverPublicIp();
+
+        // 2) UPnP port forwarding in background thread (2-5s, best-effort)
         _upnp = new Upnp();
+        Upnp upnpRef = _upnp;
+        int port = Port;
         System.Threading.Tasks.Task.Run(() =>
         {
             try
             {
-                int discoverResult = _upnp.Discover();
+                int discoverResult = upnpRef.Discover(3000);
                 if (discoverResult != (int)Upnp.UpnpResult.Success)
                 {
-                    GD.Print($"[NetworkManager] UPnP discover failed (code {discoverResult}). Players may need the LAN IP.");
-                    // Fall back to LAN IP
-                    CallDeferred(nameof(SetExternalIpDeferred), GetLanAddress());
+                    GD.Print($"[NetworkManager] UPnP discover failed (code {discoverResult}). Port forwarding may be needed.");
                     return;
                 }
 
-                // Query the external IP from the gateway
-                string externalIp = _upnp.QueryExternalAddress();
-                if (string.IsNullOrEmpty(externalIp))
-                {
-                    GD.Print("[NetworkManager] UPnP: could not query external IP. Using LAN IP.");
-                    CallDeferred(nameof(SetExternalIpDeferred), GetLanAddress());
-                    return;
-                }
-
-                // Add port mapping (UDP only — ENet uses UDP)
-                int mapResult = _upnp.AddPortMapping(Port, Port, "VoxelSiege", "UDP");
+                int mapResult = upnpRef.AddPortMapping(port, port, "VoxelSiege", "UDP");
                 if (mapResult == (int)Upnp.UpnpResult.Success)
                 {
                     _upnpMapped = true;
-                    GD.Print($"[NetworkManager] UPnP: port {Port}/UDP forwarded. External IP: {externalIp}");
+                    GD.Print($"[NetworkManager] UPnP: port {port}/UDP forwarded successfully.");
                 }
                 else
                 {
-                    GD.Print($"[NetworkManager] UPnP: port mapping failed (code {mapResult}). External IP: {externalIp}");
+                    GD.Print($"[NetworkManager] UPnP: port mapping failed (code {mapResult}). Manual port forwarding may be needed.");
                 }
-
-                CallDeferred(nameof(SetExternalIpDeferred), externalIp);
             }
             catch (Exception ex)
             {
                 GD.PrintErr($"[NetworkManager] UPnP exception: {ex.Message}");
-                CallDeferred(nameof(SetExternalIpDeferred), GetLanAddress());
             }
         });
     }
 
-    private void SetExternalIpDeferred(string ip)
+    /// <summary>
+    /// Queries api.ipify.org to get the host's public IP address.
+    /// Uses Godot's HttpRequest node for non-blocking HTTP.
+    /// </summary>
+    private void DiscoverPublicIp()
     {
-        ExternalIp = ip;
-        GD.Print($"[NetworkManager] ExternalIp set to: {ip}");
-        ExternalIpDiscovered?.Invoke(ip);
+        HttpRequest httpReq = new HttpRequest();
+        httpReq.Name = "PublicIpRequest";
+        httpReq.Timeout = 5; // 5 second timeout
+        AddChild(httpReq);
+
+        httpReq.RequestCompleted += (long result, long responseCode, string[] headers, byte[] body) =>
+        {
+            // Clean up the HTTP request node
+            httpReq.QueueFree();
+
+            if (result != (long)HttpRequest.Result.Success || responseCode != 200)
+            {
+                GD.PrintErr($"[NetworkManager] Public IP lookup failed (result={result}, code={responseCode}). Trying fallback...");
+                // Try a fallback service
+                DiscoverPublicIpFallback();
+                return;
+            }
+
+            string publicIp = System.Text.Encoding.UTF8.GetString(body).Trim();
+            if (IsValidIpv4(publicIp))
+            {
+                ExternalIp = publicIp;
+                GD.Print($"[NetworkManager] Public IP discovered: {publicIp}");
+                ExternalIpDiscovered?.Invoke(publicIp);
+            }
+            else
+            {
+                GD.PrintErr($"[NetworkManager] Invalid IP response: '{publicIp}'. Trying fallback...");
+                DiscoverPublicIpFallback();
+            }
+        };
+
+        Error err = httpReq.Request("https://api.ipify.org");
+        if (err != Error.Ok)
+        {
+            GD.PrintErr($"[NetworkManager] Failed to start public IP request: {err}");
+            httpReq.QueueFree();
+            DiscoverPublicIpFallback();
+        }
+    }
+
+    /// <summary>
+    /// Fallback public IP discovery using a second service.
+    /// </summary>
+    private void DiscoverPublicIpFallback()
+    {
+        HttpRequest httpReq = new HttpRequest();
+        httpReq.Name = "PublicIpFallback";
+        httpReq.Timeout = 5;
+        AddChild(httpReq);
+
+        httpReq.RequestCompleted += (long result, long responseCode, string[] headers, byte[] body) =>
+        {
+            httpReq.QueueFree();
+
+            if (result != (long)HttpRequest.Result.Success || responseCode != 200)
+            {
+                GD.PrintErr($"[NetworkManager] Fallback IP lookup also failed. Could not determine public IP.");
+                ExternalIp = "UNKNOWN";
+                ExternalIpDiscovered?.Invoke("UNKNOWN");
+                return;
+            }
+
+            string publicIp = System.Text.Encoding.UTF8.GetString(body).Trim();
+            if (IsValidIpv4(publicIp))
+            {
+                ExternalIp = publicIp;
+                GD.Print($"[NetworkManager] Public IP (fallback): {publicIp}");
+                ExternalIpDiscovered?.Invoke(publicIp);
+            }
+            else
+            {
+                GD.PrintErr($"[NetworkManager] Fallback IP invalid: '{publicIp}'");
+                ExternalIp = "UNKNOWN";
+                ExternalIpDiscovered?.Invoke("UNKNOWN");
+            }
+        };
+
+        Error err = httpReq.Request("https://ifconfig.me/ip");
+        if (err != Error.Ok)
+        {
+            httpReq.QueueFree();
+            ExternalIp = "UNKNOWN";
+            ExternalIpDiscovered?.Invoke("UNKNOWN");
+        }
+    }
+
+    private static bool IsValidIpv4(string ip)
+    {
+        string[] parts = ip.Split('.');
+        if (parts.Length != 4) return false;
+        foreach (string part in parts)
+        {
+            if (!byte.TryParse(part, out _)) return false;
+        }
+        return true;
     }
 
     /// <summary>
