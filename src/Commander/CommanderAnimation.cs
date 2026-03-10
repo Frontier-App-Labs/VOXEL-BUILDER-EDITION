@@ -9,6 +9,7 @@ public enum CommanderAnimationState
     Flinch,
     Panic,
     Falling,
+    Celebrate,
     Dead,
 }
 
@@ -56,6 +57,14 @@ public partial class CommanderAnimation : Node
 
     // Panic jitter
     private float _jitterSeed;
+
+    // Celebrate timer: auto-return to idle after celebration
+    private float _celebrateTimer;
+
+    /// <summary>
+    /// Health ratio (0-1) used to add tremor when low. Set by Commander.
+    /// </summary>
+    public float HealthRatio { get; set; } = 1f;
 
     public CommanderAnimationState CurrentState { get; private set; } = CommanderAnimationState.Idle;
 
@@ -141,6 +150,9 @@ public partial class CommanderAnimation : Node
             case CommanderAnimationState.Falling:
                 AnimateFalling(dt);
                 break;
+            case CommanderAnimationState.Celebrate:
+                AnimateCelebrate(dt);
+                break;
             case CommanderAnimationState.Dead:
                 // No animation - ragdoll handles everything
                 break;
@@ -156,15 +168,25 @@ public partial class CommanderAnimation : Node
         _headTime += dt * speedMultiplier;
         _stateTime += dt;
 
+        // Low-health tremor: when below 33% health, add increasing shake
+        float tremor = 0f;
+        if (HealthRatio < 0.33f)
+        {
+            float severity = 1f - (HealthRatio / 0.33f); // 0 at 33%, 1 at 0%
+            tremor = severity * 0.02f;
+        }
+
         // -- Breathing: hip bob --
         float breathOffset = Mathf.Sin(_breathTime * 2.5f) * 0.008f;
+        if (tremor > 0f)
+            breathOffset += Mathf.Sin(_breathTime * 12f) * tremor;
         SetPositionOffset(_hips, new Vector3(0, breathOffset, 0));
 
         // -- Spine breathing lean --
         SetRotation(_spine, new Vector3(
-            Mathf.Sin(_breathTime * 2.5f) * 0.03f,
+            Mathf.Sin(_breathTime * 2.5f) * 0.03f + Mathf.Sin(_breathTime * 9f) * tremor,
             0,
-            Mathf.Sin(_breathTime * 0.7f) * 0.02f
+            Mathf.Sin(_breathTime * 0.7f) * 0.02f + Mathf.Sin(_breathTime * 11f) * tremor
         ));
 
         // -- Head turn: periodic random Y rotation with slight tilt --
@@ -189,8 +211,8 @@ public partial class CommanderAnimation : Node
         SetRotation(_rightShoulder, new Vector3(-armSwayX, 0, -armSwayZ));
 
         // Elbows slightly bent at rest
-        SetRotation(_leftElbow, new Vector3(-Deg(10), 0, 0));
-        SetRotation(_rightElbow, new Vector3(-Deg(10), 0, 0));
+        SetRotation(_leftElbow, new Vector3(Deg(10), 0, 0));
+        SetRotation(_rightElbow, new Vector3(Deg(10), 0, 0));
 
         // -- Leg micro-shift: weight shifting side to side --
         float weightShift = Mathf.Sin(_breathTime * 0.6f) * 0.006f;
@@ -245,8 +267,8 @@ public partial class CommanderAnimation : Node
         float armSwayZ = Mathf.Sin(_breathTime * 1.8f) * 0.06f * (1f - _flinchDecay);
         SetRotation(_leftShoulder, new Vector3(0, 0, _flinchDecay * 0.2f + armSwayZ));
         SetRotation(_rightShoulder, new Vector3(0, 0, -_flinchDecay * 0.2f - armSwayZ));
-        SetRotation(_leftElbow, new Vector3(-Deg(10) - Deg(20) * _flinchDecay, 0, 0));
-        SetRotation(_rightElbow, new Vector3(-Deg(10) - Deg(20) * _flinchDecay, 0, 0));
+        SetRotation(_leftElbow, new Vector3(Deg(10) + Deg(20) * _flinchDecay, 0, 0));
+        SetRotation(_rightElbow, new Vector3(Deg(10) + Deg(20) * _flinchDecay, 0, 0));
 
         // Legs at rest
         SetRotation(_leftHip, Vector3.Zero);
@@ -308,8 +330,8 @@ public partial class CommanderAnimation : Node
         float armSwayX = Mathf.Sin(_breathTime * 1.2f) * 0.04f;
         SetRotation(_leftShoulder, new Vector3(armSwayX, 0, armSwayZ));
         SetRotation(_rightShoulder, new Vector3(-armSwayX, 0, -armSwayZ));
-        SetRotation(_leftElbow, new Vector3(-Deg(10), 0, 0));
-        SetRotation(_rightElbow, new Vector3(-Deg(10), 0, 0));
+        SetRotation(_leftElbow, new Vector3(Deg(10), 0, 0));
+        SetRotation(_rightElbow, new Vector3(Deg(10), 0, 0));
 
         // Legs: weight shifting
         float weightShift = Mathf.Sin(_breathTime * 0.6f) * 0.006f;
@@ -337,8 +359,8 @@ public partial class CommanderAnimation : Node
         float flailAngle = Mathf.Sin(_stateTime * 12f) * 0.5f;
         SetRotation(_leftShoulder, new Vector3(flailAngle, 0, 0.3f + Mathf.Sin(_stateTime * 8f) * 0.15f));
         SetRotation(_rightShoulder, new Vector3(-flailAngle, 0, -0.3f + Mathf.Sin(_stateTime * 9f) * 0.15f));
-        SetRotation(_leftElbow, new Vector3(-Deg(20), 0, 0));
-        SetRotation(_rightElbow, new Vector3(-Deg(20), 0, 0));
+        SetRotation(_leftElbow, new Vector3(Deg(20), 0, 0));
+        SetRotation(_rightElbow, new Vector3(Deg(20), 0, 0));
 
         // Legs dangle
         float legDangle = Mathf.Sin(_stateTime * 6f) * 0.15f;
@@ -353,6 +375,52 @@ public partial class CommanderAnimation : Node
             Mathf.Sin(_jitterSeed * 7f) * 0.3f,
             0
         ));
+    }
+
+    /// <summary>
+    /// Celebrate: arm pumps, bouncing, head tilted back in triumph.
+    /// Auto-returns to idle after 2 seconds.
+    /// </summary>
+    private void AnimateCelebrate(float dt)
+    {
+        _stateTime += dt;
+        _breathTime += dt;
+        _celebrateTimer -= dt;
+
+        float bounce = Mathf.Abs(Mathf.Sin(_stateTime * 8f)) * 0.03f;
+        SetPositionOffset(_hips, new Vector3(0, bounce, 0));
+
+        SetRotation(_spine, new Vector3(Deg(-5), 0, 0));
+        SetRotation(_neck, new Vector3(Deg(-15), 0, 0));
+
+        // Alternating arm pumps
+        float leftPump = Mathf.Max(0, Mathf.Sin(_stateTime * 6f));
+        float rightPump = Mathf.Max(0, -Mathf.Sin(_stateTime * 6f));
+        SetRotation(_leftShoulder, new Vector3(0, 0, -Deg(90) * leftPump));
+        SetRotation(_rightShoulder, new Vector3(0, 0, Deg(90) * rightPump));
+        SetRotation(_leftElbow, new Vector3(Deg(20), 0, 0));
+        SetRotation(_rightElbow, new Vector3(Deg(20), 0, 0));
+
+        // Legs bounce
+        SetRotation(_leftHip, Vector3.Zero);
+        SetRotation(_rightHip, Vector3.Zero);
+        SetRotation(_leftKnee, new Vector3(Mathf.Max(0, Mathf.Sin(_stateTime * 8f)) * Deg(15), 0, 0));
+        SetRotation(_rightKnee, new Vector3(Mathf.Max(0, -Mathf.Sin(_stateTime * 8f)) * Deg(15), 0, 0));
+
+        if (_celebrateTimer <= 0f)
+        {
+            CurrentState = CommanderAnimationState.Idle;
+        }
+    }
+
+    /// <summary>
+    /// Trigger a celebration with a specific duration.
+    /// </summary>
+    public void TriggerCelebrate(float duration = 2f)
+    {
+        if (CurrentState == CommanderAnimationState.Dead) return;
+        _celebrateTimer = duration;
+        SetState(CommanderAnimationState.Celebrate);
     }
 
     /// <summary>

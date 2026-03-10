@@ -145,11 +145,19 @@ public partial class AimingSystem : Node
 
         if (weaponId == "mortar" || weaponId == "missile")
         {
+            // Missile uses reduced gravity (0.3x) — the ballistic formula must
+            // match the actual in-flight gravity or the pitch will overshoot.
+            float effectiveGravity = weaponId == "missile" ? gravity * 0.3f : gravity;
+            float egx2 = effectiveGravity * horizontalDist * horizontalDist;
+            float missileDisc = v4 - effectiveGravity * (egx2 + 2f * delta.Y * v2);
+            bool missileInRange = missileDisc >= 0;
+            inRange = missileInRange;
+
             // High arc for mortar/missile to lob over walls
-            if (inRange)
+            if (missileInRange)
             {
-                float sqrtDisc = Mathf.Sqrt(discriminant);
-                PitchRadians = Mathf.Atan2(v2 + sqrtDisc, gravity * horizontalDist);
+                float sqrtDisc = Mathf.Sqrt(missileDisc);
+                PitchRadians = Mathf.Atan2(v2 + sqrtDisc, effectiveGravity * horizontalDist);
             }
             else
             {

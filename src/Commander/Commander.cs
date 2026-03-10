@@ -93,6 +93,20 @@ public partial class Commander : Node3D
         EnsureVisuals();
         _health.Damaged += OnDamaged;
         _health.Died += OnDied;
+
+        // React to enemy commander kills with celebration
+        if (EventBus.Instance != null)
+        {
+            EventBus.Instance.CommanderKilled += OnAnyCommanderKilled;
+        }
+    }
+
+    public override void _ExitTree()
+    {
+        if (EventBus.Instance != null)
+        {
+            EventBus.Instance.CommanderKilled -= OnAnyCommanderKilled;
+        }
     }
 
     /// <summary>
@@ -351,7 +365,22 @@ public partial class Commander : Node3D
 
         if (remainingHealth > 0)
         {
+            // Update health ratio for low-health tremor animation
+            if (_animation != null && _health != null)
+            {
+                _animation.HealthRatio = (float)remainingHealth / _health.MaxHealth;
+            }
             _animation?.SetState(CommanderAnimationState.Flinch);
+        }
+    }
+
+    private void OnAnyCommanderKilled(CommanderKilledEvent payload)
+    {
+        if (_health?.IsDead ?? true) return;
+        // Celebrate when an enemy commander dies (not ourselves)
+        if (payload.Victim != OwnerSlot)
+        {
+            _animation?.TriggerCelebrate(2.5f);
         }
     }
 
