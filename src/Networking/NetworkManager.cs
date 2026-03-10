@@ -10,12 +10,20 @@ public partial class NetworkManager : Node
 {
     private readonly List<NetMessage> _pendingOutbound = new List<NetMessage>();
     private MultiplayerPeer? _activePeer;
+    private Upnp? _upnp;
+    private bool _upnpMapped;
 
     [Export]
     public int Port { get; set; } = 24565;
 
     public bool IsHost { get; private set; }
     public bool IsOnline => _activePeer != null;
+
+    /// <summary>
+    /// The external (public) IP discovered via UPnP, or the LAN IP as fallback.
+    /// Set after Host() completes UPnP discovery.
+    /// </summary>
+    public string ExternalIp { get; private set; } = string.Empty;
 
     /// <summary>
     /// The local peer ID assigned by ENet (1 for host, unique positive int for clients).
@@ -64,7 +72,95 @@ public partial class NetworkManager : Node
         _activePeer = peer;
         IsHost = true;
         GD.Print($"[NetworkManager] Hosting on port {Port} as peer {Multiplayer.GetUniqueId()}");
+
+        // Use UPnP to auto-forward the port and discover external IP.
+        // This runs in a background thread so it doesn't block the UI.
+        SetupUpnpAsync();
+
         return Error.Ok;
+    }
+
+    /// <summary>
+    /// Uses UPnP to discover the gateway, forward the game port (UDP),
+    /// and retrieve the external (public) IP address. Runs on a worker
+    /// thread because UPnP discovery can take 2-5 seconds.
+    /// </summary>
+    private void SetupUpnpAsync()
+    {
+        _upnp = new Upnp();
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            try
+            {
+                int discoverResult = _upnp.Discover();
+                if (discoverResult != (int)Upnp.UpnpResult.Success)
+                {
+                    GD.Print($"[NetworkManager] UPnP discover failed (code {discoverResult}). Players may need the LAN IP.");
+                    // Fall back to LAN IP
+                    CallDeferred(nameof(SetExternalIpDeferred), GetLanAddress());
+                    return;
+                }
+
+                // Query the external IP from the gateway
+                string externalIp = _upnp.QueryExternalAddress();
+                if (string.IsNullOrEmpty(externalIp))
+                {
+                    GD.Print("[NetworkManager] UPnP: could not query external IP. Using LAN IP.");
+                    CallDeferred(nameof(SetExternalIpDeferred), GetLanAddress());
+                    return;
+                }
+
+                // Add port mapping (UDP only — ENet uses UDP)
+                int mapResult = _upnp.AddPortMapping(Port, Port, "VoxelSiege", "UDP");
+                if (mapResult == (int)Upnp.UpnpResult.Success)
+                {
+                    _upnpMapped = true;
+                    GD.Print($"[NetworkManager] UPnP: port {Port}/UDP forwarded. External IP: {externalIp}");
+                }
+                else
+                {
+                    GD.Print($"[NetworkManager] UPnP: port mapping failed (code {mapResult}). External IP: {externalIp}");
+                }
+
+                CallDeferred(nameof(SetExternalIpDeferred), externalIp);
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[NetworkManager] UPnP exception: {ex.Message}");
+                CallDeferred(nameof(SetExternalIpDeferred), GetLanAddress());
+            }
+        });
+    }
+
+    private void SetExternalIpDeferred(string ip)
+    {
+        ExternalIp = ip;
+        GD.Print($"[NetworkManager] ExternalIp set to: {ip}");
+        ExternalIpDiscovered?.Invoke(ip);
+    }
+
+    /// <summary>
+    /// Fired when UPnP discovery completes and the external IP is available.
+    /// The MainMenu subscribes to update the displayed game code.
+    /// </summary>
+    public event Action<string>? ExternalIpDiscovered;
+
+    /// <summary>
+    /// Returns the best local LAN IPv4 address (prefers 192.168.x.x, 10.x.x.x).
+    /// </summary>
+    private static string GetLanAddress()
+    {
+        string[] addresses = IP.GetLocalAddresses();
+        string? best = null;
+        foreach (string addr in addresses)
+        {
+            if (addr.Contains(':')) continue;
+            if (addr == "127.0.0.1") continue;
+            if (addr.StartsWith("192.168.") || addr.StartsWith("10."))
+                return addr;
+            best ??= addr;
+        }
+        return best ?? "127.0.0.1";
     }
 
     /// <summary>
@@ -103,6 +199,23 @@ public partial class NetworkManager : Node
 
     public void Shutdown()
     {
+        // Remove UPnP port mapping if we created one
+        if (_upnpMapped && _upnp != null)
+        {
+            try
+            {
+                _upnp.DeletePortMapping(Port, "UDP");
+                GD.Print($"[NetworkManager] UPnP: removed port mapping for {Port}/UDP");
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[NetworkManager] UPnP cleanup error: {ex.Message}");
+            }
+            _upnpMapped = false;
+        }
+        _upnp = null;
+        ExternalIp = string.Empty;
+
         if (_activePeer != null)
         {
             Multiplayer.MultiplayerPeer = null;

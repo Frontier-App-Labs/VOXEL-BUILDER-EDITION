@@ -74,6 +74,7 @@ public partial class MainMenu : Control
     private VBoxContainer? _mainButtonContainer;
     private VBoxContainer? _playOnlinePanel;
     private VBoxContainer? _hostPanel;
+    private PanelContainer? _lobbyCodePanel;
     private VBoxContainer? _joinPanel;
     private Label? _lobbyCodeLabel;
     private Label? _statusLabel;
@@ -362,7 +363,7 @@ public partial class MainMenu : Control
         AddMenuButton(_hostPanel, "OPEN LOBBY", AccentGreen, OnHostOpenLobby);
         AddMenuButton(_hostPanel, "PRIVATE (CODE ONLY)", AccentGold, OnHostPrivateLobby);
 
-        // Lobby code display (hidden until a lobby is created)
+        // Lobby code display (hidden until a lobby is created) — styled panel
         _lobbyCodeLabel = new Label();
         _lobbyCodeLabel.Text = "";
         _lobbyCodeLabel.HorizontalAlignment = HorizontalAlignment.Center;
@@ -370,13 +371,31 @@ public partial class MainMenu : Control
         _lobbyCodeLabel.AddThemeFontSizeOverride("font_size", 20);
         _lobbyCodeLabel.AddThemeColorOverride("font_color", AccentGreen);
         _lobbyCodeLabel.MouseFilter = MouseFilterEnum.Ignore;
-        _lobbyCodeLabel.Visible = false;
+
+        PanelContainer codePanel = new PanelContainer();
+        codePanel.CustomMinimumSize = new Vector2(360, 56);
+        StyleBoxFlat codePanelStyle = CreatePanelStyle(ButtonNormal, 0);
+        codePanelStyle.BorderWidthLeft = 4;
+        codePanelStyle.BorderWidthTop = 2;
+        codePanelStyle.BorderWidthRight = 2;
+        codePanelStyle.BorderWidthBottom = 4;
+        codePanelStyle.BorderColor = AccentGreen;
+        codePanelStyle.ContentMarginLeft = 20;
+        codePanelStyle.ContentMarginRight = 20;
+        codePanelStyle.ContentMarginTop = 10;
+        codePanelStyle.ContentMarginBottom = 10;
+        codePanel.AddThemeStyleboxOverride("panel", codePanelStyle);
+        codePanel.AddChild(_lobbyCodeLabel);
+        codePanel.Visible = false;
+
         HBoxContainer codeWrapper = new HBoxContainer();
         codeWrapper.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         codeWrapper.Alignment = BoxContainer.AlignmentMode.Center;
         codeWrapper.MouseFilter = MouseFilterEnum.Ignore;
-        codeWrapper.AddChild(_lobbyCodeLabel);
+        codeWrapper.AddChild(codePanel);
         _hostPanel.AddChild(codeWrapper);
+        // Store reference so we can toggle visibility on the panel
+        _lobbyCodePanel = codePanel;
 
         // Status label for host (e.g. "Waiting for players...")
         _statusLabel = new Label();
@@ -908,7 +927,7 @@ public partial class MainMenu : Control
         panel.AddChild(row);
 
         Label codeLabel = new Label();
-        codeLabel.Text = "IP:";
+        codeLabel.Text = "CODE:";
         codeLabel.AddThemeFontOverride("font", PixelFont);
         codeLabel.AddThemeFontSizeOverride("font_size", 11);
         codeLabel.AddThemeColorOverride("font_color", TextSecondary);
@@ -916,9 +935,9 @@ public partial class MainMenu : Control
         row.AddChild(codeLabel);
 
         _joinCodeInput = new LineEdit();
-        _joinCodeInput.PlaceholderText = "IP ADDRESS";
+        _joinCodeInput.PlaceholderText = "GAME CODE";
         _joinCodeInput.CustomMinimumSize = new Vector2(200, 32);
-        _joinCodeInput.MaxLength = 45; // IPv6 max length with port
+        _joinCodeInput.MaxLength = 45; // supports both 7-char codes and raw IP
         _joinCodeInput.AddThemeFontOverride("font", PixelFont);
         _joinCodeInput.AddThemeFontSizeOverride("font_size", 12);
         _joinCodeInput.AddThemeColorOverride("font_color", TextPrimary);
@@ -1123,16 +1142,82 @@ public partial class MainMenu : Control
     }
 
     // =====================================================================
-    // LOBBY CODE GENERATION
+    // LOBBY CODE: encodes the host's LAN IP into a 7-char code
+    // so players share a code instead of a raw IP address.
+    // 32 chars ^ 7 = 34 billion combinations (covers all IPv4).
     // =====================================================================
     private string GenerateLobbyCode()
     {
-        char[] code = new char[LobbyCodeLength];
-        for (int i = 0; i < LobbyCodeLength; i++)
+        string ip = GetLocalLanAddress();
+        return EncodeIpToCode(ip);
+    }
+
+    /// <summary>
+    /// Encodes an IPv4 address into a 7-character alphanumeric code.
+    /// </summary>
+    private static string EncodeIpToCode(string ip)
+    {
+        string[] parts = ip.Split('.');
+        if (parts.Length != 4) return "AAAAAAA"; // fallback
+        uint ipNum = 0;
+        for (int i = 0; i < 4; i++)
         {
-            code[i] = CodeChars[_rng.RandiRange(0, CodeChars.Length - 1)];
+            if (!uint.TryParse(parts[i], out uint octet) || octet > 255)
+                return "AAAAAAA";
+            ipNum = (ipNum << 8) | octet;
+        }
+        char[] code = new char[7];
+        for (int i = 6; i >= 0; i--)
+        {
+            code[i] = CodeChars[ipNum % 32];
+            ipNum /= 32;
         }
         return new string(code);
+    }
+
+    /// <summary>
+    /// Decodes a 7-character code back to an IPv4 address string.
+    /// Returns null if the code is invalid.
+    /// </summary>
+    private static string? DecodeCodeToIp(string code)
+    {
+        if (code.Length != 7) return null;
+        uint ipNum = 0;
+        foreach (char c in code.ToUpperInvariant())
+        {
+            int idx = System.Array.IndexOf(CodeChars, c);
+            if (idx < 0) return null;
+            ipNum = ipNum * 32 + (uint)idx;
+        }
+        // Validate: must be a plausible IP (first octet 1-255)
+        byte a = (byte)((ipNum >> 24) & 0xFF);
+        if (a == 0) return null;
+        return $"{a}.{(ipNum >> 16) & 0xFF}.{(ipNum >> 8) & 0xFF}.{ipNum & 0xFF}";
+    }
+
+    /// <summary>
+    /// Returns the best local LAN IPv4 address (prefers 192.168.x.x, 10.x.x.x).
+    /// </summary>
+    private static string GetLocalLanAddress()
+    {
+        string[] addresses = IP.GetLocalAddresses();
+        string? best = null;
+        foreach (string addr in addresses)
+        {
+            if (addr.Contains(':')) continue; // skip IPv6
+            if (addr == "127.0.0.1") continue; // skip loopback
+            if (addr.StartsWith("192.168.") || addr.StartsWith("10."))
+            {
+                return addr; // prefer LAN addresses
+            }
+            if (addr.StartsWith("172."))
+            {
+                best ??= addr;
+                continue;
+            }
+            best ??= addr;
+        }
+        return best ?? "127.0.0.1";
     }
 
     // --- Button Handlers ---
@@ -1170,10 +1255,13 @@ public partial class MainMenu : Control
     private void OnHostPressed()
     {
         // Reset host panel state
+        if (_lobbyCodePanel != null)
+        {
+            _lobbyCodePanel.Visible = false;
+        }
         if (_lobbyCodeLabel != null)
         {
             _lobbyCodeLabel.Text = "";
-            _lobbyCodeLabel.Visible = false;
         }
         if (_statusLabel != null)
         {
@@ -1185,13 +1273,13 @@ public partial class MainMenu : Control
 
     private void OnHostOpenLobby()
     {
-        _generatedLobbyCode = GenerateLobbyCode();
+        _generatedLobbyCode = "PENDING"; // Updated when UPnP discovers external IP
         StartHosting(MatchVisibility.Public);
     }
 
     private void OnHostPrivateLobby()
     {
-        _generatedLobbyCode = GenerateLobbyCode();
+        _generatedLobbyCode = "PENDING";
         StartHosting(MatchVisibility.Private);
     }
 
@@ -1207,6 +1295,10 @@ public partial class MainMenu : Control
             // Pass the commander name to the network manager before hosting
             string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
             netManager.LocalDisplayName = string.IsNullOrWhiteSpace(enteredName) ? "Host" : enteredName;
+
+            // Subscribe to UPnP discovery so we can update the code once external IP is known
+            netManager.ExternalIpDiscovered -= OnExternalIpDiscovered;
+            netManager.ExternalIpDiscovered += OnExternalIpDiscovered;
 
             Error err = netManager.Host();
             if (err != Error.Ok)
@@ -1249,23 +1341,50 @@ public partial class MainMenu : Control
             }
         }
 
-        // Show the lobby code prominently
+        // Show "discovering..." while UPnP finds the external IP
         if (_lobbyCodeLabel != null)
         {
-            _lobbyCodeLabel.Text = $"CODE: {_generatedLobbyCode}";
-            _lobbyCodeLabel.Visible = true;
+            _lobbyCodeLabel.Text = "SETTING UP...";
+        }
+        if (_lobbyCodePanel != null)
+        {
+            _lobbyCodePanel.Visible = true;
         }
 
         string visibilityText = visibility == MatchVisibility.Public ? "OPEN" : "PRIVATE";
+        _hostVisibility = visibility;
         if (_statusLabel != null)
         {
-            _statusLabel.Text = $"{visibilityText} LOBBY CREATED  -  WAITING FOR PLAYERS...";
+            _statusLabel.Text = $"{visibilityText} LOBBY  -  DISCOVERING EXTERNAL IP...";
             _statusLabel.AddThemeColorOverride("font_color", TextSecondary);
             _statusLabel.Visible = true;
         }
 
-        GD.Print($"[MainMenu] Hosting {visibilityText} lobby with code: {_generatedLobbyCode}");
+        GD.Print($"[MainMenu] Hosting {visibilityText} lobby — waiting for UPnP...");
         HostGameRequested?.Invoke(visibility == MatchVisibility.Public);
+    }
+
+    private MatchVisibility _hostVisibility;
+
+    /// <summary>
+    /// Called when NetworkManager discovers the external IP via UPnP.
+    /// Updates the displayed game code with the real external address.
+    /// </summary>
+    private void OnExternalIpDiscovered(string externalIp)
+    {
+        _generatedLobbyCode = EncodeIpToCode(externalIp);
+        GD.Print($"[MainMenu] External IP: {externalIp} → code: {_generatedLobbyCode}");
+
+        if (_lobbyCodeLabel != null)
+        {
+            _lobbyCodeLabel.Text = $"CODE:  {_generatedLobbyCode}";
+        }
+
+        string visibilityText = _hostVisibility == MatchVisibility.Public ? "OPEN" : "PRIVATE";
+        if (_statusLabel != null)
+        {
+            _statusLabel.Text = $"{visibilityText} LOBBY  -  SHARE THIS CODE WITH FRIENDS";
+        }
     }
 
     private void OnJoinPressed()
@@ -1275,14 +1394,27 @@ public partial class MainMenu : Control
 
     private void OnJoinWithCode()
     {
-        string code = _joinCodeInput?.Text?.Trim() ?? string.Empty;
-        if (string.IsNullOrEmpty(code))
+        string input = _joinCodeInput?.Text?.Trim().ToUpperInvariant() ?? string.Empty;
+        if (string.IsNullOrEmpty(input))
         {
-            GD.Print("[MainMenu] No IP address entered.");
+            GD.Print("[MainMenu] No game code entered.");
             return;
         }
 
-        GD.Print($"[MainMenu] Joining game at IP: {code}");
+        // Try decoding as a 7-char game code first, fall back to raw IP
+        string address;
+        string? decoded = DecodeCodeToIp(input);
+        if (decoded != null)
+        {
+            address = decoded;
+            GD.Print($"[MainMenu] Decoded game code '{input}' → {address}");
+        }
+        else
+        {
+            // Treat as raw IP address (for advanced users / LAN testing)
+            address = input;
+            GD.Print($"[MainMenu] Joining with raw address: {address}");
+        }
 
         NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
         if (netManager != null)
@@ -1291,7 +1423,7 @@ public partial class MainMenu : Control
             string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
             netManager.LocalDisplayName = string.IsNullOrWhiteSpace(enteredName) ? "Player" : enteredName;
 
-            Error err = netManager.Join(code);
+            Error err = netManager.Join(address);
             if (err != Error.Ok)
             {
                 GD.PrintErr($"[MainMenu] Failed to join: {err}");
@@ -1307,7 +1439,7 @@ public partial class MainMenu : Control
             gameManager.HumanPlayerName = string.IsNullOrWhiteSpace(enteredName) ? null : enteredName;
         }
 
-        JoinWithCodeRequested?.Invoke(code);
+        JoinWithCodeRequested?.Invoke(input);
     }
 
     private void OnBackToMainMenu()
@@ -1319,9 +1451,13 @@ public partial class MainMenu : Control
     {
         // If we were hosting, shut down the network so we don't leave a dangling server
         NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
-        if (netManager != null && netManager.IsOnline)
+        if (netManager != null)
         {
-            netManager.Shutdown();
+            netManager.ExternalIpDiscovered -= OnExternalIpDiscovered;
+            if (netManager.IsOnline)
+            {
+                netManager.Shutdown();
+            }
         }
 
         ShowPanel(_playOnlinePanel);
