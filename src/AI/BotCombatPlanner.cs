@@ -1155,12 +1155,11 @@ public sealed class BotCombatPlanner
 
                 if (bestTarget != null)
                 {
-                    // Weapon GlobalPosition is at its base (Y=0); offset up by
-                    // 1 build unit (~0.5m) to aim at the visual center of the model.
-                    Vector3 weaponCenter = bestTarget.GlobalPosition
-                        + new Vector3(0f, GameConfig.BuildUnitMeters, 0f);
+                    // Aim at the base of the weapon — aiming at center tends to
+                    // overshoot slightly, and hitting the base is more reliable.
+                    Vector3 weaponBase = bestTarget.GlobalPosition;
                     return new PrioritizedTarget(
-                        weaponCenter,
+                        weaponBase,
                         TargetPriority.Weapon,
                         $"targeting enemy {bestTarget.WeaponId}");
                 }

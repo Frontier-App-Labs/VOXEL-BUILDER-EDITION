@@ -391,13 +391,22 @@ public partial class Commander : Node3D
         // Create the ragdoll from the body parts
         ActivateRagdollDeath();
 
-        // Blood splat: spray tiny red voxel debris outward from the commander
+        // Initial blood burst — violent spray on impact
         SpawnBloodSplat();
 
         // Slow-motion for dramatic effect
         Engine.TimeScale = GameConfig.SlowMoTimeScale;
         EventBus.Instance?.EmitCommanderKilled(new CommanderKilledEvent(OwnerSlot, _lastInstigator, GlobalPosition));
-        await ToSignal(GetTree().CreateTimer(GameConfig.SlowMoDuration * GameConfig.SlowMoTimeScale), SceneTreeTimer.SignalName.Timeout);
+
+        // Bleed out: keep spurting blood for ~1.5 seconds (3 additional bursts)
+        for (int burst = 0; burst < 3; burst++)
+        {
+            await ToSignal(GetTree().CreateTimer(0.5f * GameConfig.SlowMoTimeScale), SceneTreeTimer.SignalName.Timeout);
+            if (!IsInsideTree()) return;
+            SpawnBloodSplat();
+        }
+
+        await ToSignal(GetTree().CreateTimer(0.3f * GameConfig.SlowMoTimeScale), SceneTreeTimer.SignalName.Timeout);
         Engine.TimeScale = 1f;
     }
 
@@ -413,22 +422,24 @@ public partial class Commander : Node3D
         // Blood colors: dark red, bright red, crimson
         Color[] bloodColors = new Color[]
         {
-            new Color(0.6f, 0.05f, 0.05f),  // dark red
-            new Color(0.8f, 0.1f, 0.08f),   // bright red
-            new Color(0.5f, 0.0f, 0.0f),    // deep crimson
-            new Color(0.7f, 0.15f, 0.1f),   // blood red
+            new Color(0.85f, 0.0f, 0.0f),   // pure red
+            new Color(1.0f, 0.0f, 0.0f),    // bright red
+            new Color(0.7f, 0.0f, 0.0f),    // deep red
+            new Color(0.95f, 0.02f, 0.02f), // hot red
+            new Color(0.55f, 0.0f, 0.0f),   // dark blood
+            new Color(1.0f, 0.05f, 0.0f),   // arterial red
         };
 
-        // Spawn from several points around the body for a fuller splat
-        float bloodVoxelScale = 0.08f; // tiny voxels
-        for (int i = 0; i < 4; i++)
+        // Violent spray from multiple body points
+        float bloodVoxelScale = 0.06f;
+        for (int i = 0; i < 10; i++)
         {
             Vector3 offset = new Vector3(
-                (float)GD.RandRange(-0.3, 0.3),
-                (float)GD.RandRange(-0.2, 0.4),
-                (float)GD.RandRange(-0.3, 0.3));
+                (float)GD.RandRange(-0.4, 0.4),
+                (float)GD.RandRange(-0.3, 0.6),
+                (float)GD.RandRange(-0.4, 0.4));
             Color color = bloodColors[i % bloodColors.Length];
-            FX.DebrisFX.SpawnDebris(this, pos + offset, color, center, 8,
+            FX.DebrisFX.SpawnDebris(this, pos + offset, color, center, 12,
                 VoxelMaterialType.Stone, bloodVoxelScale);
         }
     }

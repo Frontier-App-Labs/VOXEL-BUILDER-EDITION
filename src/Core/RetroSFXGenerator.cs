@@ -79,6 +79,9 @@ public partial class RetroSFXGenerator : Node
         audio.RegisterSFX("countdown_tick", GenerateCountdownTick());
         audio.RegisterSFX("countdown_fight", GenerateCountdownFight());
 
+        // Backup bombardment alert
+        audio.RegisterSFX("backup_alert", GenerateBackupAlert());
+
         GD.Print("[RetroSFX] All retro SFX generated and registered.");
     }
 
@@ -348,6 +351,26 @@ public partial class RetroSFXGenerator : Node
             float tone2 = MathF.Sign(MathF.Sin(2f * MathF.PI * 659f * t)) * 0.2f;  // E5
             float tone3 = MathF.Sign(MathF.Sin(2f * MathF.PI * 784f * t)) * 0.2f;  // G5
             float val = (tone1 + tone2 + tone3) * env;
+            WriteSample(data, i, Clamp(val));
+        }
+        return CreateWav(data);
+    }
+
+    // ─── Backup alert: urgent two-tone siren burst ───
+    private AudioStreamWav GenerateBackupAlert()
+    {
+        int samples = (int)(SampleRate * 0.6f);
+        byte[] data = new byte[samples * 2];
+        for (int i = 0; i < samples; i++)
+        {
+            float t = i / (float)SampleRate;
+            float env = MathF.Min(t * 8f, 1f) * MathF.Max(0f, 1f - t * 1.5f);
+            // Two-tone siren: alternates between high and low every 0.1s
+            float sirenFreq = (MathF.Floor(t * 10f) % 2 == 0) ? 880f : 660f;
+            float tone = MathF.Sign(MathF.Sin(2f * MathF.PI * sirenFreq * t)) * 0.3f;
+            // Add a sub-bass rumble for urgency
+            float bass = MathF.Sin(2f * MathF.PI * 80f * t) * 0.2f * env;
+            float val = (tone + bass) * env;
             WriteSample(data, i, Clamp(val));
         }
         return CreateWav(data);

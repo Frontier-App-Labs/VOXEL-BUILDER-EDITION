@@ -4348,6 +4348,16 @@ public partial class GameManager : Node
                 return;
             }
 
+            // Someone has weapons but this player doesn't — check if the armed
+            // player has ALL enemies disarmed (artillery dominance). This catches
+            // the case where weapons were destroyed in a previous round and no new
+            // WeaponDestroyed event fires to re-trigger the check.
+            if (!_artilleryDominanceActive)
+            {
+                CheckArtilleryDominance();
+                if (_artilleryDominanceActive) return; // dominance was triggered
+            }
+
             // Skip immediately — no camera animation, no delay.
             // Use a zero-length timer to avoid re-entrancy (AdvanceTurn emits TurnChanged
             // synchronously, which would call OnTurnChanged recursively).
@@ -5176,91 +5186,80 @@ public partial class GameManager : Node
 
     private void ShowDominanceBanner()
     {
-        // Create a CanvasLayer banner saying "BACKUP HAS ARRIVED!"
         _dominanceBannerLayer = new CanvasLayer();
         _dominanceBannerLayer.Name = "DominanceBanner";
         _dominanceBannerLayer.Layer = 90;
         AddChild(_dominanceBannerLayer);
 
-        // Semi-transparent dark strip across center of screen
-        ColorRect strip = new ColorRect();
-        strip.Name = "BannerStrip";
-        strip.Color = new Color(0f, 0f, 0f, 0.7f);
-        strip.SetAnchorsPreset(Control.LayoutPreset.CenterTop);
-        strip.AnchorLeft = 0f;
-        strip.AnchorRight = 1f;
-        strip.AnchorTop = 0.3f;
-        strip.AnchorBottom = 0.5f;
-        strip.OffsetLeft = 0;
-        strip.OffsetRight = 0;
-        strip.OffsetTop = 0;
-        strip.OffsetBottom = 0;
-        strip.MouseFilter = Control.MouseFilterEnum.Ignore;
-        _dominanceBannerLayer.AddChild(strip);
+        // Container centered on screen — slides in from left
+        Control container = new Control();
+        container.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        container.MouseFilter = Control.MouseFilterEnum.Ignore;
+        _dominanceBannerLayer.AddChild(container);
 
-        // Main text
+        // Red flash overlay (full screen, flashes then fades)
+        ColorRect flashRect = new ColorRect();
+        flashRect.Name = "RedFlash";
+        flashRect.Color = new Color(0.9f, 0.05f, 0.05f, 0.5f);
+        flashRect.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        flashRect.MouseFilter = Control.MouseFilterEnum.Ignore;
+        container.AddChild(flashRect);
+
+        // Main text label — starts off-screen to the left
         Label bannerLabel = new Label();
         bannerLabel.Name = "BannerText";
-        bannerLabel.Text = "BACKUP HAS ARRIVED!";
+        bannerLabel.Text = "BACKUP HAS ARRIVED";
         bannerLabel.HorizontalAlignment = HorizontalAlignment.Center;
         bannerLabel.VerticalAlignment = VerticalAlignment.Center;
         bannerLabel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-        bannerLabel.AnchorTop = 0.3f;
-        bannerLabel.AnchorBottom = 0.45f;
-        bannerLabel.OffsetLeft = 0;
-        bannerLabel.OffsetRight = 0;
-        bannerLabel.OffsetTop = 0;
-        bannerLabel.OffsetBottom = 0;
+        bannerLabel.AnchorTop = 0.38f;
+        bannerLabel.AnchorBottom = 0.52f;
         bannerLabel.MouseFilter = Control.MouseFilterEnum.Ignore;
+        bannerLabel.Position = new Vector2(-1200f, 0f); // start off-screen left
 
         Font? pixelFont = GD.Load<Font>("res://assets/fonts/PressStart2P-Regular.ttf");
         if (pixelFont != null)
             bannerLabel.AddThemeFontOverride("font", pixelFont);
-        bannerLabel.AddThemeFontSizeOverride("font_size", 32);
-        bannerLabel.AddThemeColorOverride("font_color", new Color("ffcc00"));
-        _dominanceBannerLayer.AddChild(bannerLabel);
+        bannerLabel.AddThemeFontSizeOverride("font_size", 36);
+        bannerLabel.AddThemeColorOverride("font_color", new Color(1f, 0.2f, 0.1f));
+        bannerLabel.AddThemeColorOverride("font_outline_color", new Color(0f, 0f, 0f));
+        bannerLabel.AddThemeConstantOverride("outline_size", 4);
+        container.AddChild(bannerLabel);
 
-        // Subtitle
-        Label subLabel = new Label();
-        subLabel.Name = "BannerSub";
-        subLabel.Text = "Raining fire on the enemy...";
-        subLabel.HorizontalAlignment = HorizontalAlignment.Center;
-        subLabel.VerticalAlignment = VerticalAlignment.Top;
-        subLabel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-        subLabel.AnchorTop = 0.45f;
-        subLabel.AnchorBottom = 0.5f;
-        subLabel.OffsetLeft = 0;
-        subLabel.OffsetRight = 0;
-        subLabel.OffsetTop = 0;
-        subLabel.OffsetBottom = 0;
-        subLabel.MouseFilter = Control.MouseFilterEnum.Ignore;
-        if (pixelFont != null)
-            subLabel.AddThemeFontOverride("font", pixelFont);
-        subLabel.AddThemeFontSizeOverride("font_size", 14);
-        subLabel.AddThemeColorOverride("font_color", new Color("e8e4df"));
-        _dominanceBannerLayer.AddChild(subLabel);
+        // Play alert SFX
+        AudioDirector.Instance?.PlaySFX("backup_alert");
 
-        // Fade out the banner after 3 seconds
-        Tween bannerTween = CreateTween();
-        bannerTween.TweenInterval(2.5f);
-        bannerTween.TweenProperty(_dominanceBannerLayer, "layer", 90, 0f); // no-op to anchor the chain
-        bannerTween.TweenCallback(Callable.From(() =>
+        // Animate: slide in → hold → flash red → slide out
+        Tween tween = CreateTween();
+        tween.SetProcessMode(Tween.TweenProcessMode.Physics);
+
+        // 1) Slide label in from left to center (0.3s, punchy overshoot)
+        tween.TweenProperty(bannerLabel, "position", new Vector2(0f, 0f), 0.3f)
+            .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.Out);
+
+        // 2) Flash the red overlay: fade it from 0.5 → 0 quickly
+        tween.Parallel().TweenProperty(flashRect, "color:a", 0f, 0.4f)
+            .From(0.5f);
+
+        // 3) Second red flash pulse at 0.5s
+        tween.TweenProperty(flashRect, "color:a", 0.3f, 0.1f);
+        tween.TweenProperty(flashRect, "color:a", 0f, 0.3f);
+
+        // 4) Hold in center for 1 second
+        tween.TweenInterval(1.0f);
+
+        // 5) Slide out to the right and fade
+        tween.TweenProperty(bannerLabel, "position", new Vector2(1200f, 0f), 0.25f)
+            .SetTrans(Tween.TransitionType.Back).SetEase(Tween.EaseType.In);
+        tween.Parallel().TweenProperty(bannerLabel, "modulate:a", 0f, 0.25f);
+
+        // 6) Clean up
+        tween.TweenCallback(Callable.From(() =>
         {
             if (_dominanceBannerLayer != null && IsInstanceValid(_dominanceBannerLayer))
             {
-                // Fade children
-                Tween fadeTween = CreateTween();
-                fadeTween.TweenProperty(strip, "modulate:a", 0f, 0.5f);
-                fadeTween.Parallel().TweenProperty(bannerLabel, "modulate:a", 0f, 0.5f);
-                fadeTween.Parallel().TweenProperty(subLabel, "modulate:a", 0f, 0.5f);
-                fadeTween.TweenCallback(Callable.From(() =>
-                {
-                    if (_dominanceBannerLayer != null && IsInstanceValid(_dominanceBannerLayer))
-                    {
-                        _dominanceBannerLayer.QueueFree();
-                        _dominanceBannerLayer = null;
-                    }
-                }));
+                _dominanceBannerLayer.QueueFree();
+                _dominanceBannerLayer = null;
             }
         }));
     }

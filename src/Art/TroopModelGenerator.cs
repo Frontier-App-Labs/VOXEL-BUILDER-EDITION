@@ -46,31 +46,49 @@ public static class TroopModelGenerator
 
         // ── HEAD (5x5x5) with large helmet ──
         Color?[,,] head = new Color?[5, 5, 5];
-        // Face (front face, z=0-1)
-        for (int x = 1; x < 4; x++)
+        Color hair = new Color(0.18f, 0.12f, 0.08f);
+
+        // Full face block — fills the helmet (x=0..4, y=0..2, z=0..3)
+        for (int x = 0; x < 5; x++)
             for (int y = 0; y < 3; y++)
-                for (int z = 0; z < 2; z++)
+                for (int z = 0; z < 4; z++)
                     head[x, y, z] = Skin;
-        // Side shading
-        head[0, 1, 0] = SkinShadow; head[4, 1, 0] = SkinShadow;
-        head[0, 1, 1] = SkinShadow; head[4, 1, 1] = SkinShadow;
-        // Eyes (row 2) — pupils on front face (z=0), whites behind (z=1)
-        head[1, 2, 0] = Pupil; head[3, 2, 0] = Pupil;
-        head[1, 2, 1] = EyeWhite; head[3, 2, 1] = EyeWhite;
-        // Mouth
+
+        // Side shading (edges of face)
+        for (int y = 0; y < 3; y++)
+            for (int z = 0; z < 4; z++)
+            {
+                head[0, y, z] = SkinShadow;
+                head[4, y, z] = SkinShadow;
+            }
+
+        // Back of head: hair (z=4)
+        for (int x = 0; x < 5; x++)
+            for (int y = 0; y < 3; y++)
+                head[x, y, 4] = hair;
+
+        // Eyes (row 2, front face z=0): whites on outer edges, pupils inside
+        head[0, 2, 0] = EyeWhite; head[1, 2, 0] = Pupil;
+        head[3, 2, 0] = Pupil;    head[4, 2, 0] = EyeWhite;
+
+        // Mouth (row 0, front face)
         head[2, 0, 0] = new Color(0.70f, 0.45f, 0.40f);
-        // Helmet (top portion)
+
+        // Helmet (rows 3-4) — full coverage
         for (int x = 0; x < 5; x++)
             for (int z = 0; z < 5; z++)
             {
-                head[x, 3, z] = helmetColor; // helmet rim
-                head[x, 4, z] = helmetHighlight; // helmet top
+                head[x, 3, z] = helmetColor;
+                head[x, 4, z] = helmetHighlight;
             }
-        // Helmet back/sides fill
+        // Helmet rim (darker band at row 3 front and sides)
         for (int x = 0; x < 5; x++)
-            for (int y = 2; y < 5; y++)
-                for (int z = 2; z < 5; z++)
-                    head[x, y, z] ??= helmetColor;
+            head[x, 3, 0] = helmetColor.Darkened(0.15f);
+        for (int z = 0; z < 5; z++)
+        {
+            head[0, 3, z] = helmetColor.Darkened(0.15f);
+            head[4, 3, z] = helmetColor.Darkened(0.15f);
+        }
         // Badge on front
         head[2, 3, 0] = GoldAccent;
 
