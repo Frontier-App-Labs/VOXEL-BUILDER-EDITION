@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using VoxelSiege.Core;
 using VoxelSiege.Networking;
+using VoxelSiege.Networking.Steam;
 
 namespace VoxelSiege.UI;
 
@@ -1283,20 +1284,82 @@ public partial class MainMenu : Control
         StartHosting(MatchVisibility.Private);
     }
 
-    private void StartHosting(MatchVisibility visibility)
+    private async void StartHosting(MatchVisibility visibility)
     {
-        // Configure and start the network host
         NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
         LobbyManager? lobbyManager = GetTree().Root.GetNodeOrNull<LobbyManager>("Main/LobbyManager");
         GameManager? gameManager = GetTree().Root.GetNodeOrNull<GameManager>("Main");
 
-        if (netManager != null)
-        {
-            // Pass the commander name to the network manager before hosting
-            string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
-            netManager.LocalDisplayName = string.IsNullOrWhiteSpace(enteredName) ? "Host" : enteredName;
+        if (netManager == null) return;
 
-            // Subscribe to UPnP discovery so we can update the code once external IP is known
+        // Set display name
+        string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
+        netManager.LocalDisplayName = string.IsNullOrWhiteSpace(enteredName) ? "Host" : enteredName;
+
+        // Pass name to GameManager
+        if (gameManager != null)
+        {
+            gameManager.HumanPlayerName = string.IsNullOrWhiteSpace(enteredName) ? null : enteredName;
+        }
+
+        string visibilityText = visibility == MatchVisibility.Public ? "OPEN" : "PRIVATE";
+        _hostVisibility = visibility;
+
+        // Show "creating lobby..." while we set up
+        if (_lobbyCodeLabel != null) _lobbyCodeLabel.Text = "CREATING LOBBY...";
+        if (_lobbyCodePanel != null) _lobbyCodePanel.Visible = true;
+        if (_statusLabel != null)
+        {
+            _statusLabel.Text = $"{visibilityText} LOBBY  -  SETTING UP...";
+            _statusLabel.AddThemeColorOverride("font_color", TextSecondary);
+            _statusLabel.Visible = true;
+        }
+
+        // Try Steam first — this gives us NAT traversal via Valve's relay servers
+        SteamManager? steam = GetSteamManager();
+        if (steam != null && steam.IsInitialized)
+        {
+            GD.Print("[MainMenu] Steam available — hosting via Steam Networking Sockets");
+
+            // 1) Create Steam lobby (generates game code)
+            string? gameCode = await steam.CreateLobbyAsync(GameConfig.MaxPlayers);
+            if (gameCode == null)
+            {
+                GD.PrintErr("[MainMenu] Steam lobby creation failed");
+                ShowHostError("STEAM LOBBY FAILED");
+                return;
+            }
+
+            // 2) Start Steam relay server
+            Error err = netManager.HostSteam(steam.PlayerSteamId);
+            if (err != Error.Ok)
+            {
+                GD.PrintErr($"[MainMenu] Steam host failed: {err}");
+                steam.LeaveLobby();
+                ShowHostError($"STEAM HOST FAILED: {err}");
+                return;
+            }
+
+            // 3) Update UI with game code
+            _generatedLobbyCode = gameCode;
+            if (_lobbyCodeLabel != null)
+            {
+                _lobbyCodeLabel.Text = $"CODE:  {gameCode}";
+                _lobbyCodeLabel.AddThemeColorOverride("font_color", AccentGreen);
+            }
+            if (_statusLabel != null)
+            {
+                _statusLabel.Text = $"{visibilityText} LOBBY VIA STEAM  -  SHARE THIS CODE";
+                _statusLabel.AddThemeColorOverride("font_color", TextSecondary);
+            }
+
+            GD.Print($"[MainMenu] Steam lobby ready! Code: {gameCode}");
+        }
+        else
+        {
+            // Fallback: ENet + UPnP (requires port forwarding if UPnP fails)
+            GD.Print("[MainMenu] Steam not available — falling back to ENet + UPnP");
+
             netManager.ExternalIpDiscovered -= OnExternalIpDiscovered;
             netManager.ExternalIpDiscovered += OnExternalIpDiscovered;
 
@@ -1304,73 +1367,60 @@ public partial class MainMenu : Control
             if (err != Error.Ok)
             {
                 GD.PrintErr($"[MainMenu] Failed to host: {err}");
-                if (_statusLabel != null)
-                {
-                    _statusLabel.Text = $"HOST FAILED: {err}";
-                    _statusLabel.AddThemeColorOverride("font_color", AccentRed);
-                    _statusLabel.Visible = true;
-                }
+                ShowHostError($"HOST FAILED: {err}");
                 return;
+            }
+
+            if (_lobbyCodeLabel != null) _lobbyCodeLabel.Text = "DISCOVERING...";
+            if (_statusLabel != null)
+            {
+                _statusLabel.Text = $"{visibilityText} LOBBY  -  GETTING PUBLIC IP...";
+                _statusLabel.AddThemeColorOverride("font_color", TextSecondary);
             }
         }
 
-        // Pass the name to GameManager
-        if (gameManager != null)
-        {
-            string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
-            gameManager.HumanPlayerName = string.IsNullOrWhiteSpace(enteredName) ? null : enteredName;
-        }
-
+        // Configure lobby manager
         if (lobbyManager != null)
         {
             MatchSettings settings = new MatchSettings { Visibility = visibility };
-            string lobbyName = visibility == MatchVisibility.Public
-                ? "Open Lobby"
-                : "Private Match";
+            string lobbyName = visibility == MatchVisibility.Public ? "Open Lobby" : "Private Match";
             lobbyManager.ConfigureLobby(lobbyName, settings);
 
-            // Add the host as the first player in the lobby
-            if (netManager != null)
-            {
-                string hostName = netManager.LocalDisplayName;
-                long hostPeerId = netManager.LocalPeerId;
-                GD.Print($"[MainMenu] Adding host to lobby: name='{hostName}', peerId={hostPeerId}, slot=Player1");
-                lobbyManager.AddOrUpdateMember(
-                    hostPeerId,
-                    PlayerSlot.Player1,
-                    hostName,
-                    false);
-                GD.Print($"[MainMenu] Lobby now has {lobbyManager.Members.Count} member(s)");
-            }
+            string hostName = netManager.LocalDisplayName;
+            long hostPeerId = netManager.LocalPeerId;
+            GD.Print($"[MainMenu] Adding host to lobby: name='{hostName}', peerId={hostPeerId}, slot=Player1");
+            lobbyManager.AddOrUpdateMember(hostPeerId, PlayerSlot.Player1, hostName, false);
+            GD.Print($"[MainMenu] Lobby now has {lobbyManager.Members.Count} member(s)");
         }
 
-        // Show "discovering..." while we fetch the public IP
-        if (_lobbyCodeLabel != null)
-        {
-            _lobbyCodeLabel.Text = "DISCOVERING...";
-        }
-        if (_lobbyCodePanel != null)
-        {
-            _lobbyCodePanel.Visible = true;
-        }
-
-        string visibilityText = visibility == MatchVisibility.Public ? "OPEN" : "PRIVATE";
-        _hostVisibility = visibility;
-        if (_statusLabel != null)
-        {
-            _statusLabel.Text = $"{visibilityText} LOBBY  -  GETTING PUBLIC IP...";
-            _statusLabel.AddThemeColorOverride("font_color", TextSecondary);
-            _statusLabel.Visible = true;
-        }
-
-        GD.Print($"[MainMenu] Hosting {visibilityText} lobby — discovering public IP...");
         HostGameRequested?.Invoke(visibility == MatchVisibility.Public);
     }
 
     private MatchVisibility _hostVisibility;
 
+    private void ShowHostError(string message)
+    {
+        if (_statusLabel != null)
+        {
+            _statusLabel.Text = message;
+            _statusLabel.AddThemeColorOverride("font_color", AccentRed);
+            _statusLabel.Visible = true;
+        }
+        if (_lobbyCodeLabel != null)
+        {
+            _lobbyCodeLabel.Text = "FAILED";
+            _lobbyCodeLabel.AddThemeColorOverride("font_color", AccentRed);
+        }
+    }
+
+    private SteamManager? GetSteamManager()
+    {
+        SteamPlatformNode? steamNode = GetTree().Root.GetNodeOrNull<SteamPlatformNode>("Main/SteamPlatform");
+        return steamNode?.Steam;
+    }
+
     /// <summary>
-    /// Called when NetworkManager discovers the public IP.
+    /// Called when NetworkManager discovers the public IP (ENet fallback path).
     /// Updates the displayed game code with the encoded address.
     /// </summary>
     private void OnExternalIpDiscovered(string externalIp)
@@ -1404,8 +1454,8 @@ public partial class MainMenu : Control
 
         if (_statusLabel != null)
         {
-            _statusLabel.Text = $"{visibilityText} LOBBY  -  SHARE THIS CODE WITH FRIENDS";
-            _statusLabel.AddThemeColorOverride("font_color", TextSecondary);
+            _statusLabel.Text = $"{visibilityText} LOBBY (ENET)  -  REQUIRES PORT FORWARDING";
+            _statusLabel.AddThemeColorOverride("font_color", AccentGold);
         }
     }
 
@@ -1414,7 +1464,7 @@ public partial class MainMenu : Control
         ShowPanel(_joinPanel);
     }
 
-    private void OnJoinWithCode()
+    private async void OnJoinWithCode()
     {
         string input = _joinCodeInput?.Text?.Trim().ToUpperInvariant() ?? string.Empty;
         if (string.IsNullOrEmpty(input))
@@ -1423,7 +1473,66 @@ public partial class MainMenu : Control
             return;
         }
 
-        // Try decoding as a 7-char game code first, fall back to raw IP
+        NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
+        if (netManager == null) return;
+
+        string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
+        netManager.LocalDisplayName = string.IsNullOrWhiteSpace(enteredName) ? "Player" : enteredName;
+
+        GameManager? gameManager = GetTree().Root.GetNodeOrNull<GameManager>("Main");
+        if (gameManager != null)
+        {
+            gameManager.HumanPlayerName = string.IsNullOrWhiteSpace(enteredName) ? null : enteredName;
+        }
+
+        // Try Steam first — search for a lobby matching this game code
+        SteamManager? steam = GetSteamManager();
+        if (steam != null && steam.IsInitialized)
+        {
+            GD.Print($"[MainMenu] Searching Steam lobbies for code: {input}");
+            if (_statusLabel != null)
+            {
+                _statusLabel.Text = "SEARCHING FOR LOBBY...";
+                _statusLabel.AddThemeColorOverride("font_color", TextSecondary);
+                _statusLabel.Visible = true;
+            }
+
+            bool found = await steam.JoinLobbyByCodeAsync(input);
+            if (found)
+            {
+                // Get the host's Steam ID from the lobby owner
+                Steamworks.SteamId hostId = steam.GetLobbyHostId();
+                GD.Print($"[MainMenu] Found lobby! Host Steam ID: {hostId}");
+
+                Error err = netManager.JoinSteam(steam.PlayerSteamId, hostId);
+                if (err != Error.Ok)
+                {
+                    GD.PrintErr($"[MainMenu] Steam join failed: {err}");
+                    steam.LeaveLobby();
+                    if (_statusLabel != null)
+                    {
+                        _statusLabel.Text = $"JOIN FAILED: {err}";
+                        _statusLabel.AddThemeColorOverride("font_color", AccentRed);
+                    }
+                    return;
+                }
+
+                if (_statusLabel != null)
+                {
+                    _statusLabel.Text = "CONNECTED VIA STEAM!";
+                    _statusLabel.AddThemeColorOverride("font_color", AccentGreen);
+                }
+
+                JoinWithCodeRequested?.Invoke(input);
+                return;
+            }
+            else
+            {
+                GD.Print("[MainMenu] No Steam lobby found — trying ENet fallback");
+            }
+        }
+
+        // Fallback: decode as IP-based code or raw IP
         string address;
         string? decoded = DecodeCodeToIp(input);
         if (decoded != null)
@@ -1433,32 +1542,21 @@ public partial class MainMenu : Control
         }
         else
         {
-            // Treat as raw IP address (for advanced users / LAN testing)
             address = input;
             GD.Print($"[MainMenu] Joining with raw address: {address}");
         }
 
-        NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
-        if (netManager != null)
+        Error enetErr = netManager.Join(address);
+        if (enetErr != Error.Ok)
         {
-            // Pass the commander name to the network manager before joining
-            string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
-            netManager.LocalDisplayName = string.IsNullOrWhiteSpace(enteredName) ? "Player" : enteredName;
-
-            Error err = netManager.Join(address);
-            if (err != Error.Ok)
+            GD.PrintErr($"[MainMenu] Failed to join: {enetErr}");
+            if (_statusLabel != null)
             {
-                GD.PrintErr($"[MainMenu] Failed to join: {err}");
-                return;
+                _statusLabel.Text = $"JOIN FAILED: {enetErr}";
+                _statusLabel.AddThemeColorOverride("font_color", AccentRed);
+                _statusLabel.Visible = true;
             }
-        }
-
-        // Pass the name to GameManager too
-        GameManager? gameManager = GetTree().Root.GetNodeOrNull<GameManager>("Main");
-        if (gameManager != null)
-        {
-            string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
-            gameManager.HumanPlayerName = string.IsNullOrWhiteSpace(enteredName) ? null : enteredName;
+            return;
         }
 
         JoinWithCodeRequested?.Invoke(input);
@@ -1481,6 +1579,10 @@ public partial class MainMenu : Control
                 netManager.Shutdown();
             }
         }
+
+        // Leave Steam lobby if we were in one
+        SteamManager? steam = GetSteamManager();
+        steam?.LeaveLobby();
 
         ShowPanel(_playOnlinePanel);
     }

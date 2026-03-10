@@ -4208,11 +4208,15 @@ public partial class GameManager : Node
             GD.Print($"[Combat] {payload.CurrentPlayer} has no usable weapons — auto-skipping turn.");
 
             // Before skipping, check if ANY player in the turn order has usable weapons.
-            // If nobody can fire, end the game to avoid an infinite skip loop.
+            // If nobody can fire, trigger backup bombardment instead of abruptly ending.
             if (!AnyPlayerHasUsableWeapons())
             {
-                GD.Print("[Combat] No player has usable weapons — ending game.");
-                DeclareWinnerByHealth();
+                GD.Print("[Combat] No player has usable weapons — triggering backup bombardment.");
+                if (!TriggerBackupForBestSurvivor())
+                {
+                    // No valid bombardment target (e.g., only 1 player alive) — end normally
+                    DeclareWinnerByHealth();
+                }
                 return;
             }
 
@@ -4375,6 +4379,67 @@ public partial class GameManager : Node
         {
             _progressionManager?.CommitMatchEarnings(localP1.Stats.MatchEarnings);
         }
+    }
+
+    /// <summary>
+    /// Finds the best surviving player and triggers backup bombardment for them.
+    /// Used when no player has usable weapons but living enemies remain to bombard.
+    /// Returns true if bombardment was triggered, false if game should end normally.
+    /// </summary>
+    private bool TriggerBackupForBestSurvivor()
+    {
+        if (_artilleryDominanceActive) return false;
+
+        // Find the best living player (highest health, or first alive if tied)
+        PlayerSlot? winner = null;
+        int highestHealth = -1;
+        bool hasLivingEnemies = false;
+
+        foreach ((PlayerSlot slot, PlayerData playerData) in _players)
+        {
+            if (!playerData.IsAlive) continue;
+            if (playerData.CommanderHealth > highestHealth)
+            {
+                highestHealth = playerData.CommanderHealth;
+                winner = slot;
+            }
+        }
+
+        if (!winner.HasValue) return false;
+
+        // Check if there are living enemies to bombard
+        foreach ((PlayerSlot slot, PlayerData playerData) in _players)
+        {
+            if (slot != winner.Value && playerData.IsAlive)
+            {
+                hasLivingEnemies = true;
+                break;
+            }
+        }
+
+        if (!hasLivingEnemies) return false;
+
+        // Trigger artillery dominance for the winner
+        _artilleryDominanceActive = true;
+        _artilleryDominanceWinner = winner.Value;
+        _bombardmentTimer = 2.0f;
+        _bombardmentSalvoCount = 0;
+        _bombardmentTargetIndex = 0;
+        _bombardmentTargets = null;
+        Engine.TimeScale = 0.5;
+
+        string winnerName = _players.TryGetValue(winner.Value, out PlayerData? wp) ? wp.DisplayName : winner.Value.ToString();
+        GD.Print($"[Combat] BACKUP CALLED IN! {winnerName} is the last player standing — bombardment begins!");
+
+        CanvasLayer? combatHUD = GetNodeOrNull<CanvasLayer>("CombatHUD");
+        if (combatHUD != null) combatHUD.Visible = false;
+        if (_skipTurnButton != null) _skipTurnButton.Visible = false;
+
+        _turnManager?.StopTurnClock();
+        ShowDominanceBanner();
+        SwitchToTopDownOverview();
+
+        return true;
     }
 
     /// <summary>
@@ -4777,16 +4842,21 @@ public partial class GameManager : Node
             PlayerSlot candidate = kvp.Key;
             if (!kvp.Value.IsAlive) continue;
 
-            // Does this player still have weapons?
-            if (!_weapons.TryGetValue(candidate, out List<WeaponBase>? ownWeapons)) continue;
-            int ownAlive = ownWeapons.FindAll(w => w != null && IsInstanceValid(w) && !w.IsDestroyed).Count;
-            if (ownAlive == 0) continue;
+            // Check own weapon count (artillery dominance still triggers even with 0 weapons
+            // — the "backup has arrived" bombardment is the reward for being the last survivor)
+            int ownAlive = 0;
+            if (_weapons.TryGetValue(candidate, out List<WeaponBase>? ownWeapons))
+            {
+                ownAlive = ownWeapons.FindAll(w => w != null && IsInstanceValid(w) && !w.IsDestroyed).Count;
+            }
 
             // Check if ALL other living players have zero weapons
             bool allEnemiesDisarmed = true;
+            bool hasLivingEnemies = false;
             foreach (var other in _players)
             {
                 if (other.Key == candidate || !other.Value.IsAlive) continue;
+                hasLivingEnemies = true;
                 if (_weapons.TryGetValue(other.Key, out List<WeaponBase>? enemyWeapons))
                 {
                     int enemyAlive = enemyWeapons.FindAll(w => w != null && IsInstanceValid(w) && !w.IsDestroyed).Count;
@@ -4797,6 +4867,9 @@ public partial class GameManager : Node
                     }
                 }
             }
+
+            // Need living enemies to bombard — if nobody else is alive, game should end via OnCommanderKilled
+            if (!hasLivingEnemies) continue;
 
             if (allEnemiesDisarmed)
             {

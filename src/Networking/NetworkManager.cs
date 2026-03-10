@@ -1,8 +1,10 @@
 ﻿using Godot;
+using Steamworks;
 using System;
 using System.Collections.Generic;
 using System.Text;
 using VoxelSiege.Core;
+using VoxelSiege.Networking.Steam;
 
 namespace VoxelSiege.Networking;
 
@@ -18,6 +20,7 @@ public partial class NetworkManager : Node
 
     public bool IsHost { get; private set; }
     public bool IsOnline => _activePeer != null;
+    public bool UsingSteam { get; private set; }
 
     /// <summary>
     /// The external (public) IP discovered via UPnP, or the LAN IP as fallback.
@@ -77,6 +80,48 @@ public partial class NetworkManager : Node
         // This runs in a background thread so it doesn't block the UI.
         SetupUpnpAsync();
 
+        return Error.Ok;
+    }
+
+    /// <summary>
+    /// Host a game via Steam Networking Sockets (relay — no port forwarding needed).
+    /// </summary>
+    public Error HostSteam(SteamId localSteamId)
+    {
+        SteamMultiplayerPeer peer = new SteamMultiplayerPeer();
+        Error error = peer.CreateHost(localSteamId);
+        if (error != Error.Ok)
+        {
+            GD.PrintErr($"[NetworkManager] Steam host failed: {error}");
+            return error;
+        }
+
+        Multiplayer.MultiplayerPeer = peer;
+        _activePeer = peer;
+        IsHost = true;
+        UsingSteam = true;
+        GD.Print($"[NetworkManager] Hosting via Steam relay as {localSteamId}");
+        return Error.Ok;
+    }
+
+    /// <summary>
+    /// Join a game via Steam Networking Sockets (relay — no port forwarding needed).
+    /// </summary>
+    public Error JoinSteam(SteamId localSteamId, SteamId hostSteamId)
+    {
+        SteamMultiplayerPeer peer = new SteamMultiplayerPeer();
+        Error error = peer.CreateClient(localSteamId, hostSteamId);
+        if (error != Error.Ok)
+        {
+            GD.PrintErr($"[NetworkManager] Steam join failed: {error}");
+            return error;
+        }
+
+        Multiplayer.MultiplayerPeer = peer;
+        _activePeer = peer;
+        IsHost = false;
+        UsingSteam = true;
+        GD.Print($"[NetworkManager] Joining via Steam relay → host {hostSteamId}");
         return Error.Ok;
     }
 
@@ -320,6 +365,7 @@ public partial class NetworkManager : Node
         }
 
         IsHost = false;
+        UsingSteam = false;
         _pendingOutbound.Clear();
         GD.Print("[NetworkManager] Shutdown complete.");
     }

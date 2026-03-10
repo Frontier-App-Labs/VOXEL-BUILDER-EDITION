@@ -1,6 +1,4 @@
-using Godot;
-using System;
-using System.Reflection;
+using VoxelSiege.Networking.Steam;
 
 namespace VoxelSiege.Networking;
 
@@ -22,54 +20,30 @@ public sealed class NullSteamPlatform : ISteamPlatform
     public bool SetRichPresence(string key, string value) => false;
 }
 
-public sealed class ReflectionSteamPlatform : ISteamPlatform
+/// <summary>
+/// Real Steam platform backed by Facepunch.Steamworks via SteamManager.
+/// </summary>
+public sealed class FacepunchSteamPlatform : ISteamPlatform
 {
-    private readonly Type? _steamType;
-    private readonly MethodInfo? _initMethod;
-    private readonly MethodInfo? _runCallbacksMethod;
-    private readonly MethodInfo? _isRunningMethod;
-    private readonly MethodInfo? _setRichPresenceMethod;
+    private readonly SteamManager _steam;
 
-    public ReflectionSteamPlatform()
+    public FacepunchSteamPlatform(SteamManager steam)
     {
-        _steamType = Type.GetType("Steam, GodotSteam") ?? Type.GetType("GodotSteam.Steam, GodotSteam");
-        if (_steamType != null)
-        {
-            _initMethod = _steamType.GetMethod("Init", BindingFlags.Public | BindingFlags.Static);
-            _runCallbacksMethod = _steamType.GetMethod("RunCallbacks", BindingFlags.Public | BindingFlags.Static);
-            _isRunningMethod = _steamType.GetMethod("IsSteamRunning", BindingFlags.Public | BindingFlags.Static);
-            _setRichPresenceMethod = _steamType.GetMethod("SetRichPresence", BindingFlags.Public | BindingFlags.Static);
-        }
+        _steam = steam;
     }
 
-    public bool IsAvailable => _steamType != null;
-    public bool IsRunning => _isRunningMethod?.Invoke(null, null) as bool? ?? false;
+    public bool IsAvailable => _steam.IsInitialized;
+    public bool IsRunning => _steam.IsInitialized;
 
-    public bool Init()
-    {
-        if (_initMethod == null)
-        {
-            return false;
-        }
-
-        object? result = _initMethod.Invoke(null, null);
-        return result as bool? ?? true;
-    }
+    public bool Init() => _steam.IsInitialized;
 
     public void PumpCallbacks()
     {
-        _runCallbacksMethod?.Invoke(null, null);
+        // SteamManager handles this in _Process
     }
 
     public bool SetRichPresence(string key, string value)
     {
-        if (_setRichPresenceMethod == null)
-        {
-            return false;
-        }
-
-        object? result = _setRichPresenceMethod.Invoke(null, new object[] { key, value });
-        return result as bool? ?? true;
+        return _steam.SetRichPresence(key, value);
     }
 }
-

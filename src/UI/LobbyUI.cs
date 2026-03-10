@@ -402,30 +402,52 @@ public partial class LobbyUI : Control
             _gameCodeStatus.Visible = false;
         }
 
-        // Subscribe to NetworkManager for public IP discovery (host only)
-        if (isHost)
-        {
-            NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
-            if (netManager != null)
-            {
-                netManager.ExternalIpDiscovered += OnPublicIpDiscovered;
-                GD.Print("[LobbyUI] Subscribed to ExternalIpDiscovered");
+        if (!isHost) return;
 
-                // If the IP was already discovered before we subscribed, use it now
-                if (!string.IsNullOrEmpty(netManager.ExternalIp) && netManager.ExternalIp != "UNKNOWN")
+        // Check if we're using Steam (code already available) or ENet (need IP discovery)
+        NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
+        if (netManager == null)
+        {
+            GD.PrintErr("[LobbyUI] NetworkManager not found!");
+            return;
+        }
+
+        if (netManager.UsingSteam)
+        {
+            // Steam path — get the code from the SteamManager (already created)
+            SteamPlatformNode? steamNode = GetTree().Root.GetNodeOrNull<SteamPlatformNode>("Main/SteamPlatform");
+            Networking.Steam.SteamManager? steam = steamNode?.Steam;
+            if (steam != null && steam.InLobby)
+            {
+                string? code = steam.CurrentLobby.GetData("game_code");
+                GD.Print($"[LobbyUI] Steam lobby code: {code}");
+                if (_gameCodeLabel != null)
                 {
-                    OnPublicIpDiscovered(netManager.ExternalIp);
+                    _gameCodeLabel.Text = $"CODE:  {code ?? "???"}";
+                    _gameCodeLabel.AddThemeColorOverride("font_color", AccentGreen);
+                }
+                if (_gameCodeStatus != null)
+                {
+                    _gameCodeStatus.Text = "SHARE THIS CODE  -  CONNECTED VIA STEAM";
+                    _gameCodeStatus.AddThemeColorOverride("font_color", TextSecondary);
                 }
             }
-            else
+        }
+        else
+        {
+            // ENet fallback — subscribe to IP discovery
+            netManager.ExternalIpDiscovered += OnPublicIpDiscovered;
+            GD.Print("[LobbyUI] Subscribed to ExternalIpDiscovered (ENet mode)");
+
+            if (!string.IsNullOrEmpty(netManager.ExternalIp) && netManager.ExternalIp != "UNKNOWN")
             {
-                GD.PrintErr("[LobbyUI] NetworkManager not found!");
+                OnPublicIpDiscovered(netManager.ExternalIp);
             }
         }
     }
 
     /// <summary>
-    /// Called when the public IP is discovered. Encodes it into a game code.
+    /// Called when the public IP is discovered (ENet fallback path).
     /// </summary>
     private void OnPublicIpDiscovered(string publicIp)
     {
@@ -456,8 +478,8 @@ public partial class LobbyUI : Control
         }
         if (_gameCodeStatus != null)
         {
-            _gameCodeStatus.Text = "SHARE THIS CODE WITH FRIENDS TO JOIN";
-            _gameCodeStatus.AddThemeColorOverride("font_color", TextSecondary);
+            _gameCodeStatus.Text = "SHARE THIS CODE  -  REQUIRES PORT FORWARDING";
+            _gameCodeStatus.AddThemeColorOverride("font_color", AccentGold);
         }
     }
 
