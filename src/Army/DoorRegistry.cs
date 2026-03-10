@@ -1,5 +1,6 @@
 using Godot;
 using System.Collections.Generic;
+using VoxelSiege.FX;
 using VoxelSiege.Voxel;
 using VoxelSiege.Core;
 using VoxelValue = VoxelSiege.Voxel.Voxel;
@@ -16,6 +17,14 @@ public sealed class DoorPlacement
     /// Visual door panel mesh parented to the VoxelWorld node. Freed on removal.
     /// </summary>
     public MeshInstance3D? DoorMesh { get; set; }
+
+    /// <summary>Hit points remaining. When zero, the door is destroyed.</summary>
+    public int HitPoints { get; set; } = 30;
+    public const int MaxHitPoints = 30;
+    public bool IsDestroyed => HitPoints <= 0;
+
+    /// <summary>Stored voxel grid for destruction breakup effect.</summary>
+    public Color?[,,]? VoxelGrid { get; set; }
 }
 
 public class DoorRegistry
@@ -135,7 +144,8 @@ public class DoorRegistry
         else if (onMaxZ) outwardNormal = Vector3.Back;    // +Z faces outward
 
         // Build the visual door mesh and parent it to the VoxelWorld node
-        MeshInstance3D? doorMesh = BuildDoorMesh(baseMicrovoxel, wallMaterial, outwardNormal);
+        Color?[,,]? doorVoxelGrid;
+        MeshInstance3D? doorMesh = BuildDoorMesh(baseMicrovoxel, wallMaterial, outwardNormal, out doorVoxelGrid);
         if (doorMesh != null)
         {
             world.AddChild(doorMesh);
@@ -148,6 +158,7 @@ public class DoorRegistry
             BaseMicrovoxel = baseMicrovoxel,
             OpeningVoxels = openingVoxels,
             DoorMesh = doorMesh,
+            VoxelGrid = doorVoxelGrid,
         };
         ownerDoors.Add(placement);
 
@@ -292,6 +303,58 @@ public class DoorRegistry
     }
 
     /// <summary>
+    /// Damages all doors within the blast radius. Destroyed doors break into voxel debris.
+    /// </summary>
+    public void DamageDoorsInRadius(Vector3 explosionPos, float radiusMicrovoxels, int baseDamage, Node sceneRoot)
+    {
+        float radiusMeters = radiusMicrovoxels * GameConfig.MicrovoxelMeters;
+
+        foreach ((PlayerSlot _, List<DoorPlacement> doors) in _doors)
+        {
+            for (int i = doors.Count - 1; i >= 0; i--)
+            {
+                DoorPlacement door = doors[i];
+                if (door.IsDestroyed) continue;
+
+                // Door world position (center of the opening)
+                float mv = GameConfig.MicrovoxelMeters;
+                Vector3 doorCenter = new Vector3(
+                    door.BaseMicrovoxel.X * mv + mv * 0.5f,
+                    (door.BaseMicrovoxel.Y + DoorHeight * 0.5f) * mv,
+                    door.BaseMicrovoxel.Z * mv + mv * 0.5f);
+
+                float dist = doorCenter.DistanceTo(explosionPos);
+                if (dist > radiusMeters) continue;
+
+                // Linear falloff damage
+                float falloff = 1f - Mathf.Clamp(dist / radiusMeters, 0f, 1f);
+                int damage = (int)(baseDamage * falloff);
+                if (damage <= 0) continue;
+
+                door.HitPoints -= damage;
+                if (door.HitPoints <= 0)
+                {
+                    door.HitPoints = 0;
+                    GD.Print($"[Door] Door at {door.BaseMicrovoxel} destroyed!");
+
+                    // Break into voxel pieces using effective voxel size
+                    // (door mesh is scaled up from 0.04m voxels to fill the opening)
+                    if (door.VoxelGrid != null && door.DoorMesh != null)
+                    {
+                        Vector3 meshPos = door.DoorMesh.GlobalPosition;
+                        float effectiveVoxelSize = GameConfig.MicrovoxelMeters / 4f; // 4 voxels span 1 microvoxel width
+                        FallingChunk.CreateFromWeaponVoxels(
+                            door.VoxelGrid, effectiveVoxelSize, meshPos, explosionPos, sceneRoot);
+                    }
+
+                    FreeDoorMesh(door);
+                    doors.RemoveAt(i);
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Resets all door data for a new match.
     /// </summary>
     public void Clear()
@@ -310,6 +373,10 @@ public class DoorRegistry
     // ---- Door mesh construction ----
 
     private static readonly Color HandleColor = new Color("c9a84c"); // brass/gold
+    private static readonly Color HingeColor = new Color(0.35f, 0.35f, 0.38f); // dark metal
+    private static readonly Color PlanksLight = new Color(0.55f, 0.38f, 0.22f); // warm wood
+    private static readonly Color PlanksDark = new Color(0.40f, 0.26f, 0.14f); // darker wood grain
+    private static readonly Color IronBand = new Color(0.28f, 0.28f, 0.30f); // iron reinforcement
 
     /// <summary>
     /// Frees a door's visual mesh if it exists.
@@ -324,148 +391,119 @@ public class DoorRegistry
     }
 
     /// <summary>
-    /// Builds a procedural door panel MeshInstance3D with a handle detail.
-    /// The door fills the 1-wide x DoorHeight-tall opening and is 0.1 microvoxels thick.
-    /// A small brass handle is attached at mid-height.
+    /// Builds a procedural voxel-style door panel using VoxelModelBuilder.
+    /// Creates a chunky medieval/fortified door with wooden planks, iron bands,
+    /// and a brass handle. Matches the game's voxel art style.
     /// </summary>
-    /// <param name="baseMicrovoxel">Bottom microvoxel of the door opening.</param>
-    /// <param name="wallMaterial">Material type of the surrounding wall (for color matching).</param>
-    /// <param name="outwardNormal">Outward-facing direction from the build zone.</param>
-    /// <returns>A MeshInstance3D ready to be added to the scene tree, or null on failure.</returns>
     private static MeshInstance3D? BuildDoorMesh(
         Vector3I baseMicrovoxel,
         VoxelMaterialType wallMaterial,
-        Vector3 outwardNormal)
+        Vector3 outwardNormal,
+        out Color?[,,]? voxelGridOut)
     {
-        float mv = GameConfig.MicrovoxelMeters; // 0.5 m per microvoxel
+        float mv = GameConfig.MicrovoxelMeters;
 
-        // Door panel dimensions in meters
-        float panelWidth = 1f * mv;                    // 1 microvoxel wide
-        float panelHeight = DoorHeight * mv;           // 3 microvoxels tall
-        float panelDepth = 0.1f * mv;                  // thin slab (0.1 microvoxels deep)
+        // Build a voxel door: 4 wide x 12 tall x 2 deep (at 0.04m per voxel)
+        // This fits into a 1-microvoxel-wide x 3-microvoxel-tall opening
+        const int dw = 4;  // width (across opening)
+        const int dh = 12; // height (3 microvoxels * 4 voxels each)
+        const int dd = 2;  // depth (thin door)
+        const float voxelSize = 0.04f;
 
-        // Handle dimensions in meters (1/4 scale of a voxel)
-        float handleSize = 0.25f * mv;
-        float handleProtrusion = 0.15f * mv;           // how far the handle sticks out
+        Color?[,,] v = new Color?[dw, dh, dd];
 
-        // World position of the base microvoxel center-bottom
+        // Fill base planks (alternating light/dark for wood grain effect)
+        for (int x = 0; x < dw; x++)
+        {
+            for (int y = 0; y < dh; y++)
+            {
+                for (int z = 0; z < dd; z++)
+                {
+                    v[x, y, z] = (x + y) % 2 == 0 ? PlanksLight : PlanksDark;
+                }
+            }
+        }
+
+        // Iron reinforcement bands across the door (rows 1, 5, 9)
+        for (int band = 1; band < dh; band += 4)
+        {
+            for (int x = 0; x < dw; x++)
+            {
+                v[x, band, 0] = IronBand;
+                v[x, band, 1] = IronBand;
+            }
+        }
+
+        // Hinges on one side (left edge, at top/mid/bottom bands)
+        v[0, 1, 0] = HingeColor;
+        v[0, 5, 0] = HingeColor;
+        v[0, 9, 0] = HingeColor;
+
+        // Brass door handle (right side, mid-height, front face)
+        v[3, 5, 0] = HandleColor;
+        v[3, 6, 0] = HandleColor;
+
+        // Small keyhole below handle
+        v[3, 4, 0] = new Color(0.08f, 0.08f, 0.10f);
+
+        voxelGridOut = (Color?[,,])v.Clone();
+
+        var builder = new Art.VoxelModelBuilder()
+        {
+            VoxelSize = voxelSize,
+            JitterAmount = 0.002f,
+            OriginOffset = new Vector3(-dw * 0.5f * voxelSize, 0, -dd * 0.5f * voxelSize),
+        };
+
+        ArrayMesh doorMesh = builder.BuildMesh(v);
+
+        // Position the door in the opening
+        float panelHeight = DoorHeight * mv;
+
         Vector3 worldBase = new Vector3(
             baseMicrovoxel.X * mv,
             baseMicrovoxel.Y * mv,
             baseMicrovoxel.Z * mv);
 
-        // --- Determine panel orientation ---
-        // The panel should be placed flush against the outward face of the opening.
-        // "depth" axis = outward normal direction, "width" and "height" are the other two axes.
-
         bool facesX = Mathf.Abs(outwardNormal.X) > 0.5f;
-        // facesX => panel is in the YZ plane; else panel is in the XY plane (faces Z)
 
-        // Panel center relative to worldBase:
-        // Height center is halfway up the 3-tall opening.
-        // Width center is at the voxel column center (+ 0.5 microvoxel).
-        // Depth is flush with the outward face of the voxel.
-        Vector3 panelCenter;
-        Vector3 panelScale;
-        Vector3 handleOffset;
+        MeshInstance3D doorMeshInstance = new MeshInstance3D();
+        doorMeshInstance.Name = "DoorPanel";
+        doorMeshInstance.Mesh = doorMesh;
+        doorMeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
 
         if (facesX)
         {
-            // Door faces along X axis. Panel lies in the YZ plane.
-            // Width runs along Z, height along Y, depth along X.
-            float xFace = outwardNormal.X > 0
-                ? worldBase.X + mv             // +X face: far side of the voxel
-                : worldBase.X;                 // -X face: near side of the voxel
-            float depthSign = outwardNormal.X > 0 ? 1f : -1f;
-
-            panelCenter = new Vector3(
-                xFace + depthSign * panelDepth * 0.5f,
-                worldBase.Y + panelHeight * 0.5f,
+            float xFace = outwardNormal.X > 0 ? worldBase.X + mv : worldBase.X;
+            doorMeshInstance.Position = new Vector3(
+                xFace,
+                worldBase.Y,
                 worldBase.Z + mv * 0.5f);
-
-            // BoxMesh Size = (depth, height, width) in local space, then we don't rotate
-            panelScale = new Vector3(panelDepth, panelHeight, panelWidth);
-
-            // Handle at mid-height, offset to the right side of the door (positive Z),
-            // protruding outward along X
-            handleOffset = new Vector3(
-                depthSign * (panelDepth * 0.5f + handleProtrusion * 0.5f),
-                0f,
-                panelWidth * 0.2f);
+            // Rotate 90° around Y so door width runs along Z
+            doorMeshInstance.RotationDegrees = new Vector3(0, 90, 0);
         }
         else
         {
-            // Door faces along Z axis. Panel lies in the XY plane.
-            // Width runs along X, height along Y, depth along Z.
-            float zFace = outwardNormal.Z > 0
-                ? worldBase.Z + mv             // +Z face: far side of the voxel
-                : worldBase.Z;                 // -Z face: near side of the voxel
-            float depthSign = outwardNormal.Z > 0 ? 1f : -1f;
-
-            panelCenter = new Vector3(
+            float zFace = outwardNormal.Z > 0 ? worldBase.Z + mv : worldBase.Z;
+            doorMeshInstance.Position = new Vector3(
                 worldBase.X + mv * 0.5f,
-                worldBase.Y + panelHeight * 0.5f,
-                zFace + depthSign * panelDepth * 0.5f);
-
-            panelScale = new Vector3(panelWidth, panelHeight, panelDepth);
-
-            handleOffset = new Vector3(
-                panelWidth * 0.2f,
-                0f,
-                depthSign * (panelDepth * 0.5f + handleProtrusion * 0.5f));
+                worldBase.Y,
+                zFace);
+            // No rotation needed — door width runs along X by default
         }
 
-        // --- Build the combined mesh ---
-        Color panelColor = VoxelMaterials.GetPreviewColor(wallMaterial);
+        // Scale to fit the opening (door voxels are small, scale up to match microvoxels)
+        float scaleX = mv / (dw * voxelSize);
+        float scaleY = panelHeight / (dh * voxelSize);
+        float scaleZ = (mv * 0.15f) / (dd * voxelSize); // thin depth
+        doorMeshInstance.Scale = new Vector3(scaleX, scaleY, scaleZ);
 
-        // Panel geometry (box)
-        BoxMesh panelBox = new BoxMesh();
-        panelBox.Size = panelScale;
-
-        // Handle geometry (small box)
-        BoxMesh handleBox = new BoxMesh();
-        handleBox.Size = new Vector3(handleSize, handleSize, handleSize);
-
-        // Combine into a single ArrayMesh with two surfaces:
-        // Surface 0 = door panel, Surface 1 = handle
-        ArrayMesh combinedMesh = new ArrayMesh();
-
-        // Surface 0: door panel
-        {
-            Godot.Collections.Array panelArrays = panelBox.SurfaceGetArrays(0);
-            // Offset vertices are at origin; the MeshInstance3D position handles placement.
-            combinedMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, panelArrays);
-
-            StandardMaterial3D panelMat = new StandardMaterial3D();
-            panelMat.AlbedoColor = panelColor;
-            panelMat.Roughness = 0.75f;
-            panelMat.Metallic = 0.0f;
-            combinedMesh.SurfaceSetMaterial(0, panelMat);
-        }
-
-        // Build the door MeshInstance3D
-        MeshInstance3D doorMeshInstance = new MeshInstance3D();
-        doorMeshInstance.Name = "DoorPanel";
-        doorMeshInstance.Mesh = combinedMesh;
-        doorMeshInstance.Position = panelCenter;
-        doorMeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
-
-        // Surface 1: handle — as a child MeshInstance3D so we can offset it easily
-        {
-            MeshInstance3D handleInstance = new MeshInstance3D();
-            handleInstance.Name = "DoorHandle";
-            handleInstance.Mesh = handleBox;
-            handleInstance.Position = handleOffset;
-            handleInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
-
-            StandardMaterial3D handleMat = new StandardMaterial3D();
-            handleMat.AlbedoColor = HandleColor;
-            handleMat.Roughness = 0.4f;
-            handleMat.Metallic = 0.7f;
-            handleInstance.MaterialOverride = handleMat;
-
-            doorMeshInstance.AddChild(handleInstance);
-        }
+        // Material: wood-like with slight emission so doors are visible in shadows
+        StandardMaterial3D mat = Art.VoxelModelBuilder.CreateVoxelMaterial(0.7f, 0.0f);
+        mat.EmissionEnabled = true;
+        mat.Emission = PlanksLight;
+        mat.EmissionEnergyMultiplier = 0.05f;
+        doorMeshInstance.MaterialOverride = mat;
 
         return doorMeshInstance;
     }

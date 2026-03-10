@@ -20,6 +20,8 @@ public abstract partial class WeaponBase : Node3D
     private bool _ownerAssigned;
     private bool _isHighlighted;
     private float _supportCheckTimer;
+    private Color?[,,]? _voxelGrid;
+    private float _voxelSize;
 
     [Export]
     public string WeaponId { get; set; } = string.Empty;
@@ -225,20 +227,21 @@ public abstract partial class WeaponBase : Node3D
         Node fxParent = GetTree().Root;
         Vector3 pos = GlobalPosition;
 
-        // Use the weapon's own voxel size so debris is proportional to the weapon model
-        float weaponVoxelSize = WeaponModelGenerator.GetVoxelSize(WeaponId);
-
         // Explosion fireball (scaled to weapon size)
         ExplosionFX.Spawn(fxParent, pos, 1.2f);
 
-        // Debris burst: dark metal shrapnel + charred fragments flying outward
-        // to look like the weapon actually exploded — sized to weapon voxels
-        Color darkMetal = new Color(0.35f, 0.35f, 0.4f);
-        Color charred = new Color(0.2f, 0.18f, 0.15f);
-        Color hotMetal = new Color(0.8f, 0.4f, 0.1f);
-        DebrisFX.SpawnDebris(fxParent, pos, darkMetal, pos, 6, Voxel.VoxelMaterialType.Metal, weaponVoxelSize);
-        DebrisFX.SpawnDebris(fxParent, pos + Vector3.Up * 0.2f, charred, pos, 5, Voxel.VoxelMaterialType.Metal, weaponVoxelSize);
-        DebrisFX.SpawnDebris(fxParent, pos + Vector3.Up * 0.1f, hotMetal, pos, 3, Voxel.VoxelMaterialType.Metal, weaponVoxelSize);
+        // Break the weapon into actual voxel chunks that tumble away
+        if (_voxelGrid != null)
+        {
+            FallingChunk.CreateFromWeaponVoxels(_voxelGrid, _voxelSize, pos, pos, fxParent);
+        }
+        else
+        {
+            // Fallback: generic debris if voxel data wasn't stored
+            float weaponVoxelSize = WeaponModelGenerator.GetVoxelSize(WeaponId);
+            Color darkMetal = new Color(0.35f, 0.35f, 0.4f);
+            DebrisFX.SpawnDebris(fxParent, pos, darkMetal, pos, 8, Voxel.VoxelMaterialType.Metal, weaponVoxelSize);
+        }
 
         // Smoke / dust cloud
         DustFX.Spawn(fxParent, pos, 1.0f, Voxel.VoxelMaterialType.Metal);
@@ -431,6 +434,8 @@ public abstract partial class WeaponBase : Node3D
 
         Color teamColor = GetOwnerColor();
         WeaponModelResult result = WeaponModelGenerator.Generate(WeaponId, teamColor);
+        _voxelGrid = result.VoxelGrid;
+        _voxelSize = result.VoxelSize;
 
         _weaponMesh = new MeshInstance3D();
         _weaponMesh.Name = "WeaponModel";

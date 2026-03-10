@@ -139,6 +139,13 @@ public partial class VoxelWorld : Node3D
         QueueRemesh(chunkCoords);
         QueueNeighborRemeshesOnEdge(local, chunkCoords);
         EventBus.Instance?.EmitVoxelChanged(new VoxelChangeEvent(worldPosition, before.Data, voxel.Data, instigator));
+
+        // When a solid voxel is destroyed (replaced with air), remove grass above it
+        // so blades don't float in the air after terrain destruction.
+        if (before.IsSolid && voxel.IsAir)
+        {
+            TerrainDecorator.RemoveGrassAt(new[] { worldPosition, worldPosition + Vector3I.Up });
+        }
     }
 
     public void FillBox(Vector3I minInclusive, Vector3I maxInclusive, Voxel voxel, PlayerSlot? instigator = null)
@@ -237,13 +244,21 @@ public partial class VoxelWorld : Node3D
             Voxel before = chunk.GetVoxel(local);
             chunk.SetVoxel(local, newVoxel);
 
-            // Track edge neighbors for remeshing
-            if (local.X == 0) edgeChunks.Add(chunkCoords + Vector3I.Left);
-            if (local.X == GameConfig.ChunkSize - 1) edgeChunks.Add(chunkCoords + Vector3I.Right);
-            if (local.Y == 0) edgeChunks.Add(chunkCoords + Vector3I.Down);
-            if (local.Y == GameConfig.ChunkSize - 1) edgeChunks.Add(chunkCoords + Vector3I.Up);
-            if (local.Z == 0) edgeChunks.Add(chunkCoords + new Vector3I(0, 0, -1));
-            if (local.Z == GameConfig.ChunkSize - 1) edgeChunks.Add(chunkCoords + new Vector3I(0, 0, 1));
+            // Track edge/corner neighbors for remeshing (all chunks this voxel touches)
+            int cs = GameConfig.ChunkSize - 1;
+            int dx0 = local.X == 0 ? -1 : 0;
+            int dx1 = local.X == cs ? 1 : 0;
+            int dy0 = local.Y == 0 ? -1 : 0;
+            int dy1 = local.Y == cs ? 1 : 0;
+            int dz0 = local.Z == 0 ? -1 : 0;
+            int dz1 = local.Z == cs ? 1 : 0;
+            for (int dx = dx0; dx <= dx1; dx++)
+            for (int dy = dy0; dy <= dy1; dy++)
+            for (int dz = dz0; dz <= dz1; dz++)
+            {
+                if (dx == 0 && dy == 0 && dz == 0) continue;
+                edgeChunks.Add(chunkCoords + new Vector3I(dx, dy, dz));
+            }
 
             EventBus.Instance?.EmitVoxelChanged(new VoxelChangeEvent(worldPos, before.Data, newVoxel.Data, instigator));
         }
@@ -559,34 +574,22 @@ public partial class VoxelWorld : Node3D
 
     private void QueueNeighborRemeshesOnEdge(Vector3I localPosition, Vector3I chunkCoords)
     {
-        if (localPosition.X == 0)
-        {
-            QueueRemesh(chunkCoords + Vector3I.Left);
-        }
+        // Determine which chunk boundaries this voxel touches
+        int cs = GameConfig.ChunkSize - 1;
+        int dx0 = localPosition.X == 0 ? -1 : 0;
+        int dx1 = localPosition.X == cs ? 1 : 0;
+        int dy0 = localPosition.Y == 0 ? -1 : 0;
+        int dy1 = localPosition.Y == cs ? 1 : 0;
+        int dz0 = localPosition.Z == 0 ? -1 : 0;
+        int dz1 = localPosition.Z == cs ? 1 : 0;
 
-        if (localPosition.X == GameConfig.ChunkSize - 1)
+        // Queue all neighbor chunks this voxel touches (faces + edges + corners)
+        for (int dx = dx0; dx <= dx1; dx++)
+        for (int dy = dy0; dy <= dy1; dy++)
+        for (int dz = dz0; dz <= dz1; dz++)
         {
-            QueueRemesh(chunkCoords + Vector3I.Right);
-        }
-
-        if (localPosition.Y == 0)
-        {
-            QueueRemesh(chunkCoords + Vector3I.Down);
-        }
-
-        if (localPosition.Y == GameConfig.ChunkSize - 1)
-        {
-            QueueRemesh(chunkCoords + Vector3I.Up);
-        }
-
-        if (localPosition.Z == 0)
-        {
-            QueueRemesh(chunkCoords + new Vector3I(0, 0, -1));
-        }
-
-        if (localPosition.Z == GameConfig.ChunkSize - 1)
-        {
-            QueueRemesh(chunkCoords + new Vector3I(0, 0, 1));
+            if (dx == 0 && dy == 0 && dz == 0) continue; // skip self
+            QueueRemesh(chunkCoords + new Vector3I(dx, dy, dz));
         }
     }
 }

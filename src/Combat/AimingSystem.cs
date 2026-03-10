@@ -143,26 +143,39 @@ public partial class AimingSystem : Node
 
         bool inRange = discriminant >= 0;
 
-        if (weaponId == "mortar" || weaponId == "missile")
+        if (weaponId == "mortar")
         {
-            // Missile uses reduced gravity (0.3x) — the ballistic formula must
-            // match the actual in-flight gravity or the pitch will overshoot.
-            float effectiveGravity = weaponId == "missile" ? gravity * 0.3f : gravity;
+            // High arc for mortar to lob over walls (full gravity)
+            if (inRange)
+            {
+                float sqrtDisc = Mathf.Sqrt(discriminant);
+                PitchRadians = Mathf.Atan2(v2 + sqrtDisc, gravity * horizontalDist);
+            }
+            else
+            {
+                PitchRadians = Mathf.DegToRad(65f);
+            }
+        }
+        else if (weaponId == "missile")
+        {
+            // Missile uses reduced gravity (0.3x) — compute LOW arc with effective gravity.
+            // Low arc (not high) because missiles have homing guidance that corrects course.
+            // High arc overshoots badly since the missile peaks way too high at 0.3x gravity.
+            float effectiveGravity = gravity * 0.3f;
             float egx2 = effectiveGravity * horizontalDist * horizontalDist;
             float missileDisc = v4 - effectiveGravity * (egx2 + 2f * delta.Y * v2);
             bool missileInRange = missileDisc >= 0;
             inRange = missileInRange;
 
-            // High arc for mortar/missile to lob over walls
             if (missileInRange)
             {
                 float sqrtDisc = Mathf.Sqrt(missileDisc);
-                PitchRadians = Mathf.Atan2(v2 + sqrtDisc, effectiveGravity * horizontalDist);
+                // Low arc: v² - √discriminant (not +)
+                PitchRadians = Mathf.Atan2(v2 - sqrtDisc, effectiveGravity * horizontalDist);
             }
             else
             {
-                // Out of range, use high angle for maximum distance
-                PitchRadians = Mathf.DegToRad(65f);
+                PitchRadians = Mathf.Pi / 4f;
             }
         }
         else

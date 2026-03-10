@@ -1057,15 +1057,20 @@ public sealed class BotCombatPlanner
             if (commanderWorldPos.HasValue)
             {
                 Vector3 cmdPos = commanderWorldPos.Value;
-                Vector3 toCmd = cmdPos - weapon.GlobalPosition;
+
+                // LOS check from an overhead vantage point (same perspective as the player),
+                // not from the weapon barrel. The player sees targets from above and clicks
+                // them; bots should use the same visibility model.
+                Vector3 overheadPos = cmdPos + new Vector3(0f, 40f, 0f);
+                Vector3 toCmd = cmdPos - overheadPos;
                 float dist = toCmd.Length();
 
                 if (dist > 0.1f)
                 {
                     Vector3 dir = toCmd / dist;
 
-                    // Direct line-of-sight check (no solid voxels in the way)
-                    bool hasLOS = !world.RaycastVoxel(weapon.GlobalPosition, dir, dist, out _, out _);
+                    // Check if the commander is visible from overhead (no roof blocking view)
+                    bool hasLOS = !world.RaycastVoxel(overheadPos, dir, dist, out _, out _);
 
                     // For lobbing weapons (mortar, missile) we don't require strict
                     // LOS because they arc over obstacles.
@@ -1108,15 +1113,21 @@ public sealed class BotCombatPlanner
 
                 foreach (WeaponBase ew in enemyWeapons)
                 {
-                    Vector3 toWeapon = ew.GlobalPosition - weapon.GlobalPosition;
+                    // Use the visual center of the enemy weapon (base + 1 build unit up)
+                    Vector3 enemyWeaponCenter = ew.GlobalPosition
+                        + new Vector3(0f, GameConfig.BuildUnitMeters, 0f);
+
+                    // LOS from overhead (same perspective as the player sees from above)
+                    Vector3 overheadPos = enemyWeaponCenter + new Vector3(0f, 40f, 0f);
+                    Vector3 toWeapon = enemyWeaponCenter - overheadPos;
                     float dist = toWeapon.Length();
                     if (dist < 0.1f) continue;
 
                     float score = 0f;
 
-                    // LOS bonus: strongly prefer targets we can actually hit directly
+                    // LOS bonus: strongly prefer targets visible from overhead
                     Vector3 dir = toWeapon / dist;
-                    bool hasLOS = !world.RaycastVoxel(weapon.GlobalPosition, dir, dist, out _, out _);
+                    bool hasLOS = !world.RaycastVoxel(overheadPos, dir, dist, out _, out _);
                     bool isLobWeapon = weapon.WeaponId == "mortar" || weapon.WeaponId == "missile";
 
                     if (!hasLOS && !isLobWeapon)
@@ -1144,8 +1155,12 @@ public sealed class BotCombatPlanner
 
                 if (bestTarget != null)
                 {
+                    // Weapon GlobalPosition is at its base (Y=0); offset up by
+                    // 1 build unit (~0.5m) to aim at the visual center of the model.
+                    Vector3 weaponCenter = bestTarget.GlobalPosition
+                        + new Vector3(0f, GameConfig.BuildUnitMeters, 0f);
                     return new PrioritizedTarget(
-                        bestTarget.GlobalPosition,
+                        weaponCenter,
                         TargetPriority.Weapon,
                         $"targeting enemy {bestTarget.WeaponId}");
                 }

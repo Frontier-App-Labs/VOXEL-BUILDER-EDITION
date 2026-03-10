@@ -21,7 +21,7 @@ public partial class Mortar : WeaponBase
     {
         WeaponId = "mortar";
         Cost = 600;
-        BaseDamage = 25;
+        BaseDamage = 30;
         BlastRadiusMicrovoxels = 6f;
         ProjectileSpeed = 30f;
         CooldownTurns = 0;

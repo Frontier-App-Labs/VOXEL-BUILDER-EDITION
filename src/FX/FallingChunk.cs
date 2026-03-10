@@ -157,8 +157,16 @@ public partial class FallingChunk : RigidBody3D
             world.SetVoxel(validPositions[i], VoxelValue.Air);
         }
 
-        // Remove grass blades above the removed voxels
-        TerrainDecorator.RemoveGrassAt(validPositions);
+        // Remove grass blades at AND above the removed voxels.
+        // Grass sits on the surface, so we need to clear both the destroyed positions
+        // and one layer above (where grass blades are visually anchored).
+        List<Vector3I> grassRemovalPositions = new List<Vector3I>(validPositions.Count * 2);
+        for (int i = 0; i < validPositions.Count; i++)
+        {
+            grassRemovalPositions.Add(validPositions[i]);
+            grassRemovalPositions.Add(validPositions[i] + Vector3I.Up);
+        }
+        TerrainDecorator.RemoveGrassAt(grassRemovalPositions);
 
         // Unfreeze any frozen ruin chunks that lost terrain support because these
         // voxels were just removed. This handles cases where FallingChunk.Create is
@@ -284,6 +292,7 @@ public partial class FallingChunk : RigidBody3D
         // Add to scene tree FIRST (required for physics operations and GlobalPosition)
         Node root = world.GetTree().Root;
         root.AddChild(chunk);
+        chunk.AddToGroup("FallingChunks");
         chunk.GlobalPosition = centerOfMass;
 
         // Apply initial impulse away from explosion center (must be in tree)
@@ -309,6 +318,186 @@ public partial class FallingChunk : RigidBody3D
         AttachFireIfBurning(chunk, validPositions, validMaterials);
 
         return chunk;
+    }
+
+    /// <summary>
+    /// Creates falling debris chunks from a weapon's voxel grid when destroyed.
+    /// Splits the weapon into 3-4 spatial groups that tumble independently.
+    /// Uses vertex colors directly (no atlas) since weapons use procedural palettes.
+    /// </summary>
+    public static void CreateFromWeaponVoxels(
+        Color?[,,] voxelGrid, float voxelSize, Vector3 weaponWorldPos,
+        Vector3 explosionCenter, Node sceneRoot)
+    {
+        int w = voxelGrid.GetLength(0);
+        int h = voxelGrid.GetLength(1);
+        int d = voxelGrid.GetLength(2);
+
+        // Collect all solid voxels
+        List<(Vector3I pos, Color color)> allVoxels = new();
+        for (int x = 0; x < w; x++)
+        for (int y = 0; y < h; y++)
+        for (int z = 0; z < d; z++)
+        {
+            if (voxelGrid[x, y, z] is Color c)
+                allVoxels.Add((new Vector3I(x, y, z), c));
+        }
+
+        if (allVoxels.Count == 0) return;
+
+        // Split into 3-4 spatial groups by Y slices (base, body, barrel/top)
+        // This creates natural breakup: base goes one way, barrel another
+        int groupCount = Mathf.Min(allVoxels.Count, (int)GD.RandRange(3, 5));
+        float sliceHeight = (float)h / groupCount;
+
+        // Origin offset used by WeaponModelGenerator for centering the mesh
+        Vector3 originOffset = new Vector3(-w * 0.5f * voxelSize, 0, -d * 0.5f * voxelSize);
+
+        for (int g = 0; g < groupCount; g++)
+        {
+            int yMin = (int)(g * sliceHeight);
+            int yMax = (int)((g + 1) * sliceHeight);
+
+            List<Vector3I> groupPositions = new();
+            List<Color> groupColors = new();
+            Vector3 groupCenter = Vector3.Zero;
+
+            foreach (var (pos, color) in allVoxels)
+            {
+                if (pos.Y >= yMin && pos.Y < yMax)
+                {
+                    groupPositions.Add(pos);
+                    groupColors.Add(color);
+                    // Convert grid position to local space (matching weapon mesh origin)
+                    Vector3 localPos = new Vector3(pos.X, pos.Y, pos.Z) * voxelSize + originOffset;
+                    groupCenter += weaponWorldPos + localPos;
+                }
+            }
+
+            if (groupPositions.Count == 0) continue;
+            groupCenter /= groupPositions.Count;
+
+            // Tiny groups become debris particles
+            if (groupPositions.Count <= 2)
+            {
+                for (int i = 0; i < groupPositions.Count; i++)
+                {
+                    Vector3 localPos = new Vector3(groupPositions[i].X, groupPositions[i].Y, groupPositions[i].Z) * voxelSize + originOffset;
+                    Vector3 worldPos = weaponWorldPos + localPos;
+                    DebrisFX.SpawnDebris(sceneRoot, worldPos, groupColors[i], explosionCenter, 2, VoxelMaterialType.Metal, voxelSize);
+                }
+                continue;
+            }
+
+            // Build mesh for this group
+            HashSet<Vector3I> posSet = new HashSet<Vector3I>(groupPositions);
+            ArrayMesh? mesh = BuildWeaponChunkMesh(groupPositions, posSet, groupColors, groupCenter, weaponWorldPos, originOffset, voxelSize);
+            if (mesh == null) continue;
+
+            FallingChunk chunk = new FallingChunk();
+            // Don't store _voxelPositions — they're grid-local coords (0..w),
+            // not world microvoxel coords. Shatter/crumble code calls
+            // MicrovoxelToWorld() which would produce garbage positions.
+            // Empty lists make shatter/crumble skip gracefully.
+
+            MeshInstance3D meshInstance = new MeshInstance3D();
+            meshInstance.Mesh = mesh;
+            StandardMaterial3D mat = new StandardMaterial3D();
+            mat.VertexColorUseAsAlbedo = true;
+            mat.Roughness = 0.7f;
+            mat.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+            mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.PerPixel;
+            meshInstance.MaterialOverride = mat;
+            chunk.AddChild(meshInstance);
+
+            // Simple bounding box collision
+            BoxShape3D boxShape = new BoxShape3D();
+            Vector3I bMin = groupPositions[0], bMax = groupPositions[0];
+            for (int i = 1; i < groupPositions.Count; i++)
+            {
+                bMin = new Vector3I(Mathf.Min(bMin.X, groupPositions[i].X), Mathf.Min(bMin.Y, groupPositions[i].Y), Mathf.Min(bMin.Z, groupPositions[i].Z));
+                bMax = new Vector3I(Mathf.Max(bMax.X, groupPositions[i].X), Mathf.Max(bMax.Y, groupPositions[i].Y), Mathf.Max(bMax.Z, groupPositions[i].Z));
+            }
+            Vector3 boxSize = new Vector3(bMax.X - bMin.X + 1, bMax.Y - bMin.Y + 1, bMax.Z - bMin.Z + 1) * voxelSize;
+            boxShape.Size = boxSize;
+            Vector3 boxLocalCenter = (new Vector3(bMin.X + bMax.X + 1, bMin.Y + bMax.Y + 1, bMin.Z + bMax.Z + 1) * 0.5f * voxelSize + originOffset)
+                - (groupCenter - weaponWorldPos);
+            CollisionShape3D collider = new CollisionShape3D();
+            collider.Shape = boxShape;
+            collider.Position = boxLocalCenter;
+            chunk.AddChild(collider);
+
+            // Physics
+            chunk.Mass = Mathf.Max(0.3f, groupPositions.Count * 0.05f);
+            chunk.GravityScale = 1.3f;
+            chunk.ContactMonitor = true;
+            chunk.MaxContactsReported = 4;
+            chunk.CollisionLayer = 4;
+            chunk.CollisionMask = 1 | 4;
+            chunk.PhysicsMaterialOverride = new PhysicsMaterial { Bounce = 0.2f, Friction = 0.8f };
+            chunk.LinearDamp = LinearDamping;
+            chunk.AngularDamp = AngularDamping;
+            chunk.ContinuousCd = true;
+
+            sceneRoot.AddChild(chunk);
+            chunk.AddToGroup("FallingChunks");
+            chunk.GlobalPosition = groupCenter;
+
+            // Explosive impulse outward from weapon center
+            Vector3 impulseDir = (groupCenter - explosionCenter).Normalized();
+            if (impulseDir.LengthSquared() < 0.01f)
+                impulseDir = Vector3.Up;
+            float impulseMag = Mathf.Clamp(groupPositions.Count * 0.08f, 0.3f, 2.5f);
+            chunk.ApplyImpulse(impulseDir * impulseMag + Vector3.Up * impulseMag * 0.5f);
+            chunk.AngularVelocity = new Vector3(
+                (float)GD.RandRange(-3.0, 3.0),
+                (float)GD.RandRange(-3.0, 3.0),
+                (float)GD.RandRange(-3.0, 3.0));
+
+            ActiveChunks.Add(chunk);
+        }
+    }
+
+    /// <summary>
+    /// Builds a mesh for a weapon debris chunk using vertex colors (no atlas).
+    /// Similar to BuildChunkMesh but uses weapon-local coordinates and voxelSize.
+    /// </summary>
+    private static ArrayMesh? BuildWeaponChunkMesh(
+        List<Vector3I> positions,
+        HashSet<Vector3I> positionSet,
+        List<Color> colors,
+        Vector3 groupCenterWorld,
+        Vector3 weaponWorldPos,
+        Vector3 originOffset,
+        float voxelSize)
+    {
+        SurfaceTool st = new SurfaceTool();
+        st.Begin(Mesh.PrimitiveType.Triangles);
+        bool hasAnyFaces = false;
+
+        // Default UV rect (full 0-1 range since we use vertex colors, no atlas)
+        Rect2 uvRect = new Rect2(0, 0, 1, 1);
+
+        for (int i = 0; i < positions.Count; i++)
+        {
+            Vector3I voxelPos = positions[i];
+            Color color = colors[i];
+            // Local position relative to group center
+            Vector3 localPos = new Vector3(voxelPos.X, voxelPos.Y, voxelPos.Z) * voxelSize + originOffset;
+            Vector3 localOrigin = (weaponWorldPos + localPos) - groupCenterWorld;
+
+            for (int face = 0; face < 6; face++)
+            {
+                Vector3I neighborPos = voxelPos + FaceDirections[face];
+                if (positionSet.Contains(neighborPos)) continue;
+
+                AddFaceQuad(st, localOrigin, face, voxelSize, FaceNormals[face], color, uvRect);
+                AddFaceQuad(st, localOrigin, face, voxelSize, FaceNormals[face], color, uvRect, reversed: true);
+                hasAnyFaces = true;
+            }
+        }
+
+        return hasAnyFaces ? st.Commit() : null;
     }
 
     private static void AttachFireIfBurning(FallingChunk chunk, List<Vector3I> positions, List<VoxelMaterialType> materials)
@@ -782,8 +971,10 @@ public partial class FallingChunk : RigidBody3D
         // Use a generous radius so explosions affect settled chunks well beyond the voxel blast
         float effectRadius = radius * 3f;
         float effectRadiusSq = effectRadius * effectRadius;
-        // Inner kill zone: chunks within 50% of the actual blast radius are destroyed
-        float shatterRadius = radius * 0.5f;
+        // Shatter radius: generous so large chunks whose center is outside the blast
+        // still get shattered if any part of them is within range.
+        // Use 2x the blast radius to account for chunk spatial extent.
+        float shatterRadius = radius * 2f;
         float shatterRadiusSq = shatterRadius * shatterRadius;
         for (int i = ActiveChunks.Count - 1; i >= 0; i--)
         {
@@ -793,21 +984,40 @@ public partial class FallingChunk : RigidBody3D
                 continue;
             }
 
+            // Use closest-point distance: check chunk center AND account for chunk spatial size.
+            // Large chunks (like fallen tree canopies) have centers far from edges, so a direct
+            // hit on the edge wouldn't register with center-only distance checks.
             float distSq = (chunk.GlobalPosition - explosionCenter).LengthSquared();
-            if (distSq <= shatterRadiusSq)
+
+            // Estimate chunk radius from voxel count (rough bounding sphere)
+            float chunkExtent = Mathf.Sqrt(chunk._voxelPositions.Count) * GameConfig.MicrovoxelMeters * 0.5f;
+            float effectiveDistSq = distSq;
+            if (chunkExtent > 0.1f)
             {
-                // Inner kill zone — shatter any chunk (frozen or active) into debris particles
+                // Reduce effective distance by chunk extent (closest edge of chunk to explosion)
+                float dist = Mathf.Sqrt(distSq);
+                float closestDist = Mathf.Max(0f, dist - chunkExtent);
+                effectiveDistSq = closestDist * closestDist;
+            }
+
+            if (effectiveDistSq <= shatterRadiusSq)
+            {
+                // Kill zone — shatter any chunk (frozen or active) into debris particles
                 chunk.Shatter();
             }
-            else if (distSq <= effectRadiusSq && chunk._isFrozen)
+            else if (effectiveDistSq <= effectRadiusSq)
             {
-                chunk.UnfreezeRuin();
                 // Scale impulse by proximity — closer chunks get blasted harder
-                float dist = Mathf.Sqrt(distSq);
+                float dist = Mathf.Sqrt(effectiveDistSq);
                 float falloff = 1f - Mathf.Clamp(dist / effectRadius, 0f, 1f);
                 float force = Mathf.Lerp(2f, 12f, falloff);
                 Vector3 pushDir = (chunk.GlobalPosition - explosionCenter).Normalized();
                 if (pushDir.LengthSquared() < 0.01f) pushDir = Vector3.Up;
+
+                if (chunk._isFrozen)
+                {
+                    chunk.UnfreezeRuin();
+                }
                 chunk.ApplyImpulse(pushDir * force + Vector3.Up * force * 0.5f);
             }
         }

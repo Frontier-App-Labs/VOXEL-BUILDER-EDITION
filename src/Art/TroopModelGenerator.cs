@@ -54,9 +54,9 @@ public static class TroopModelGenerator
         // Side shading
         head[0, 1, 0] = SkinShadow; head[4, 1, 0] = SkinShadow;
         head[0, 1, 1] = SkinShadow; head[4, 1, 1] = SkinShadow;
-        // Eyes (row 2)
-        head[1, 2, 0] = EyeWhite; head[3, 2, 0] = EyeWhite;
-        head[1, 2, 1] = Pupil; head[3, 2, 1] = Pupil;
+        // Eyes (row 2) — pupils on front face (z=0), whites behind (z=1)
+        head[1, 2, 0] = Pupil; head[3, 2, 0] = Pupil;
+        head[1, 2, 1] = EyeWhite; head[3, 2, 1] = EyeWhite;
         // Mouth
         head[2, 0, 0] = new Color(0.70f, 0.45f, 0.40f);
         // Helmet (top portion)
@@ -224,13 +224,15 @@ public static class TroopModelGenerator
 
         // ── HEAD (4x4x4) simple round helmet ──
         Color?[,,] head = new Color?[4, 4, 4];
-        // Face
+        // Face (front z=0 and z=1 for depth)
         for (int x = 1; x < 3; x++)
             for (int y = 0; y < 2; y++)
-                head[x, y, 0] = Skin;
+                for (int z = 0; z < 2; z++)
+                    head[x, y, z] = Skin;
         head[0, 1, 0] = SkinShadow; head[3, 1, 0] = SkinShadow;
-        // Eyes
-        head[1, 1, 0] = Pupil; head[2, 1, 0] = Pupil;
+        // Eyes: whites on outer edges, pupils in center (matching commander style)
+        head[0, 1, 0] = EyeWhite; head[1, 1, 0] = Pupil;
+        head[2, 1, 0] = Pupil; head[3, 1, 0] = EyeWhite;
         // Helmet
         for (int x = 0; x < 4; x++)
             for (int z = 0; z < 4; z++)
@@ -240,7 +242,7 @@ public static class TroopModelGenerator
             }
         for (int x = 0; x < 4; x++)
             for (int y = 0; y < 4; y++)
-                for (int z = 1; z < 4; z++)
+                for (int z = 2; z < 4; z++)
                     head[x, y, z] ??= helmetColor;
 
         // ── TORSO (3x3x3) ──
@@ -367,9 +369,12 @@ public static class TroopModelGenerator
         Color?[,,] head = new Color?[4, 4, 4];
         for (int x = 1; x < 3; x++)
             for (int y = 0; y < 2; y++)
-                head[x, y, 0] = Skin;
+                for (int z = 0; z < 2; z++)
+                    head[x, y, z] = Skin;
         head[0, 1, 0] = SkinShadow; head[3, 1, 0] = SkinShadow;
-        head[1, 1, 0] = Pupil; head[2, 1, 0] = Pupil;
+        // Eyes: whites on outer edges, pupils in center (matching commander style)
+        head[0, 1, 0] = EyeWhite; head[1, 1, 0] = Pupil;
+        head[2, 1, 0] = Pupil; head[3, 1, 0] = EyeWhite;
         // Hard hat (wider brim)
         for (int x = 0; x < 4; x++)
             for (int z = 0; z < 4; z++)
@@ -379,7 +384,7 @@ public static class TroopModelGenerator
             }
         for (int x = 0; x < 4; x++)
             for (int y = 0; y < 4; y++)
-                for (int z = 1; z < 4; z++)
+                for (int z = 2; z < 4; z++)
                     head[x, y, z] ??= hardHat;
 
         // ── TORSO (4x3x3) wider, with hi-vis vest ──

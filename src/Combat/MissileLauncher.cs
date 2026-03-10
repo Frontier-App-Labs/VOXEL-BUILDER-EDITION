@@ -17,8 +17,8 @@ public partial class MissileLauncher : WeaponBase
     public MissileLauncher()
     {
         WeaponId = "missile";
-        Cost = 1000;
-        BaseDamage = 40;
+        Cost = 850;
+        BaseDamage = 50;
         BlastRadiusMicrovoxels = 8f;
         ProjectileSpeed = 20f;
         CooldownTurns = 0;

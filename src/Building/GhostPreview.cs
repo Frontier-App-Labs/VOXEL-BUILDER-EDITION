@@ -12,6 +12,10 @@ public partial class GhostPreview : Node3D
     private StandardMaterial3D? _invalidMaterial;
     private bool _lastIsValid;
 
+    // Model mesh preview (for weapons/commanders)
+    private MeshInstance3D? _modelPreview;
+    private bool _modelMode;
+
     public override void _Ready()
     {
         _multiMeshInstance = GetNodeOrNull<MultiMeshInstance3D>("Preview");
@@ -42,6 +46,12 @@ public partial class GhostPreview : Node3D
         _invalidMaterial.NoDepthTest = true;
 
         _multiMeshInstance.MaterialOverride = _validMaterial;
+
+        // Model mesh preview node (reused for weapon/commander previews)
+        _modelPreview = new MeshInstance3D();
+        _modelPreview.Name = "ModelPreview";
+        _modelPreview.Visible = false;
+        AddChild(_modelPreview);
     }
 
     /// <summary>
@@ -53,6 +63,13 @@ public partial class GhostPreview : Node3D
         if (_multiMeshInstance?.Multimesh == null)
         {
             return;
+        }
+
+        // Hide model preview if switching back to block mode
+        if (_modelMode)
+        {
+            _modelMode = false;
+            if (_modelPreview != null) _modelPreview.Visible = false;
         }
 
         List<Vector3I> positions = new List<Vector3I>(microvoxelPositions);
@@ -71,6 +88,28 @@ public partial class GhostPreview : Node3D
             _multiMeshInstance.MaterialOverride = isValid ? _validMaterial : _invalidMaterial;
             _lastIsValid = isValid;
         }
+    }
+
+    /// <summary>
+    /// Shows a model mesh preview (weapon or commander) at the given world position.
+    /// The mesh is displayed with a green/red semi-transparent overlay.
+    /// </summary>
+    public void SetModelPreview(ArrayMesh mesh, Vector3 worldPosition, float yawRadians, bool isValid)
+    {
+        if (_modelPreview == null) return;
+
+        _modelMode = true;
+
+        // Hide the multi-mesh block preview
+        if (_multiMeshInstance != null) _multiMeshInstance.Visible = false;
+
+        _modelPreview.Mesh = mesh;
+        _modelPreview.MaterialOverride = isValid ? _validMaterial : _invalidMaterial;
+        _modelPreview.GlobalPosition = worldPosition;
+        _modelPreview.Rotation = new Vector3(0f, yawRadians, 0f);
+        _modelPreview.Visible = true;
+
+        _lastIsValid = isValid;
     }
 
     /// <summary>
@@ -98,5 +137,10 @@ public partial class GhostPreview : Node3D
         {
             _multiMeshInstance.Visible = false;
         }
+        if (_modelPreview != null)
+        {
+            _modelPreview.Visible = false;
+        }
+        _modelMode = false;
     }
 }

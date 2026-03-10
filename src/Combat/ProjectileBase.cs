@@ -234,6 +234,28 @@ public partial class ProjectileBase : Node3D
             }
         }
 
+        // Check collision with FallingChunk debris (RigidBody3D on layer 4).
+        // The DDA voxel traversal only checks the VoxelWorld grid, so projectiles
+        // pass right through fallen/collapsed RigidBody3D chunks. Use a physics
+        // raycast along the travel segment to detect these debris bodies.
+        if (_launchImmunityTimer <= 0f && !_drillMode)
+        {
+            var spaceState = GetWorld3D().DirectSpaceState;
+            if (spaceState != null)
+            {
+                var query = PhysicsRayQueryParameters3D.Create(previousPosition, GlobalPosition);
+                query.CollisionMask = 4; // debris layer only
+                query.CollideWithBodies = true;
+                var result = spaceState.IntersectRay(query);
+                if (result != null && result.Count > 0)
+                {
+                    Vector3 hitPoint = (Vector3)result["position"];
+                    Impact(hitPoint);
+                    return;
+                }
+            }
+        }
+
         // Skip voxel collision during launch immunity so projectiles clear
         // their own launcher's structure (pillars, crenellations, etc.)
         if (_launchImmunityTimer > 0f)

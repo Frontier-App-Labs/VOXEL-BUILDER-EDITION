@@ -256,13 +256,26 @@ void fragment() {
     AO = ao;
     AO_LIGHT_AFFECT = 0.7;
 
-    // -- Kill cam: discard pixels in a dither pattern so blocks become see-through.
+    // -- Kill cam: discard pixels in a clean checkerboard pattern so blocks become see-through.
     //    Uses discard (not ALPHA) so the shader stays in the opaque render pipeline.
+    //    Checkerboard gives a uniform, non-noisy transparency vs random hash dithering.
     if (kill_cam_dissolve > 0.01) {
         if (world_pos.y > kill_cam_ground_y) {
-            // Screen-space ordered dither (4x4 Bayer matrix approximation)
-            float dither = fract(sin(dot(FRAGCOORD.xy, vec2(12.9898, 78.233))) * 43758.5453);
-            if (dither < kill_cam_dissolve) {
+            // Smooth height-based fade: blocks near ground dissolve less, higher blocks more
+            float height_factor = clamp((world_pos.y - kill_cam_ground_y) / 8.0, 0.0, 1.0);
+            float effective_dissolve = kill_cam_dissolve * height_factor;
+
+            // 4x4 Bayer matrix for ordered dithering (clean uniform pattern)
+            int px = int(FRAGCOORD.x) % 4;
+            int py = int(FRAGCOORD.y) % 4;
+            float bayer4x4[16] = float[16](
+                 0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0,
+                12.0/16.0,  4.0/16.0, 14.0/16.0,  6.0/16.0,
+                 3.0/16.0, 11.0/16.0,  1.0/16.0,  9.0/16.0,
+                15.0/16.0,  7.0/16.0, 13.0/16.0,  5.0/16.0
+            );
+            float threshold = bayer4x4[py * 4 + px];
+            if (threshold < effective_dissolve) {
                 discard;
             }
         }

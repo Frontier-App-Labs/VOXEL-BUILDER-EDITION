@@ -209,6 +209,13 @@ public partial class Explosion : Node3D
             }
         }
 
+        // Damage doors caught in the blast radius
+        ArmyManager? armyManager = GetTree().Root.GetNodeOrNull<ArmyManager>("Main/ArmyManager");
+        if (armyManager != null)
+        {
+            armyManager.Doors.DamageDoorsInRadius(worldPosition, radiusMicrovoxels, baseDamage, GetTree().Root);
+        }
+
         // Damage troops caught in the blast radius
         foreach (Node node in GetTree().GetNodesInGroup("Troops"))
         {

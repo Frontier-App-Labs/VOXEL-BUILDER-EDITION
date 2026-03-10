@@ -147,6 +147,12 @@ public partial class WeaponPlacer : Node
     }
 
     /// <summary>
+    /// Public accessor for ghost preview orientation.
+    /// </summary>
+    public static Vector3 ComputeOutwardDirectionPublic(VoxelWorld world, Vector3I buildUnitPosition)
+        => ComputeOutwardDirection(world, buildUnitPosition);
+
+    /// <summary>
     /// Determines the outward-facing direction by sampling air voxels around
     /// the build unit. Returns a normalized direction toward the most open side.
     /// </summary>

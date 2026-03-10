@@ -51,9 +51,9 @@ public static class CommanderModelGenerator
     private const float VoxelSize = 0.08f;
 
     // Body part region definitions (min inclusive, max exclusive)
-    // Head: rows 6-12 (big chunky head with helmet)
-    private static readonly Vector3I HeadMin = new(1, 6, 1);
-    private static readonly Vector3I HeadMax = new(5, 12, 5);
+    // Head: rows 6-12 (big chunky head with helmet, full width for oversized look)
+    private static readonly Vector3I HeadMin = new(0, 6, 0);
+    private static readonly Vector3I HeadMax = new(6, 12, 6);
 
     // Torso: rows 3-6 (short blocky torso)
     private static readonly Vector3I TorsoMin = new(1, 3, 1);
@@ -211,97 +211,122 @@ public static class CommanderModelGenerator
         v[5, 3, 4] = skin;
 
         // =============================================
-        // HEAD (rows 6-10): big chunky 4x4x4 head (still large for chibi)
+        // HEAD (rows 6-10): big chunky head, full grid width for oversized look
         // =============================================
-        // Full head block (skin)
-        FillBlock(v, 1, 6, 1, 5, 10, 5, skin);
+        // Full head block (skin) — full width x=0..5, full depth z=0..5
+        FillBlock(v, 0, 6, 0, 6, 10, 6, skin);
 
-        // Slightly darker skin on sides for depth
+        // Slightly darker skin on sides (only edges, leave face area bright)
         for (int y = 6; y < 10; y++)
         {
-            for (int z = 1; z < 5; z++)
-            {
-                v[1, y, z] = skinShadow;
-                v[4, y, z] = skinShadow;
-            }
+            v[0, y, 4] = skinShadow;
+            v[0, y, 5] = skinShadow;
+            v[5, y, 4] = skinShadow;
+            v[5, y, 5] = skinShadow;
         }
-        // Slightly darker on back too
+        // Slightly darker on back
         for (int y = 6; y < 10; y++)
         {
-            for (int x = 2; x < 4; x++)
+            for (int x = 1; x < 5; x++)
             {
-                v[x, y, 4] = skinShadow;
+                v[x, y, 5] = skinShadow;
             }
         }
 
-        // --- Eyes: 2 voxels tall per eye (white below, dark pupil above) ---
-        // Lower eye whites (row 8)
-        v[2, 8, 1] = eyeWhite;
-        v[3, 8, 1] = eyeWhite;
-        // Upper pupil/iris (row 9) — pupils sit on top of whites
-        v[2, 9, 1] = eyePupil;
-        v[3, 9, 1] = eyePupil;
+        // --- Face features across z=0..3 (4 deep) for a round, full face ---
+        // Cheek blush on sides of face (z=0..1)
+        Color blush = new Color(0.95f, 0.70f, 0.62f);
+        v[1, 7, 0] = blush; v[4, 7, 0] = blush;
+        v[1, 7, 1] = blush; v[4, 7, 1] = blush;
 
-        // Mouth: tiny line on row 7
-        v[2, 7, 1] = new Color(0.75f, 0.50f, 0.40f);
-        v[3, 7, 1] = new Color(0.75f, 0.50f, 0.40f);
+        // --- Eyes: 2x2 each, pupils at z=0 (always in front), whites at z=1 ---
+        // Left eye: x=1..2, y=8..9
+        v[1, 8, 0] = eyePupil;  v[2, 8, 0] = eyePupil;   // pupils on front face
+        v[1, 9, 0] = eyePupil;  v[2, 9, 0] = eyeWhite;   // pupil bottom-left, white top-right
+        v[1, 8, 1] = eyeWhite;  v[2, 8, 1] = eyeWhite;   // whites behind pupils
+        v[1, 9, 1] = eyeWhite;  v[2, 9, 1] = eyeWhite;
 
-        // Cheek blush
-        v[1, 7, 1] = new Color(0.95f, 0.70f, 0.62f);
-        v[4, 7, 1] = new Color(0.95f, 0.70f, 0.62f);
+        // Right eye: x=3..4, y=8..9 (mirrored)
+        v[3, 8, 0] = eyePupil;  v[4, 8, 0] = eyePupil;
+        v[3, 9, 0] = eyeWhite;  v[4, 9, 0] = eyePupil;
+        v[3, 8, 1] = eyeWhite;  v[4, 8, 1] = eyeWhite;
+        v[3, 9, 1] = eyeWhite;  v[4, 9, 1] = eyeWhite;
+
+        // Mouth: row 7, z=0 (front face)
+        v[2, 7, 0] = new Color(0.75f, 0.50f, 0.40f);
+        v[3, 7, 0] = new Color(0.75f, 0.50f, 0.40f);
+
+        // Nose: small bump between eyes at z=0, between the two eye blocks.
+        // Eyes occupy x=1..2 and x=3..4, so the nose gap is implicit (no voxel needed).
+        // Do NOT overwrite eye pupils — the gap between the eye groups IS the nose.
+
+        // Chin definition (darker skin at bottom of face, z=0..2)
+        Color chinShadow = skinShadow;
+        for (int z = 0; z < 3; z++)
+        {
+            v[1, 6, z] = chinShadow;
+            v[2, 6, z] = chinShadow;
+            v[3, 6, z] = chinShadow;
+            v[4, 6, z] = chinShadow;
+        }
 
         // =============================================
-        // HAIR (row 9-10): visible around sides/back under helmet
+        // HAIR (rows 8-10): full coverage on back and sides under helmet
         // =============================================
         Color hair = new Color(0.18f, 0.12f, 0.08f); // dark brown
-        // Hair on sides of head (row 9, left and right edges)
-        for (int z = 2; z < 5; z++)
+        // Hair fully covers back of head (z=4..5) from y=7 up to helmet
+        for (int y = 7; y < 10; y++)
         {
-            v[1, 9, z] = hair;
-            v[4, 9, z] = hair;
+            for (int x = 0; x < 6; x++)
+            {
+                v[x, y, 4] = hair;
+                v[x, y, 5] = hair;
+            }
         }
-        // Hair on back of head (rows 9-10)
-        for (int x = 2; x < 4; x++)
+        // Hair on sides (x=0, x=5) for z=3..5
+        for (int y = 7; y < 10; y++)
         {
-            v[x, 9, 4] = hair;
-            v[x, 10, 4] = hair; // peeks out below helmet back
+            v[0, y, 3] = hair;
+            v[5, y, 3] = hair;
         }
-        // Hair on top corners (row 10, visible around helmet edges)
-        v[1, 10, 1] = hair;
-        v[4, 10, 1] = hair;
-        v[1, 10, 4] = hair;
-        v[4, 10, 4] = hair;
-
-        // =============================================
-        // HELMET (rows 10-11): military helmet with badge
-        // =============================================
-        // Helmet base - covers top of head
-        FillBlock(v, 1, 10, 1, 5, 11, 5, helmet);
-
-        // Helmet dome (row 11) — slightly inset for rounded look
-        FillBlock(v, 1, 11, 1, 5, 12, 5, helmet);
-
-        // Helmet rim - darker band around bottom edge
+        // Hair at top of head (row 9, under helmet) — full coverage
         for (int x = 1; x < 5; x++)
         {
-            v[x, 10, 1] = helmetRim;
-            v[x, 10, 4] = helmetRim;
-        }
-        for (int z = 1; z < 5; z++)
-        {
-            v[1, 10, z] = helmetRim;
-            v[4, 10, z] = helmetRim;
+            v[x, 9, 3] = hair;
         }
 
-        // Front visor brim - extends forward slightly
-        FillBlock(v, 2, 10, 0, 4, 11, 1, helmetRim);
+        // =============================================
+        // HELMET (rows 10-11): military helmet with badge, full width
+        // =============================================
+        // Helmet base (row 10) — full width, full depth
+        FillBlock(v, 0, 10, 0, 6, 11, 6, helmet);
+
+        // Helmet dome (row 11) — full width, full depth
+        FillBlock(v, 0, 11, 0, 6, 12, 6, helmet);
+
+        // Helmet rim - darker band around bottom edge
+        for (int x = 0; x < 6; x++)
+        {
+            v[x, 10, 5] = helmetRim; // back rim
+        }
+        for (int z = 0; z < 6; z++)
+        {
+            v[0, 10, z] = helmetRim; // left rim
+            v[5, 10, z] = helmetRim; // right rim
+        }
+
+        // Front visor brim — only 1 row deep at z=0, does NOT cover face below
+        for (int x = 0; x < 6; x++)
+        {
+            v[x, 10, 0] = helmetRim;
+        }
 
         // Center badge/emblem on front of helmet
-        v[2, 11, 1] = helmetBadge;
-        v[3, 11, 1] = helmetBadge;
+        v[2, 11, 0] = helmetBadge;
+        v[3, 11, 0] = helmetBadge;
 
-        // Helmet top highlight (slightly lighter)
-        FillBlock(v, 2, 11, 2, 4, 12, 4, teamColor.Lightened(0.05f));
+        // Helmet top highlight (slightly lighter center)
+        FillBlock(v, 1, 11, 1, 5, 12, 5, teamColor.Lightened(0.05f));
     }
 
     /// <summary>

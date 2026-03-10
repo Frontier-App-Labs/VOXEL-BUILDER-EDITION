@@ -112,7 +112,7 @@ public partial class SplashScreen : Control
         if (_loadingLabel != null)
         {
             int pct = (int)(_loadingProgress * 100f);
-            _loadingLabel.Text = $"LOADING... {pct}%";
+            _loadingLabel.Text = "LOADING...";
         }
 
         // The explosion is triggered by ProcessCastleBuild once both the castle
@@ -339,7 +339,7 @@ public partial class SplashScreen : Control
             // Add "LOADING" label at the bottom
             _loadingLabel = new Label();
             _loadingLabel.Name = "LoadingLabel";
-            _loadingLabel.Text = "LOADING... 0%";
+            _loadingLabel.Text = "LOADING...";
             _loadingLabel.HorizontalAlignment = HorizontalAlignment.Center;
             _loadingLabel.AddThemeFontOverride("font", PixelFont);
             _loadingLabel.AddThemeFontSizeOverride("font_size", 10);

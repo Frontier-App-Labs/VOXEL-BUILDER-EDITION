@@ -11,6 +11,7 @@ using VoxelSiege.FX;
 using VoxelSiege.Utility;
 using VoxelSiege.Voxel;
 using VoxelSiege.Army;
+using VoxelSiege.Art;
 using CommanderActor = VoxelSiege.Commander.Commander;
 
 namespace VoxelSiege.Core;
@@ -59,6 +60,10 @@ public partial class GameManager : Node
     private enum PlacementMode { Block, Commander, Weapon }
     private PlacementMode _placementMode = PlacementMode.Block;
     private WeaponType _selectedWeaponType = WeaponType.Cannon;
+
+    // Cached preview meshes for ghost preview (generated once per weapon type)
+    private readonly Dictionary<string, ArrayMesh> _weaponPreviewMeshes = new();
+    private ArrayMesh? _commanderPreviewMesh;
 
     // Combat phase interaction state
     private int _selectedWeaponIndex = -1; // -1 means no weapon selected
@@ -1332,6 +1337,8 @@ public partial class GameManager : Node
         _isAiming = false;
         _selectedWeaponIndex = -1; // No weapon selected until player clicks one
         _placementMode = PlacementMode.Block;
+        _weaponPreviewMeshes.Clear();
+        _commanderPreviewMesh = null;
         Input.MouseMode = Input.MouseModeEnum.Visible;
 
         // Hide ghost preview
@@ -1359,10 +1366,12 @@ public partial class GameManager : Node
         GenerateMenuBackgroundTerrain();
         _menuBattleActive = true; // No splash when returning, activate battle immediately
 
-        // 3. Switch camera back to the passive FreeFlyCamera (menu orbit) and deactivate CombatCamera
+        // 3. Switch camera back to the passive FreeFlyCamera (menu orbit) and deactivate CombatCamera.
+        //    Reset FOV to default so bombardment/combat zoom doesn't persist on the menu.
         _combatCamera?.Deactivate();
         if (_camera != null)
         {
+            _camera.Fov = 70f; // Default FOV
             _camera.Current = true;
         }
 
@@ -2084,6 +2093,28 @@ public partial class GameManager : Node
                 _ghostPreview.SetPreview(allMicrovoxels, allValid);
                 _buildCursorValid = allValid;
             }
+            else if (_placementMode == PlacementMode.Weapon && _ghostPreview != null)
+            {
+                // Weapon preview: show the actual weapon model mesh at the cursor position
+                ArrayMesh previewMesh = GetOrCreateWeaponPreviewMesh(_selectedWeaponType);
+                Vector3I microBase = MathHelpers.BuildToMicrovoxel(_buildCursorBuildUnit);
+                Vector3 worldPos = MathHelpers.MicrovoxelToWorld(microBase)
+                    + new Vector3(GameConfig.BuildUnitMeters * 0.5f, 0f, GameConfig.BuildUnitMeters * 0.5f);
+                // Use manual rotation from R key (90° increments)
+                float yaw = _buildRotation * Mathf.Pi * 0.5f;
+                _ghostPreview.SetModelPreview(previewMesh, worldPos, yaw, _buildCursorValid);
+            }
+            else if (_placementMode == PlacementMode.Commander && _ghostPreview != null)
+            {
+                // Commander preview: show the actual commander model mesh
+                ArrayMesh previewMesh = GetOrCreateCommanderPreviewMesh();
+                Vector3I microBase = MathHelpers.BuildToMicrovoxel(_buildCursorBuildUnit);
+                Vector3 worldPos = MathHelpers.MicrovoxelToWorld(microBase)
+                    + new Vector3(GameConfig.BuildUnitMeters * 0.5f, 0f, GameConfig.BuildUnitMeters * 0.5f);
+                // Use manual rotation from R key (90° increments)
+                float yaw = _buildRotation * Mathf.Pi * 0.5f;
+                _ghostPreview.SetModelPreview(previewMesh, worldPos, yaw, _buildCursorValid);
+            }
             else
             {
                 _ghostPreview?.ShowSingleBlock(_buildCursorBuildUnit, _buildCursorValid, _buildSystem?.CurrentToolMode ?? BuildToolMode.Single);
@@ -2169,20 +2200,7 @@ public partial class GameManager : Node
             _buildSystem.RedoLast(_activeBuilder);
         }
 
-        // Cycle material with scroll wheel
-        if (@event is InputEventMouseButton mouseButton && mouseButton.Pressed)
-        {
-            if (mouseButton.ButtonIndex == MouseButton.WheelUp)
-            {
-                CycleBuildMaterial(1);
-                GetViewport().SetInputAsHandled();
-            }
-            else if (mouseButton.ButtonIndex == MouseButton.WheelDown)
-            {
-                CycleBuildMaterial(-1);
-                GetViewport().SetInputAsHandled();
-            }
-        }
+        // Scroll wheel is reserved for camera zoom only (FreeFlyCamera handles it)
     }
 
     /// <summary>
@@ -2250,6 +2268,13 @@ public partial class GameManager : Node
         if (currentMode == BuildToolMode.Blueprint)
         {
             TryPlaceBlueprint();
+            return;
+        }
+
+        // Door mode: carve a 1x3 door opening on a zone edge wall
+        if (currentMode == BuildToolMode.Door)
+        {
+            TryPlaceDoorAtCursor();
             return;
         }
 
@@ -2479,6 +2504,11 @@ public partial class GameManager : Node
         AddChild(commander);
         commander.OwnerSlot = _activeBuilder;
         commander.PlaceCommander(_voxelWorld, _buildCursorBuildUnit);
+
+        // Apply manual rotation from R key
+        float cmdYaw = _buildRotation * Mathf.Pi * 0.5f;
+        commander.Rotation = new Vector3(0f, cmdYaw, 0f);
+
         _commanders[_activeBuilder] = commander;
 
         if (_players.TryGetValue(_activeBuilder, out PlayerData? player))
@@ -2488,7 +2518,7 @@ public partial class GameManager : Node
         }
 
         GD.Print($"[Build] Commander placed for {_activeBuilder} at {_buildCursorBuildUnit}.");
-        _placementMode = PlacementMode.Block;
+        // Stay in Commander mode so clicking again moves the commander
     }
 
     private void TryPlaceWeaponAtCursor()
@@ -2542,6 +2572,11 @@ public partial class GameManager : Node
 
         // Place the selected weapon type
         WeaponBase weapon = PlaceSelectedWeaponType(_buildCursorBuildUnit);
+
+        // Apply manual rotation from R key (overrides auto-outward direction)
+        float weaponYaw = _buildRotation * Mathf.Pi * 0.5f;
+        weapon.Rotation = new Vector3(0f, weaponYaw, 0f);
+
         _weapons[_activeBuilder].Add(weapon);
         player.WeaponIds.Add(weapon.WeaponId);
 
@@ -2550,8 +2585,60 @@ public partial class GameManager : Node
         EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(player.Slot, player.Budget, -weaponCost));
 
         GD.Print($"[Build] {_selectedWeaponType} placed for {_activeBuilder} at {_buildCursorBuildUnit} (cost: ${weaponCost}).");
-        // Return to block mode so the user can keep building
-        _placementMode = PlacementMode.Block;
+        // Stay in weapon placement mode so the user can place multiple weapons in a row.
+        // Right-click or selecting a build tool returns to block mode.
+    }
+
+    /// <summary>
+    /// Places a door at the build cursor, carving a 1x3 opening through the zone edge wall.
+    /// Doors allow troops to exit the base. Placed via the Door build tool.
+    /// </summary>
+    private void TryPlaceDoorAtCursor()
+    {
+        if (_voxelWorld == null || !_hasBuildCursor || _armyManager == null)
+        {
+            return;
+        }
+
+        if (!_buildZones.TryGetValue(_activeBuilder, out BuildZone zone))
+        {
+            return;
+        }
+
+        // Convert build cursor to microvoxel at the ground level of the build unit
+        Vector3I baseMicro = MathHelpers.BuildToMicrovoxel(_buildCursorBuildUnit);
+
+        // Door needs to be placed at ground level — find the lowest solid block in this column
+        // within the zone so the door starts at floor level
+        Vector3I zoneMin = zone.OriginMicrovoxels;
+        Vector3I zoneMax = zone.MaxMicrovoxelsInclusive;
+
+        // Start from the zone floor and look for the first solid voxel at this XZ
+        int doorY = baseMicro.Y;
+        for (int y = zoneMin.Y; y <= zoneMax.Y - DoorRegistry.DoorHeight + 1; y++)
+        {
+            Vector3I check = new Vector3I(baseMicro.X, y, baseMicro.Z);
+            if (_voxelWorld.GetVoxel(check).IsSolid)
+            {
+                doorY = y;
+                break;
+            }
+        }
+
+        Vector3I doorBase = new Vector3I(baseMicro.X, doorY, baseMicro.Z);
+
+        bool success = _armyManager.Doors.TryPlaceDoor(
+            _voxelWorld, doorBase, _activeBuilder, zoneMin, zoneMax, out string failReason);
+
+        if (success)
+        {
+            GD.Print($"[Build] Door placed for {_activeBuilder} at {doorBase}.");
+        }
+        else
+        {
+            GD.Print($"[Build] Door failed: {failReason}");
+            ShowBuildWarning(failReason);
+        }
     }
 
     /// <summary>
@@ -2580,10 +2667,47 @@ public partial class GameManager : Node
             WeaponType.Cannon => 500,
             WeaponType.Mortar => 600,
             WeaponType.Railgun => 800,
-            WeaponType.MissileLauncher => 1000,
-            WeaponType.Drill => 400,
+            WeaponType.MissileLauncher => 850,
+            WeaponType.Drill => 550,
             _ => 500,
         };
+    }
+
+    private static string GetWeaponId(WeaponType type)
+    {
+        return type switch
+        {
+            WeaponType.Cannon => "cannon",
+            WeaponType.Mortar => "mortar",
+            WeaponType.Railgun => "railgun",
+            WeaponType.MissileLauncher => "missile",
+            WeaponType.Drill => "drill",
+            _ => "cannon",
+        };
+    }
+
+    private ArrayMesh GetOrCreateWeaponPreviewMesh(WeaponType type)
+    {
+        string id = GetWeaponId(type);
+        if (_weaponPreviewMeshes.TryGetValue(id, out ArrayMesh? cached))
+            return cached;
+
+        Color teamColor = _players.TryGetValue(_activeBuilder, out PlayerData? p)
+            ? p.PlayerColor : new Color(0.2f, 0.6f, 1.0f);
+        Art.WeaponModelResult result = Art.WeaponModelGenerator.Generate(id, teamColor);
+        _weaponPreviewMeshes[id] = result.Mesh;
+        return result.Mesh;
+    }
+
+    private ArrayMesh GetOrCreateCommanderPreviewMesh()
+    {
+        if (_commanderPreviewMesh != null) return _commanderPreviewMesh;
+
+        Color teamColor = _players.TryGetValue(_activeBuilder, out PlayerData? p)
+            ? p.PlayerColor : new Color(0.2f, 0.6f, 1.0f);
+        Art.CommanderBodyParts parts = Art.CommanderModelGenerator.Generate(teamColor);
+        _commanderPreviewMesh = parts.FullMesh;
+        return _commanderPreviewMesh;
     }
 
     /// <summary>
@@ -2701,11 +2825,15 @@ public partial class GameManager : Node
             }
         }
 
-        // Show naming popup for human players before advancing
-        if (!IsBot(_activeBuilder) && !_awaitingName)
+        // Show naming popup for human players before advancing.
+        // If already awaiting a name (popup is open), ignore the second click.
+        if (!IsBot(_activeBuilder))
         {
-            ShowCommanderNamePopup();
-            return;
+            if (!_awaitingName)
+            {
+                ShowCommanderNamePopup();
+            }
+            return; // Always return — FinalizeBuildReady is called by the popup's confirm callback
         }
 
         FinalizeBuildReady();
@@ -4600,17 +4728,9 @@ public partial class GameManager : Node
         float scatterY = ((float)rng.NextDouble() - 0.5f) * scatter * 0.5f;
         targetPos += new Vector3(scatterX, scatterY, scatterZ);
 
-        // Use SetTargetPoint for accurate ballistic solution (same as player click-to-target)
+        // Use SetTargetPoint for accurate ballistic solution — identical to a player click.
+        // No pitch hacks or adjustments. The math handles all weapon types correctly.
         _aimingSystem.SetTargetPoint(weapon.GlobalPosition, targetPos, weapon.ProjectileSpeed, weapon.WeaponId);
-
-        // Boost pitch for cannon so the arc clears fortress walls and obstacles.
-        // The pure low-arc solution often clips walls on the way to the target.
-        // A small pitch increase (~8 degrees) gives a slightly higher trajectory
-        // that still looks like a cannon shot but clears most rooftop structures.
-        if (weapon.WeaponId == "cannon")
-        {
-            _aimingSystem.PitchRadians += Mathf.DegToRad(8f);
-        }
 
         // Rotate the weapon to face the target
         RotateWeaponToward(weapon, targetPos);
@@ -4787,6 +4907,13 @@ public partial class GameManager : Node
     private void OnRailgunBeamFired(RailgunBeamFiredEvent payload)
     {
         if (CurrentPhase != GamePhase.Combat || _combatCamera == null)
+        {
+            return;
+        }
+
+        // Don't override the kill cam — if the railgun killed a commander,
+        // the KillCam was already activated by OnCommanderKilled.
+        if (_combatCamera.CurrentMode == CombatCamera.Mode.KillCam)
         {
             return;
         }
@@ -5031,11 +5158,11 @@ public partial class GameManager : Node
         _camera.ResetToFullArenaBounds();
         _camera.Activate();
 
-        // Position camera high above the arena center, looking nearly straight down
-        // with a slight offset so the player can see depth
+        // Position camera high above the arena center, looking nearly straight down.
+        // Height is tuned to show the full map in frame regardless of player count.
         Vector3 arenaCenter = ComputeArenaMidpoint();
-        float overviewHeight = 75f;
-        Vector3 cameraPos = arenaCenter + new Vector3(0f, overviewHeight, 16f);
+        float overviewHeight = 70f;
+        Vector3 cameraPos = arenaCenter + new Vector3(0f, overviewHeight, 20f);
         Vector3 lookTarget = arenaCenter;
 
         _camera.GlobalPosition = cameraPos;

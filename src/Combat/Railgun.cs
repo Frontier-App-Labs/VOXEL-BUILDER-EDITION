@@ -9,8 +9,8 @@ namespace VoxelSiege.Combat;
 
 /// <summary>
 /// Hitscan penetrating railgun. Fires an instant beam along the aim direction
-/// that pierces through up to 3 blocks, dealing reduced damage the deeper it
-/// penetrates. No blast radius -- pure precision damage.
+/// that pierces through up to 5 blocks. First block is always destroyed.
+/// Deeper blocks take reduced damage. Can hit commanders through walls.
 /// Fire FX: bright cyan flash + electric arcs + capacitor discharge glow + recoil.
 /// </summary>
 public partial class Railgun : WeaponBase
@@ -18,7 +18,7 @@ public partial class Railgun : WeaponBase
     /// <summary>
     /// Maximum number of solid blocks the rail slug can penetrate.
     /// </summary>
-    private const int MaxPenetrationDepth = 3;
+    private const int MaxPenetrationDepth = 5;
 
     /// <summary>
     /// Maximum raycast range in microvoxels.
@@ -62,16 +62,9 @@ public partial class Railgun : WeaponBase
 
             if (!voxel.IsAir)
             {
-                // Railgun-proof materials: Foundation, ReinforcedSteel, ArmorPlate
-                if (voxel.Material == VoxelMaterialType.Foundation ||
-                    voxel.Material == VoxelMaterialType.ReinforcedSteel ||
-                    voxel.Material == VoxelMaterialType.ArmorPlate)
+                // Only Foundation is railgun-proof (indestructible bedrock)
+                if (voxel.Material == VoxelMaterialType.Foundation)
                 {
-                    // These blocks stop the rail completely (damage applied but no penetration)
-                    int stopDamage = DamageCalculator.CalculateRailgunDamage(BaseDamage / 3, 1, voxel.Material);
-                    int stopHp = voxel.HitPoints - stopDamage;
-                    if (stopHp > 0)
-                        world.SetVoxel(micro, voxel.WithHitPoints(stopHp).WithDamaged(true), OwnerSlot);
                     endPoint = start + (direction * (step - 1) * GameConfig.MicrovoxelMeters);
                     break;
                 }
@@ -83,10 +76,21 @@ public partial class Railgun : WeaponBase
                     wasInsideSolid = true;
                 }
 
-                // Apply damage with penetration reduction
-                int damage = DamageCalculator.CalculateRailgunDamage(BaseDamage, penetrationCount, voxel.Material);
-                int nextHp = voxel.HitPoints - damage;
-                bool destroyed = nextHp <= 0;
+                // First block hit is always destroyed (rail punches clean through).
+                // Deeper blocks take reduced damage based on penetration depth.
+                int damage;
+                bool destroyed;
+                if (penetrationCount == 1)
+                {
+                    damage = voxel.HitPoints; // guaranteed kill
+                    destroyed = true;
+                }
+                else
+                {
+                    damage = DamageCalculator.CalculateRailgunDamage(BaseDamage, penetrationCount, voxel.Material);
+                    destroyed = voxel.HitPoints - damage <= 0;
+                }
+                int nextHp = destroyed ? 0 : voxel.HitPoints - damage;
                 world.SetVoxel(micro, destroyed ? VoxelValue.Air : voxel.WithHitPoints(nextHp).WithDamaged(true), OwnerSlot);
 
                 // Spawn debris flying outward from destroyed voxels

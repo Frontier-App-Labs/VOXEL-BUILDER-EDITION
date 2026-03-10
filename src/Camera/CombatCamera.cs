@@ -151,6 +151,7 @@ public partial class CombatCamera : Camera3D
     // Follow projectile
     private Node3D? _followTarget;
     private Vector3 _followOffset = new Vector3(0f, 2f, -6f);
+    private bool _sideFollowLocked;
     private Vector3 _lastProjectileVelocity;
     private Vector3 _lastProjectilePosition;
 
@@ -281,6 +282,7 @@ public partial class CombatCamera : Camera3D
         _povWeapon = null;
         _povAiming = null;
         _followTarget = projectile;
+        _sideFollowLocked = false;
         _targetFov = DefaultFov;
         _lastProjectileVelocity = Vector3.Forward;
         _lastProjectilePosition = projectile.GlobalPosition;
@@ -922,10 +924,12 @@ public partial class CombatCamera : Camera3D
             trailDir = Vector3.Forward;
         }
 
-        if (Mathf.Abs(trailDir.Y) > 0.5f)
+        if (Mathf.Abs(trailDir.Y) > 0.5f || _sideFollowLocked)
         {
             // Projectile traveling mostly vertically (mortar arc) — position camera
             // to the side so the player can see the trajectory and target area below.
+            // Once locked, stay in this mode past the apex to avoid awkward flipping.
+            _sideFollowLocked = true;
             Vector3 horizontalDir = new Vector3(trailDir.X, 0f, trailDir.Z);
             if (horizontalDir.LengthSquared() < 0.01f)
                 horizontalDir = Vector3.Forward;

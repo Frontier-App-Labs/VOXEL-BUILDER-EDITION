@@ -319,6 +319,7 @@ public partial class AudioDirector : Node
     private readonly Dictionary<string, double> _sfxLastPlayTime = new();
     private const double SfxCooldownSeconds = 0.08; // minimum gap between same-name sounds
     private const int MaxConcurrentSfx = 48; // max simultaneous SFX players
+    private const float MenuSfxCapDb = -14f; // quiet but audible cap for menu background battles
     private int _activeSfxCount;
 
     // Per-sound volume overrides (dB) for sounds that are too loud
@@ -380,6 +381,13 @@ public partial class AudioDirector : Node
         // Base volumes boosted so SFX are clearly audible
         float layerDb = (hasRetro ? 0f : 3f) + volumeOverride;
         float retroDb = 6f + volumeOverride;
+
+        // Cap all SFX to a known quiet level during menu phase
+        if (_menuSfxDucked)
+        {
+            layerDb = Mathf.Min(layerDb, MenuSfxCapDb);
+            retroDb = Mathf.Min(retroDb, MenuSfxCapDb);
+        }
 
         // Force weapon fire sounds to play as non-positional (2D) so they remain
         // audible when the camera follows the projectile away from the weapon.
@@ -465,6 +473,9 @@ public partial class AudioDirector : Node
             {
                 PlayRandomMusic();
             }
+
+            // Set the per-player cap flag if we missed the PhaseChanged event
+            _menuSfxDucked = true;
         }
     }
 
@@ -607,20 +618,14 @@ public partial class AudioDirector : Node
         EventBus.Instance.CommanderKilled -= OnCommanderKilled;
     }
 
-    private bool _menuSfxDucked;
+    private bool _menuSfxDucked = true; // game always starts in menu phase
 
     private void OnPhaseChanged(PhaseChangedEvent payload)
     {
         switch (payload.CurrentPhase)
         {
             case GamePhase.Menu:
-                // Duck SFX on the main menu — background bot battles should be subtle
-                if (!_menuSfxDucked)
-                {
-                    _menuSfxDucked = true;
-                    float userSfx = GameSettingsData.Current.SfxVolume;
-                    SetSFXVolume(userSfx * 0.25f); // quarter volume on menu
-                }
+                _menuSfxDucked = true; // per-player cap applied in PlaySFX
                 // Start random shuffle if nothing is playing
                 if (_musicPlayer == null || !_musicPlayer.Playing)
                 {
@@ -629,12 +634,7 @@ public partial class AudioDirector : Node
                 break;
             case GamePhase.Building:
             case GamePhase.Combat:
-                // Restore SFX volume when leaving menu
-                if (_menuSfxDucked)
-                {
-                    _menuSfxDucked = false;
-                    SetSFXVolume(GameSettingsData.Current.SfxVolume);
-                }
+                _menuSfxDucked = false;
                 // Start random shuffle if nothing is playing
                 if (_musicPlayer == null || !_musicPlayer.Playing)
                 {

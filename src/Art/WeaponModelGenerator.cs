@@ -11,6 +11,8 @@ public struct WeaponModelResult
     public Godot.ImageTexture? PaletteTexture; // palette texture for uniform rendering
     public Vector3 ForwardDirection; // direction the weapon fires toward
     public Vector3 MuzzleOffset;     // local-space position of the muzzle/fire point
+    public Color?[,,]? VoxelGrid;    // raw voxel data for destruction breakup
+    public float VoxelSize;          // voxel size in meters
 }
 
 /// <summary>
@@ -553,6 +555,8 @@ public static class WeaponModelGenerator
             PaletteTexture = palette.Texture,
             ForwardDirection = forward,
             MuzzleOffset = new Vector3(0, h * 0.5f * voxelSize, -d * 0.5f * voxelSize),
+            VoxelGrid = (Color?[,,])voxels.Clone(),
+            VoxelSize = voxelSize,
         };
     }
 

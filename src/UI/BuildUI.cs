@@ -131,6 +131,9 @@ public partial class BuildUI : Control
             EventBus.Instance.BudgetChanged += OnBudgetChanged;
         }
 
+        // Sync initial material selection so BuildSystem.CurrentMaterial matches the UI
+        MaterialSelected?.Invoke(BuildMaterials[_selectedMaterialIndex]);
+
         Visible = false;
     }
 

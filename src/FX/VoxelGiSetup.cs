@@ -221,6 +221,12 @@ public partial class VoxelGiSetup : Node3D
 
         env.VolumetricFogEnabled = false;
 
+        // Color adjustment: slight saturation boost for punchier colors
+        env.AdjustmentEnabled = true;
+        env.AdjustmentSaturation = 1.12f;
+        env.AdjustmentBrightness = 1.0f;
+        env.AdjustmentContrast = 1.05f;
+
         return env;
     }
 
