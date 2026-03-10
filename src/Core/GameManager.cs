@@ -1579,8 +1579,9 @@ public partial class GameManager : Node
 
         _lobbyUI = new LobbyUI();
         _lobbyUI.Name = "LobbyUI";
-        _lobbyUI.SetIsHost(isHost);
         _lobbyUILayer.AddChild(_lobbyUI);
+        // SetIsHost must be called AFTER AddChild so GetTree() works
+        _lobbyUI.SetIsHost(isHost);
 
         // Wire up lobby UI events
         _lobbyUI.ReadyToggled += OnLobbyReadyToggled;
