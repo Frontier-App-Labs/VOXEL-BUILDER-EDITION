@@ -48,7 +48,7 @@ public static class GameConfig
     public const int PrototypeBuildZoneSpacing = 16;
 
     public const float DefaultBuildTime = 300f;
-    public const int DefaultBudget = 10000;
+    public const int DefaultBudget = 15000;
     public const int BotBudgetEasy = 8000;
     public const int BotBudgetMedium = 18000;
     public const int BotBudgetHard = 35000;

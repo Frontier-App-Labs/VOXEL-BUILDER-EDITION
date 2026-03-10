@@ -1,6 +1,7 @@
 using Godot;
 using System;
 using System.Collections.Generic;
+using VoxelSiege.AI.BotBases;
 using VoxelSiege.Building;
 using VoxelSiege.Core;
 using VoxelSiege.Voxel;
@@ -68,13 +69,9 @@ public sealed class BotBuildPlanner
     {
         Random rng = new Random(System.Environment.TickCount ^ zone.OriginBuildUnits.GetHashCode());
 
-        return difficulty switch
-        {
-            BotDifficulty.Easy => PlanEasyFortress(zone, budget, rng),
-            BotDifficulty.Medium => PlanMediumFortress(zone, budget, rng),
-            BotDifficulty.Hard => PlanHardFortress(zone, budget, rng),
-            _ => PlanEasyFortress(zone, budget, rng),
-        };
+        // Use the BotBaseRegistry to pick from all registered base designs
+        BotBaseBuilder builder = BotBaseRegistry.GetRandom(difficulty, rng);
+        return builder(zone, budget, rng);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1345,7 +1342,7 @@ public sealed class BotBuildPlanner
     /// <summary>
     /// Adds a solid floor slab at the Y level of start/end.
     /// </summary>
-    private static void AddFloor(BotBuildPlan plan, BudgetTracker tracker,
+    internal static void AddFloor(BotBuildPlan plan, BudgetTracker tracker,
         Vector3I start, Vector3I end, VoxelMaterialType material)
     {
         int w = end.X - start.X + 1;
@@ -1369,7 +1366,7 @@ public sealed class BotBuildPlanner
     /// This is one layer of a wall -- used to build walls layer-by-layer from
     /// bottom to top so there are never floating blocks.
     /// </summary>
-    private static void AddHollowLayer(BotBuildPlan plan, BudgetTracker tracker,
+    internal static void AddHollowLayer(BotBuildPlan plan, BudgetTracker tracker,
         Vector3I start, Vector3I end, VoxelMaterialType material)
     {
         int w = end.X - start.X + 1;
@@ -1395,7 +1392,7 @@ public sealed class BotBuildPlanner
     /// <summary>
     /// Places a single build-unit block.
     /// </summary>
-    private static void AddSingle(BotBuildPlan plan, BudgetTracker tracker,
+    internal static void AddSingle(BotBuildPlan plan, BudgetTracker tracker,
         Vector3I pos, VoxelMaterialType material)
     {
         int cost = VoxelMaterials.GetDefinition(material).Cost;
@@ -1416,7 +1413,7 @@ public sealed class BotBuildPlanner
     /// Adds solid columns at each corner of the bounding box, from yLow to yHigh.
     /// Built bottom-up (each column is a vertical box from low to high).
     /// </summary>
-    private static void AddCornerColumns(BotBuildPlan plan, BudgetTracker tracker,
+    internal static void AddCornerColumns(BotBuildPlan plan, BudgetTracker tracker,
         Vector3I bS, Vector3I bE, int yLow, int yHigh, VoxelMaterialType material)
     {
         if (yHigh < yLow) return;
@@ -1451,7 +1448,7 @@ public sealed class BotBuildPlanner
     /// Adds crenellations (alternating raised blocks) along the perimeter at a
     /// given Y. These sit on the roof below, so they are structurally supported.
     /// </summary>
-    private static void AddCrenellations(BotBuildPlan plan, BudgetTracker tracker,
+    internal static void AddCrenellations(BotBuildPlan plan, BudgetTracker tracker,
         Vector3I bS, Vector3I bE, int crenY, VoxelMaterialType material)
     {
         int actualY = bS.Y + crenY;
@@ -1475,7 +1472,7 @@ public sealed class BotBuildPlanner
     /// Adds a perimeter walkway (ring of floor blocks, N blocks wide) at a given Y.
     /// Used for castle wall walkways where weapons can be placed.
     /// </summary>
-    private static void AddPerimeterWalkway(BotBuildPlan plan, BudgetTracker tracker,
+    internal static void AddPerimeterWalkway(BotBuildPlan plan, BudgetTracker tracker,
         Vector3I bS, Vector3I bE, int walkwayY, int walkwayWidth, VoxelMaterialType material)
     {
         int actualY = bS.Y + walkwayY;
@@ -1500,7 +1497,7 @@ public sealed class BotBuildPlanner
     /// If the shell is too small to build as a full box, a ceiling slab is placed
     /// above the commander so they are never left exposed from above.
     /// </summary>
-    private static void AddCommanderShell(BotBuildPlan plan, BudgetTracker tracker,
+    internal static void AddCommanderShell(BotBuildPlan plan, BudgetTracker tracker,
         Vector3I cmdPos, Vector3I bS, Vector3I bE, VoxelMaterialType material, int size)
     {
         int half = size / 2;
@@ -1559,7 +1556,7 @@ public sealed class BotBuildPlanner
     /// build actions to guarantee overhead cover even if the main shell was
     /// skipped or the fortress roof was damaged by weapon placement.
     /// </summary>
-    private static void EnsureCommanderCeiling(BotBuildPlan plan, BudgetTracker tracker,
+    internal static void EnsureCommanderCeiling(BotBuildPlan plan, BudgetTracker tracker,
         Vector3I cmdPos, Vector3I bS, Vector3I bE, VoxelMaterialType material)
     {
         int ceilingY = cmdPos.Y + 2;
@@ -1578,7 +1575,7 @@ public sealed class BotBuildPlanner
     /// Adds a multi-layered obsidian + reinforced steel + concrete vault
     /// around the commander. Respects MaxObsidianBlocks.
     /// </summary>
-    private static void AddObsidianVault(BotBuildPlan plan, BudgetTracker tracker,
+    internal static void AddObsidianVault(BotBuildPlan plan, BudgetTracker tracker,
         Vector3I cmdPos, Vector3I bS, Vector3I bE)
     {
         // Inner vault (3x3x3)
@@ -1602,7 +1599,7 @@ public sealed class BotBuildPlanner
     /// <summary>
     /// Adds decoy rooms in quadrants opposite to the commander.
     /// </summary>
-    private static void AddDecoyRooms(BotBuildPlan plan, BudgetTracker tracker,
+    internal static void AddDecoyRooms(BotBuildPlan plan, BudgetTracker tracker,
         Vector3I bS, Vector3I bE, int outerW, int outerD,
         int commanderQuadrant, VoxelMaterialType decoyMat, Random rng)
     {
@@ -1632,7 +1629,7 @@ public sealed class BotBuildPlanner
     /// <summary>
     /// Adds an interior dividing wall for structural compartmentalization.
     /// </summary>
-    private static void AddInteriorWall(BotBuildPlan plan, BudgetTracker tracker,
+    internal static void AddInteriorWall(BotBuildPlan plan, BudgetTracker tracker,
         Vector3I bS, Vector3I bE, int mainW, int wallH, int mainD,
         VoxelMaterialType material, Random rng)
     {
@@ -1674,7 +1671,7 @@ public sealed class BotBuildPlanner
     /// edges so they have a clear line of fire without shooting through
     /// their own fortress.
     /// </summary>
-    private static (bool useMinX, bool useMaxX, bool useMinZ, bool useMaxZ) GetOutwardEdges(BuildZone zone)
+    internal static (bool useMinX, bool useMaxX, bool useMinZ, bool useMaxZ) GetOutwardEdges(BuildZone zone)
     {
         // Arena center is at (0, y, 0) in build units
         int zoneCenterX = zone.OriginBuildUnits.X + zone.SizeBuildUnits.X / 2;
@@ -1698,7 +1695,7 @@ public sealed class BotBuildPlanner
     /// edges that face toward the arena center (outward) so weapons don't
     /// fire into their own structure. A pillar is placed underneath for support.
     /// </summary>
-    private static void PlaceRoofEdgeWeapons(BotBuildPlan plan, BudgetTracker tracker,
+    internal static void PlaceRoofEdgeWeapons(BotBuildPlan plan, BudgetTracker tracker,
         Vector3I bS, Vector3I bE, int roofY, Vector3I cmdPos,
         int count, string[] weaponPool, Random rng, BuildZone zone)
     {
@@ -1846,7 +1843,7 @@ public sealed class BotBuildPlanner
     /// Places weapons at the outer corners of a terrace (stepped tier).
     /// Only uses corners on outward-facing edges.
     /// </summary>
-    private static void PlaceTerraceCornerWeapons(BotBuildPlan plan, BudgetTracker tracker,
+    internal static void PlaceTerraceCornerWeapons(BotBuildPlan plan, BudgetTracker tracker,
         Vector3I tierS, Vector3I tierE, int roofY, Vector3I cmdPos,
         int maxCount, string[] weaponPool, List<Vector3I> allPlaced, Random rng, BuildZone zone)
     {
@@ -1965,7 +1962,7 @@ public sealed class BotBuildPlanner
     /// Ensures at least one cannon exists. Places it on an outward-facing edge
     /// of the roof. Always succeeds regardless of remaining budget.
     /// </summary>
-    private static void EnsureAtLeastOneWeapon(BotBuildPlan plan, BudgetTracker tracker,
+    internal static void EnsureAtLeastOneWeapon(BotBuildPlan plan, BudgetTracker tracker,
         Vector3I bS, Vector3I bE, int roofY, BuildZone zone)
     {
         if (plan.WeaponPlacements.Count > 0) return;
@@ -2075,7 +2072,7 @@ public sealed class BotBuildPlanner
         return total - interior;
     }
 
-    private static int GetWeaponCost(string weaponId)
+    internal static int GetWeaponCost(string weaponId)
     {
         return weaponId switch
         {
@@ -2092,7 +2089,7 @@ public sealed class BotBuildPlanner
     //  BUDGET TRACKER
     // ─────────────────────────────────────────────────
 
-    private sealed class BudgetTracker
+    internal sealed class BudgetTracker
     {
         private int _remaining;
 
