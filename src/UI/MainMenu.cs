@@ -1326,7 +1326,7 @@ public partial class MainMenu : Control
             MatchSettings settings = new MatchSettings { Visibility = visibility };
             string lobbyName = visibility == MatchVisibility.Public
                 ? "Open Lobby"
-                : $"Private [{_generatedLobbyCode}]";
+                : "Private Match";
             lobbyManager.ConfigureLobby(lobbyName, settings);
 
             // Add the host as the first player in the lobby

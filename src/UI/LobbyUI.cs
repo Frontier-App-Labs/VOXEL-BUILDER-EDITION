@@ -35,7 +35,11 @@ public partial class LobbyUI : Control
     private Button? _readyButton;
     private Button? _startButton;
     private Label? _lobbyNameLabel;
+    private Label? _gameCodeLabel;
+    private Label? _gameCodeStatus;
+    private PanelContainer? _gameCodePanel;
     private LineEdit? _commanderNameInput;
+    private VBoxContainer? _contentContainer;
 
     // --- Pixel Font (lazy to avoid loading before Godot's resource system is ready) ---
     private static Font? _pixelFont;
@@ -66,32 +70,33 @@ public partial class LobbyUI : Control
         backdrop.MouseFilter = MouseFilterEnum.Ignore;
         AddChild(backdrop);
 
-        // Main layout
-        VBoxContainer mainLayout = new VBoxContainer();
-        mainLayout.SetAnchorsPreset(LayoutPreset.FullRect);
-        mainLayout.AddThemeConstantOverride("separation", 0);
-        mainLayout.MouseFilter = MouseFilterEnum.Ignore;
-        AddChild(mainLayout);
+        // Content container — centered via _Process like MainMenu does
+        _contentContainer = new VBoxContainer();
+        _contentContainer.Name = "LobbyContent";
+        _contentContainer.AddThemeConstantOverride("separation", 0);
+        _contentContainer.MouseFilter = MouseFilterEnum.Ignore;
+        AddChild(_contentContainer);
 
         // Top spacer
         Control topSpacer = new Control();
         topSpacer.SizeFlagsVertical = SizeFlags.ExpandFill;
         topSpacer.SizeFlagsStretchRatio = 0.3f;
         topSpacer.MouseFilter = MouseFilterEnum.Ignore;
-        mainLayout.AddChild(topSpacer);
+        _contentContainer.AddChild(topSpacer);
 
         // Center content
         VBoxContainer centerBox = new VBoxContainer();
         centerBox.AddThemeConstantOverride("separation", 0);
-        centerBox.SizeFlagsHorizontal = SizeFlags.ShrinkCenter;
+        centerBox.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         centerBox.MouseFilter = MouseFilterEnum.Ignore;
-        mainLayout.AddChild(centerBox);
+        _contentContainer.AddChild(centerBox);
 
         // Lobby title
         _lobbyNameLabel = new Label();
         _lobbyNameLabel.Text = "MATCH LOBBY";
         _lobbyNameLabel.HorizontalAlignment = HorizontalAlignment.Center;
-        _lobbyNameLabel.AddThemeFontSizeOverride("font_size", 38);
+        _lobbyNameLabel.AddThemeFontOverride("font", PixelFont);
+        _lobbyNameLabel.AddThemeFontSizeOverride("font_size", 24);
         _lobbyNameLabel.AddThemeColorOverride("font_color", TextPrimary);
         _lobbyNameLabel.MouseFilter = MouseFilterEnum.Ignore;
         centerBox.AddChild(_lobbyNameLabel);
@@ -104,9 +109,54 @@ public partial class LobbyUI : Control
         centerBox.AddChild(titleBar);
 
         Control titleSpacer = new Control();
-        titleSpacer.CustomMinimumSize = new Vector2(0, 16);
+        titleSpacer.CustomMinimumSize = new Vector2(0, 12);
         titleSpacer.MouseFilter = MouseFilterEnum.Ignore;
         centerBox.AddChild(titleSpacer);
+
+        // === GAME CODE DISPLAY (host only — shows the code friends use to join) ===
+        _gameCodeLabel = new Label();
+        _gameCodeLabel.Text = "DISCOVERING...";
+        _gameCodeLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        _gameCodeLabel.AddThemeFontOverride("font", PixelFont);
+        _gameCodeLabel.AddThemeFontSizeOverride("font_size", 22);
+        _gameCodeLabel.AddThemeColorOverride("font_color", AccentGreen);
+        _gameCodeLabel.MouseFilter = MouseFilterEnum.Ignore;
+
+        _gameCodePanel = new PanelContainer();
+        _gameCodePanel.CustomMinimumSize = new Vector2(400, 56);
+        StyleBoxFlat codePanelStyle = CreateFlatStyle(new Color("0d1117"), 0);
+        codePanelStyle.BorderWidthLeft = 4;
+        codePanelStyle.BorderWidthTop = 2;
+        codePanelStyle.BorderWidthRight = 2;
+        codePanelStyle.BorderWidthBottom = 4;
+        codePanelStyle.BorderColor = AccentGreen;
+        codePanelStyle.ContentMarginLeft = 20;
+        codePanelStyle.ContentMarginRight = 20;
+        codePanelStyle.ContentMarginTop = 10;
+        codePanelStyle.ContentMarginBottom = 10;
+        _gameCodePanel.AddThemeStyleboxOverride("panel", codePanelStyle);
+        _gameCodePanel.AddChild(_gameCodeLabel);
+
+        HBoxContainer codeWrapper = new HBoxContainer();
+        codeWrapper.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        codeWrapper.Alignment = BoxContainer.AlignmentMode.Center;
+        codeWrapper.MouseFilter = MouseFilterEnum.Ignore;
+        codeWrapper.AddChild(_gameCodePanel);
+        centerBox.AddChild(codeWrapper);
+
+        _gameCodeStatus = new Label();
+        _gameCodeStatus.Text = "SHARE THIS CODE WITH FRIENDS TO JOIN";
+        _gameCodeStatus.HorizontalAlignment = HorizontalAlignment.Center;
+        _gameCodeStatus.AddThemeFontOverride("font", PixelFont);
+        _gameCodeStatus.AddThemeFontSizeOverride("font_size", 9);
+        _gameCodeStatus.AddThemeColorOverride("font_color", TextSecondary);
+        _gameCodeStatus.MouseFilter = MouseFilterEnum.Ignore;
+        centerBox.AddChild(_gameCodeStatus);
+
+        Control codeSpacer = new Control();
+        codeSpacer.CustomMinimumSize = new Vector2(0, 12);
+        codeSpacer.MouseFilter = MouseFilterEnum.Ignore;
+        centerBox.AddChild(codeSpacer);
 
         // Commander name input row
         HBoxContainer nameRow = new HBoxContainer();
@@ -327,7 +377,7 @@ public partial class LobbyUI : Control
         Control bottomSpacer = new Control();
         bottomSpacer.SizeFlagsVertical = SizeFlags.ExpandFill;
         bottomSpacer.MouseFilter = MouseFilterEnum.Ignore;
-        mainLayout.AddChild(bottomSpacer);
+        _contentContainer.AddChild(bottomSpacer);
     }
 
     private bool _isReady;
@@ -339,10 +389,122 @@ public partial class LobbyUI : Control
     public void SetIsHost(bool isHost)
     {
         _isHost = isHost;
+
+        // Hide game code panel for non-hosts (they already entered the code)
+        if (!isHost && _gameCodePanel != null)
+        {
+            _gameCodePanel.Visible = false;
+        }
+        if (!isHost && _gameCodeStatus != null)
+        {
+            _gameCodeStatus.Visible = false;
+        }
+
+        // Subscribe to NetworkManager for public IP discovery (host only)
+        if (isHost)
+        {
+            NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
+            if (netManager != null)
+            {
+                netManager.ExternalIpDiscovered += OnPublicIpDiscovered;
+                GD.Print("[LobbyUI] Subscribed to ExternalIpDiscovered");
+
+                // If the IP was already discovered before we subscribed, use it now
+                if (!string.IsNullOrEmpty(netManager.ExternalIp) && netManager.ExternalIp != "UNKNOWN")
+                {
+                    OnPublicIpDiscovered(netManager.ExternalIp);
+                }
+            }
+            else
+            {
+                GD.PrintErr("[LobbyUI] NetworkManager not found!");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Called when the public IP is discovered. Encodes it into a game code.
+    /// </summary>
+    private void OnPublicIpDiscovered(string publicIp)
+    {
+        GD.Print($"[LobbyUI] Public IP received: {publicIp}");
+
+        if (publicIp == "UNKNOWN")
+        {
+            if (_gameCodeLabel != null)
+            {
+                _gameCodeLabel.Text = "IP LOOKUP FAILED";
+                _gameCodeLabel.AddThemeColorOverride("font_color", AccentRed);
+            }
+            if (_gameCodeStatus != null)
+            {
+                _gameCodeStatus.Text = "CHECK INTERNET CONNECTION";
+                _gameCodeStatus.AddThemeColorOverride("font_color", AccentRed);
+            }
+            return;
+        }
+
+        string code = EncodeIpToCode(publicIp);
+        GD.Print($"[LobbyUI] Public IP {publicIp} → code: {code}");
+
+        if (_gameCodeLabel != null)
+        {
+            _gameCodeLabel.Text = $"CODE:  {code}";
+            _gameCodeLabel.AddThemeColorOverride("font_color", AccentGreen);
+        }
+        if (_gameCodeStatus != null)
+        {
+            _gameCodeStatus.Text = "SHARE THIS CODE WITH FRIENDS TO JOIN";
+            _gameCodeStatus.AddThemeColorOverride("font_color", TextSecondary);
+        }
+    }
+
+    public override void _ExitTree()
+    {
+        // Unsubscribe from NetworkManager
+        NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
+        if (netManager != null)
+        {
+            netManager.ExternalIpDiscovered -= OnPublicIpDiscovered;
+        }
+    }
+
+    /// <summary>
+    /// Encodes an IPv4 address into a 7-character alphanumeric code.
+    /// </summary>
+    private static readonly char[] CodeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".ToCharArray();
+
+    private static string EncodeIpToCode(string ip)
+    {
+        string[] parts = ip.Split('.');
+        if (parts.Length != 4) return "AAAAAAA";
+        uint ipNum = 0;
+        for (int i = 0; i < 4; i++)
+        {
+            if (!uint.TryParse(parts[i], out uint octet) || octet > 255)
+                return "AAAAAAA";
+            ipNum = (ipNum << 8) | octet;
+        }
+        char[] code = new char[7];
+        for (int i = 6; i >= 0; i--)
+        {
+            code[i] = CodeChars[ipNum % 32];
+            ipNum /= 32;
+        }
+        return new string(code);
     }
 
     public override void _Process(double delta)
     {
+        // Brute-force centering like MainMenu: position content container to center of screen
+        if (_contentContainer != null)
+        {
+            Vector2 viewSize = GetViewportRect().Size;
+            float contentW = viewSize.X * 0.55f;
+            _contentContainer.Position = new Vector2((viewSize.X - contentW) * 0.5f, 0f);
+            _contentContainer.Size = new Vector2(contentW, viewSize.Y);
+        }
+
         UpdateLobbyDisplay();
     }
 

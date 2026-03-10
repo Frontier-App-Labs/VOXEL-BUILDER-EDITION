@@ -129,6 +129,8 @@ public partial class NetworkManager : Node
     /// </summary>
     private void DiscoverPublicIp()
     {
+        GD.Print("[NetworkManager] Starting public IP discovery via api.ipify.org...");
+
         HttpRequest httpReq = new HttpRequest();
         httpReq.Name = "PublicIpRequest";
         httpReq.Timeout = 5; // 5 second timeout
@@ -136,22 +138,25 @@ public partial class NetworkManager : Node
 
         httpReq.RequestCompleted += (long result, long responseCode, string[] headers, byte[] body) =>
         {
+            GD.Print($"[NetworkManager] HTTP response: result={result}, code={responseCode}, bodyLen={body?.Length ?? 0}");
+
             // Clean up the HTTP request node
             httpReq.QueueFree();
 
             if (result != (long)HttpRequest.Result.Success || responseCode != 200)
             {
                 GD.PrintErr($"[NetworkManager] Public IP lookup failed (result={result}, code={responseCode}). Trying fallback...");
-                // Try a fallback service
                 DiscoverPublicIpFallback();
                 return;
             }
 
             string publicIp = System.Text.Encoding.UTF8.GetString(body).Trim();
+            GD.Print($"[NetworkManager] Raw IP response: '{publicIp}'");
+
             if (IsValidIpv4(publicIp))
             {
                 ExternalIp = publicIp;
-                GD.Print($"[NetworkManager] Public IP discovered: {publicIp}");
+                GD.Print($"[NetworkManager] *** Public IP discovered: {publicIp} ***");
                 ExternalIpDiscovered?.Invoke(publicIp);
             }
             else
@@ -162,6 +167,7 @@ public partial class NetworkManager : Node
         };
 
         Error err = httpReq.Request("https://api.ipify.org");
+        GD.Print($"[NetworkManager] HTTP request started, error={err}");
         if (err != Error.Ok)
         {
             GD.PrintErr($"[NetworkManager] Failed to start public IP request: {err}");
@@ -175,6 +181,8 @@ public partial class NetworkManager : Node
     /// </summary>
     private void DiscoverPublicIpFallback()
     {
+        GD.Print("[NetworkManager] Trying fallback IP discovery via ifconfig.me...");
+
         HttpRequest httpReq = new HttpRequest();
         httpReq.Name = "PublicIpFallback";
         httpReq.Timeout = 5;
