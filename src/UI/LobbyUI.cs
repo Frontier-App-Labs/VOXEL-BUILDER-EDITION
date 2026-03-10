@@ -34,6 +34,7 @@ public partial class LobbyUI : Control
     private readonly List<ColorRect> _readyIndicators = new List<ColorRect>();
     private Button? _readyButton;
     private Button? _startButton;
+    private PanelContainer? _startPanel;
     private Label? _lobbyNameLabel;
     private Label? _gameCodeLabel;
     private Label? _gameCodeStatus;
@@ -346,7 +347,8 @@ public partial class LobbyUI : Control
         readyPanel.AddChild(_readyButton);
 
         // Start game button (host only) — voxel style
-        PanelContainer startPanel = new PanelContainer();
+        _startPanel = new PanelContainer();
+        PanelContainer startPanel = _startPanel;
         startPanel.CustomMinimumSize = new Vector2(200, 56);
         StyleBoxFlat startStyle = CreateFlatStyle(BgDark, 0);
         startStyle.BorderWidthLeft = 4;
@@ -551,7 +553,9 @@ public partial class LobbyUI : Control
         // Show/hide START button: only visible for host when all players are ready
         if (_startButton != null)
         {
-            _startButton.Visible = _isHost && lobby.AreAllPlayersReady();
+            bool showStart = _isHost && lobby.AreAllPlayersReady();
+            _startButton.Visible = showStart;
+            if (_startPanel != null) _startPanel.Visible = showStart;
         }
 
         // Update player slots
