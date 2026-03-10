@@ -112,6 +112,11 @@ public partial class SteamManager : Node
         CurrentLobby.SetData("game_name", "VoxelSiege");
         CurrentLobby.SetData("host_name", SteamClient.Name);
 
+        // Tell Valve's relay infrastructure that this Steam ID is hosting a game server.
+        // Without this, ConnectRelay() calls from clients have nowhere to route to.
+        CurrentLobby.SetGameServer(SteamClient.SteamId);
+        GD.Print($"[SteamManager] SetGameServer → {SteamClient.SteamId}");
+
         GD.Print($"[SteamManager] Lobby created! ID: {CurrentLobby.Id}, Code: {gameCode}");
         return gameCode;
     }
@@ -218,6 +223,14 @@ public partial class SteamManager : Node
     private void OnSteamLobbyEntered(Lobby lobby)
     {
         GD.Print($"[SteamManager] OnLobbyEntered: {lobby.Id}, members: {lobby.MemberCount}");
+
+        // Ensure game server is set on the lobby so relay connections route correctly
+        if (lobby.Owner.Id == SteamClient.SteamId)
+        {
+            lobby.SetGameServer(SteamClient.SteamId);
+            GD.Print($"[SteamManager] Re-asserted SetGameServer → {SteamClient.SteamId}");
+        }
+
         LobbyEntered?.Invoke(lobby);
     }
 

@@ -1500,6 +1500,10 @@ public partial class MainMenu : Control
             bool found = await steam.JoinLobbyByCodeAsync(input);
             if (found)
             {
+                // Brief delay to let the lobby state propagate through Valve's servers
+                // before establishing the relay connection (reference impl uses 1s)
+                await ToSignal(GetTree().CreateTimer(1.0), SceneTreeTimer.SignalName.Timeout);
+
                 // Get the host's Steam ID from the lobby owner
                 Steamworks.SteamId hostId = steam.GetLobbyHostId();
                 GD.Print($"[MainMenu] Found lobby! Host Steam ID: {hostId}");
