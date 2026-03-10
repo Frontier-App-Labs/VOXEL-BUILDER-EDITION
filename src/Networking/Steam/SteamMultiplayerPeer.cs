@@ -50,8 +50,11 @@ public partial class SteamMultiplayerPeer : MultiplayerPeerExtension
             return Error.AlreadyInUse;
         }
 
+        GD.Print($"[SteamMultiplayerPeer] Relay network status: {SteamNetworkingUtils.Status}");
         _steamSocketManager = SteamNetworkingSockets.CreateRelaySocket<SteamSocketManager>();
+        GD.Print("[SteamMultiplayerPeer] Relay socket created.");
         _steamConnectionManager = SteamNetworkingSockets.ConnectRelay<SteamConnectionManager>(playerId);
+        GD.Print("[SteamMultiplayerPeer] Self-connection relay created.");
 
         _steamSocketManager.OnConnectionEstablished += (c) =>
         {
@@ -93,7 +96,9 @@ public partial class SteamMultiplayerPeer : MultiplayerPeerExtension
 
         _uniqueId = (int)GenerateUniqueId();
 
+        GD.Print($"[SteamMultiplayerPeer] Client relay status: {SteamNetworkingUtils.Status}");
         _steamConnectionManager = SteamNetworkingSockets.ConnectRelay<SteamConnectionManager>(hostId);
+        GD.Print($"[SteamMultiplayerPeer] Connecting to host relay {hostId}...");
 
         _steamConnectionManager.OnConnectionEstablished += (connection) =>
         {

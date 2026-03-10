@@ -68,6 +68,11 @@ public partial class SteamManager : Node
             _initialized = true;
             GD.Print($"[SteamManager] Steam initialized! Player: {SteamClient.Name} (ID: {SteamClient.SteamId})");
 
+            // Pre-initialize the relay network so ConnectRelay doesn't timeout
+            // on first use (relay discovery takes several seconds)
+            SteamNetworkingUtils.InitRelayNetworkAccess();
+            GD.Print("[SteamManager] Relay network access initialized.");
+
             // Hook lobby events
             SteamMatchmaking.OnLobbyCreated += OnSteamLobbyCreated;
             SteamMatchmaking.OnLobbyEntered += OnSteamLobbyEntered;
