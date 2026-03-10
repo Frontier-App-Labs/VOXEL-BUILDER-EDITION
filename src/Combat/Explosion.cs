@@ -48,6 +48,9 @@ public partial class Explosion : Node3D
 
     public void Detonate(VoxelWorld world, Vector3 worldPosition, int baseDamage, float radiusMicrovoxels, PlayerSlot? instigator)
     {
+        // Play explosion impact sound at the detonation point
+        AudioDirector.Instance?.PlaySFX("explosion_impact", worldPosition);
+
         Vector3I center = MathHelpers.WorldToMicrovoxel(worldPosition);
         int radius = Mathf.CeilToInt(radiusMicrovoxels);
         float radiusMeters = radiusMicrovoxels * GameConfig.MicrovoxelMeters;
@@ -160,6 +163,7 @@ public partial class Explosion : Node3D
         // (which also removes voxels from the world).
         FallingChunk.UnfreezeUnsupportedRuins(world);
         FallingChunk.UnfreezeRuinsInRadius(worldPosition, radiusMeters + 1f);
+        DebrisFX.BlastRuinsInRadius(worldPosition, radiusMeters + 1f);
 
         foreach (Node node in GetTree().GetNodesInGroup("Commanders"))
         {
@@ -176,6 +180,13 @@ public partial class Explosion : Node3D
             }
 
             commander.EvaluateExposure(world);
+
+            // Trigger panic when an explosion lands within 1.5x the blast radius
+            float panicRadius = radiusMicrovoxels * 1.5f;
+            if (commanderDistance <= panicRadius)
+            {
+                commander.TriggerPanic(5f);
+            }
         }
 
         // Damage weapons caught in the blast radius
@@ -299,7 +310,7 @@ public partial class Explosion : Node3D
         // Sample rate adapts to explosion size: small blasts get per-voxel debris,
         // large blasts sample every Nth voxel to stay within budget.
         int debrisSpawned = 0;
-        const int maxDebrisPerExplosion = 60;
+        const int maxDebrisPerExplosion = 120;
 
         // Adaptive step: spawn every voxel for small blasts, skip more for large ones
         int step = Mathf.Max(1, destroyedVoxels.Count / maxDebrisPerExplosion);

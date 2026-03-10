@@ -81,6 +81,10 @@ public partial class AudioDirector : Node
         LoadAudioAssets();
         SubscribeEvents();
 
+        // If the game is already in Menu phase (GameManager._Ready ran first),
+        // the PhaseChanged event was missed. Start music now.
+        CallDeferred(MethodName.StartMusicIfMenuPhase);
+
         // Apply saved volume settings
         GameSettingsData settings = GameSettingsData.Current;
         SetMasterVolume(settings.MasterVolume);
@@ -110,28 +114,48 @@ public partial class AudioDirector : Node
         List<AudioStream> laser = LoadSfxSingle("res://assets/audio/sfx/laser.mp3");
 
         // Map MP3 layers to game sound events
-        // Wooshes layer on top of weapon fire retro sounds
+        // Each weapon gets a FIXED sound for consistency (no random per-shot)
         if (wooshes.Count > 0)
         {
-            _sfxLayers["cannon_fire"] = wooshes;
-            _sfxLayers["mortar_fire"] = wooshes;
-            _sfxLayers["missile_fire"] = wooshes;
-            _sfxLayers["weapon_fire"] = wooshes;
+            _sfxLayers["cannon_fire"] = new List<AudioStream> { wooshes[0] };
+            _sfxLayers["weapon_fire"] = wooshes; // generic fallback can vary
+        }
+        // Mortar gets a dedicated explosion boom (deep thump on launch)
+        if (explosions.Count >= 2)
+        {
+            _sfxLayers["mortar_fire"] = new List<AudioStream> { explosions[0] };
+            _sfxLayers["missile_fire"] = new List<AudioStream> { explosions[1] };
+        }
+        else if (explosions.Count == 1)
+        {
+            _sfxLayers["mortar_fire"] = new List<AudioStream> { explosions[0] };
+            _sfxLayers["missile_fire"] = new List<AudioStream> { explosions[0] };
         }
         // Laser layers on railgun zap
         if (laser.Count > 0)
         {
             _sfxLayers["railgun_fire"] = laser;
         }
-        // Explosions layer on commander damage/death
+        // Explosion impact sound (plays when any projectile detonates)
+        if (explosions.Count > 0)
+        {
+            _sfxLayers["explosion_impact"] = explosions;
+        }
+        // Explosions layer on commander damage/death (these CAN vary for drama)
         if (explosions.Count > 0)
         {
             _sfxLayers["commander_hit"] = explosions;
             _sfxLayers["commander_critical_hit"] = explosions;
             _sfxLayers["commander_death"] = explosions;
         }
-        // Crash sounds layer on block place/remove and debris
-        if (crashes.Count > 0)
+        // Crash sounds: fixed per event for consistency
+        if (crashes.Count >= 2)
+        {
+            _sfxLayers["block_place"] = new List<AudioStream> { crashes[0] };
+            _sfxLayers["block_remove"] = new List<AudioStream> { crashes[0] };
+            _sfxLayers["debris_impact"] = new List<AudioStream> { crashes[1] };
+        }
+        else if (crashes.Count > 0)
         {
             _sfxLayers["block_place"] = crashes;
             _sfxLayers["block_remove"] = crashes;
@@ -199,6 +223,24 @@ public partial class AudioDirector : Node
         _ambienceBusIndex = GetOrCreateBus("Ambience", "Master");
         _weaponsSfxBusIndex = GetOrCreateBus("WeaponsSFX", "SFX");
         _uiSfxBusIndex = GetOrCreateBus("UiSFX", "SFX");
+
+        // Add a limiter effect on the SFX bus to prevent ear-blasting when
+        // multiple explosions/impacts overlap. Ceiling at -3dB, soft knee.
+        AddLimiterToBus(_sfxBusIndex);
+    }
+
+    private static void AddLimiterToBus(int busIndex)
+    {
+        // Check if a limiter already exists on this bus
+        for (int i = 0; i < AudioServer.GetBusEffectCount(busIndex); i++)
+        {
+            if (AudioServer.GetBusEffect(busIndex, i) is AudioEffectHardLimiter)
+                return;
+        }
+
+        AudioEffectHardLimiter limiter = new AudioEffectHardLimiter();
+        limiter.CeilingDb = -3.0f;
+        AudioServer.AddBusEffect(busIndex, limiter);
     }
 
     private static int GetOrCreateBus(string busName, string sendTo)
@@ -273,6 +315,42 @@ public partial class AudioDirector : Node
     /// any MP3 layer simultaneously for a richer audio experience.
     /// If position is provided, plays as 3D audio.
     /// </summary>
+    // Rate-limit SFX: track last play time per sound name to prevent ear-blasting stacking
+    private readonly Dictionary<string, double> _sfxLastPlayTime = new();
+    private const double SfxCooldownSeconds = 0.08; // minimum gap between same-name sounds
+    private const int MaxConcurrentSfx = 48; // max simultaneous SFX players
+    private int _activeSfxCount;
+
+    // Per-sound volume overrides (dB) for sounds that are too loud
+    private static readonly Dictionary<string, float> SfxVolumeOverrides = new()
+    {
+        ["mortar_fire"] = -2f,
+        ["missile_fire"] = -4f,
+        ["cannon_fire"] = -2f,
+        ["commander_hit"] = -6f,
+        ["commander_critical_hit"] = -6f,
+        ["commander_death"] = -4f,
+        ["explosion_impact"] = -4f,
+        ["debris_impact"] = -8f,
+        ["railgun_fire"] = -2f,
+        ["drill_fire"] = -2f,
+        ["countdown_tick"] = -6f,
+        ["countdown_fight"] = -4f,
+    };
+
+    // Sounds that should use non-positional (2D) playback even when a position
+    // is supplied. Weapon fire sounds need this because the camera follows the
+    // projectile away from the weapon, causing 3D-attenuated sounds to fade out.
+    private static readonly HashSet<string> NonPositionalSounds = new()
+    {
+        "mortar_fire",
+        "cannon_fire",
+        "missile_fire",
+        "railgun_fire",
+        "drill_fire",
+        "weapon_fire",
+    };
+
     public void PlaySFX(string name, Vector3? position = null)
     {
         bool hasRetro = _sfxCache.TryGetValue(name, out AudioStream? retroStream) && retroStream != null;
@@ -280,22 +358,48 @@ public partial class AudioDirector : Node
 
         if (!hasRetro && !hasLayer)
         {
-            string posStr = position.HasValue ? $" at {position.Value}" : string.Empty;
-            GD.Print($"[AudioDirector] PlaySFX: {name}{posStr}");
             return;
         }
 
-        if (position.HasValue)
+        // Rate-limit: skip if same sound played too recently
+        double now = Time.GetTicksMsec() / 1000.0;
+        if (_sfxLastPlayTime.TryGetValue(name, out double lastTime) && now - lastTime < SfxCooldownSeconds)
         {
-            // 3D positional audio
+            return;
+        }
+        _sfxLastPlayTime[name] = now;
+
+        // Cap total concurrent SFX players to prevent audio overload
+        if (_activeSfxCount >= MaxConcurrentSfx)
+        {
+            return;
+        }
+
+        // Look up volume override for this sound
+        float volumeOverride = SfxVolumeOverrides.TryGetValue(name, out float ov) ? ov : 0f;
+        // Base volumes boosted so SFX are clearly audible
+        float layerDb = (hasRetro ? 0f : 3f) + volumeOverride;
+        float retroDb = 6f + volumeOverride;
+
+        // Force weapon fire sounds to play as non-positional (2D) so they remain
+        // audible when the camera follows the projectile away from the weapon.
+        bool use2D = !position.HasValue || NonPositionalSounds.Contains(name);
+
+        if (!use2D)
+        {
+            // 3D positional audio for impact sounds, debris, etc.
             if (hasRetro)
             {
                 AudioStreamPlayer3D player3D = new AudioStreamPlayer3D();
                 player3D.Stream = retroStream;
                 player3D.Bus = "SFX";
+                player3D.VolumeDb = retroDb;
+                player3D.MaxDb = 3.0f; // prevent clipping
+                player3D.AttenuationModel = AudioStreamPlayer3D.AttenuationModelEnum.InverseSquareDistance;
                 AddChild(player3D);
-                player3D.GlobalPosition = position.Value;
-                player3D.Finished += () => player3D.QueueFree();
+                player3D.GlobalPosition = position!.Value;
+                _activeSfxCount++;
+                player3D.Finished += () => { player3D.QueueFree(); _activeSfxCount = Math.Max(0, _activeSfxCount - 1); };
                 player3D.Play();
             }
             if (hasLayer)
@@ -304,29 +408,41 @@ public partial class AudioDirector : Node
                 AudioStreamPlayer3D layerPlayer = new AudioStreamPlayer3D();
                 layerPlayer.Stream = layerStream;
                 layerPlayer.Bus = "SFX";
-                layerPlayer.VolumeDb = hasRetro ? -3f : 0f;
+                layerPlayer.VolumeDb = layerDb;
+                layerPlayer.MaxDb = 3.0f;
+                layerPlayer.AttenuationModel = AudioStreamPlayer3D.AttenuationModelEnum.InverseSquareDistance;
                 AddChild(layerPlayer);
-                layerPlayer.GlobalPosition = position.Value;
-                layerPlayer.Finished += () => layerPlayer.QueueFree();
+                layerPlayer.GlobalPosition = position!.Value;
+                _activeSfxCount++;
+                layerPlayer.Finished += () => { layerPlayer.QueueFree(); _activeSfxCount = Math.Max(0, _activeSfxCount - 1); };
                 layerPlayer.Play();
             }
         }
         else
         {
-            // 2D UI audio
+            // 2D non-positional audio: weapon fire sounds + UI sounds
+            string bus = position.HasValue ? "WeaponsSFX" : "UiSFX";
             if (hasRetro)
             {
-                PlayUiSound(retroStream);
+                AudioStreamPlayer retroPlayer = new AudioStreamPlayer();
+                retroPlayer.Stream = retroStream;
+                retroPlayer.Bus = bus;
+                retroPlayer.VolumeDb = retroDb;
+                AddChild(retroPlayer);
+                _activeSfxCount++;
+                retroPlayer.Finished += () => { retroPlayer.QueueFree(); _activeSfxCount = Math.Max(0, _activeSfxCount - 1); };
+                retroPlayer.Play();
             }
             if (hasLayer)
             {
                 AudioStream layerStream = layers![_rng.Next(layers.Count)];
                 AudioStreamPlayer tempPlayer = new AudioStreamPlayer();
                 tempPlayer.Stream = layerStream;
-                tempPlayer.Bus = "UiSFX";
-                tempPlayer.VolumeDb = hasRetro ? -3f : 0f;
+                tempPlayer.Bus = bus;
+                tempPlayer.VolumeDb = layerDb;
                 AddChild(tempPlayer);
-                tempPlayer.Finished += () => tempPlayer.QueueFree();
+                _activeSfxCount++;
+                tempPlayer.Finished += () => { tempPlayer.QueueFree(); _activeSfxCount = Math.Max(0, _activeSfxCount - 1); };
                 tempPlayer.Play();
             }
         }
@@ -335,6 +451,22 @@ public partial class AudioDirector : Node
     // ─────────────────────────────────────────────────
     //  MUSIC (Random Shuffle)
     // ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// Called via CallDeferred after _Ready() to catch the case where
+    /// GameManager.SetPhase(Menu) fired before AudioDirector was initialized.
+    /// </summary>
+    private void StartMusicIfMenuPhase()
+    {
+        GameManager? gm = GetTree()?.Root.GetNodeOrNull<GameManager>("Main");
+        if (gm != null && gm.CurrentPhase == GamePhase.Menu)
+        {
+            if (_musicPlayer == null || !_musicPlayer.Playing)
+            {
+                PlayRandomMusic();
+            }
+        }
+    }
 
     /// <summary>
     /// Play the next random music track from the playlist (Minecraft-style shuffle).
@@ -475,13 +607,34 @@ public partial class AudioDirector : Node
         EventBus.Instance.CommanderKilled -= OnCommanderKilled;
     }
 
+    private bool _menuSfxDucked;
+
     private void OnPhaseChanged(PhaseChangedEvent payload)
     {
         switch (payload.CurrentPhase)
         {
             case GamePhase.Menu:
+                // Duck SFX on the main menu — background bot battles should be subtle
+                if (!_menuSfxDucked)
+                {
+                    _menuSfxDucked = true;
+                    float userSfx = GameSettingsData.Current.SfxVolume;
+                    SetSFXVolume(userSfx * 0.25f); // quarter volume on menu
+                }
+                // Start random shuffle if nothing is playing
+                if (_musicPlayer == null || !_musicPlayer.Playing)
+                {
+                    PlayRandomMusic();
+                }
+                break;
             case GamePhase.Building:
             case GamePhase.Combat:
+                // Restore SFX volume when leaving menu
+                if (_menuSfxDucked)
+                {
+                    _menuSfxDucked = false;
+                    SetSFXVolume(GameSettingsData.Current.SfxVolume);
+                }
                 // Start random shuffle if nothing is playing
                 if (_musicPlayer == null || !_musicPlayer.Playing)
                 {

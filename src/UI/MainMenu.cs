@@ -27,14 +27,15 @@ public partial class MainMenu : Control
     // --- Voxel title textures (lazy-loaded) ---
     private static Texture2D? _titleTexGreen;
     private static Texture2D? _titleTexGold;
-    private static Texture2D TitleTexGreen => _titleTexGreen ??= ResourceLoader.Load<Texture2D>("res://assets/textures/voxels/dirt_32.png");
-    private static Texture2D TitleTexGold => _titleTexGold ??= ResourceLoader.Load<Texture2D>("res://assets/textures/voxels/sand_32.png");
+    private static Texture2D TitleTexGreen => _titleTexGreen ??= ResourceLoader.Load<Texture2D>("res://assets/textures/voxels/metal_32.png");
+    private static Texture2D TitleTexGold => _titleTexGold ??= ResourceLoader.Load<Texture2D>("res://assets/textures/voxels/obsidian_32.png");
 
-    // Voxel title colors
-    private static readonly Color TitleGreen1 = new Color("2ea043");
-    private static readonly Color TitleGreen2 = new Color("3cb653");
-    private static readonly Color TitleGold1 = new Color("d4a029");
-    private static readonly Color TitleGold2 = new Color("e8b84a");
+    // Voxel title colors (vibrant, high-contrast)
+    private static readonly Color TitleGreen1 = new Color("5cb8ff");
+    private static readonly Color TitleGreen2 = new Color("90d0ff");
+    private static readonly Color TitleGold1 = new Color("9040d0");
+    private static readonly Color TitleGold2 = new Color("b06ef0");
+    private static readonly Color TitleShadowColor = new Color(0f, 0f, 0f, 0.7f);
     public event Action? PlayOnlineRequested;
     public event Action? PlayBotsRequested;
     public event Action? SettingsRequested;
@@ -45,11 +46,6 @@ public partial class MainMenu : Control
     /// The bool parameter indicates whether the lobby is open (true) or private/code-only (false).
     /// </summary>
     public event Action<bool>? HostGameRequested;
-
-    /// <summary>
-    /// Fired when the player chooses to join a random open lobby.
-    /// </summary>
-    public event Action? JoinRandomRequested;
 
     /// <summary>
     /// Fired when the player enters a lobby code and clicks Join.
@@ -67,6 +63,7 @@ public partial class MainMenu : Control
     private Control? _contentContainer;
     private Control? _fallingBlockLayer;
     private Label? _subtitleLabel;
+    private Label? _walletLabel;
     private float _time;
     private float _subtitleRevealTimer;
     private int _subtitleRevealIndex;
@@ -195,7 +192,7 @@ public partial class MainMenu : Control
         ColorRect backdrop = new ColorRect();
         backdrop.Name = "Backdrop";
         backdrop.SetAnchorsPreset(LayoutPreset.FullRect);
-        backdrop.Color = new Color(BgDark.R, BgDark.G, BgDark.B, 0.85f);
+        backdrop.Color = new Color(BgDark.R, BgDark.G, BgDark.B, 0.0f);
         AddChild(backdrop);
 
         // Falling voxel blocks layer (behind content)
@@ -205,12 +202,12 @@ public partial class MainMenu : Control
         _fallingBlockLayer.MouseFilter = MouseFilterEnum.Ignore;
         AddChild(_fallingBlockLayer);
 
-        // Subtle gradient overlay at top
+        // Subtle gradient overlay at top (helps frame the title)
         ColorRect topGradient = new ColorRect();
         topGradient.SetAnchorsPreset(LayoutPreset.TopWide);
-        topGradient.OffsetBottom = 250;
-        topGradient.CustomMinimumSize = new Vector2(0, 250);
-        topGradient.Color = new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.04f);
+        topGradient.OffsetBottom = 280;
+        topGradient.CustomMinimumSize = new Vector2(0, 280);
+        topGradient.Color = new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.06f);
         topGradient.MouseFilter = MouseFilterEnum.Ignore;
         AddChild(topGradient);
 
@@ -230,9 +227,9 @@ public partial class MainMenu : Control
         _contentContainer.MouseFilter = MouseFilterEnum.Ignore;
         AddChild(_contentContainer);
 
-        // Top spacer (tall enough to clear the voxel title)
+        // Top spacer (tall enough to clear the voxel title - increased for larger title)
         Control topSpacer = new Control();
-        topSpacer.CustomMinimumSize = new Vector2(0, 180);
+        topSpacer.CustomMinimumSize = new Vector2(0, 210);
         topSpacer.MouseFilter = MouseFilterEnum.Ignore;
         _contentContainer.AddChild(topSpacer);
 
@@ -278,7 +275,7 @@ public partial class MainMenu : Control
         _subtitleLabel.Text = "";
         _subtitleLabel.HorizontalAlignment = HorizontalAlignment.Center;
         _subtitleLabel.AddThemeFontOverride("font", PixelFont);
-        _subtitleLabel.AddThemeFontSizeOverride("font_size", 14);
+        _subtitleLabel.AddThemeFontSizeOverride("font_size", 16);
         _subtitleLabel.AddThemeColorOverride("font_color", AccentGold);
         _subtitleLabel.MouseFilter = MouseFilterEnum.Ignore;
 
@@ -289,6 +286,8 @@ public partial class MainMenu : Control
         subtitleWrapper.MouseFilter = MouseFilterEnum.Ignore;
         subtitleWrapper.AddChild(_subtitleLabel);
         centerBox.AddChild(subtitleWrapper);
+
+        // Wallet display (deferred to bottom-right corner, added after content container)
 
         // Spacer before buttons
         Control btnSpacer = new Control();
@@ -313,10 +312,28 @@ public partial class MainMenu : Control
         // Menu buttons with voxel-style borders
         AddMenuButton(_mainButtonContainer, "PLAY ONLINE", AccentGreen, OnPlayOnlinePressed);
 
+        Control spacer1 = new Control();
+        spacer1.CustomMinimumSize = new Vector2(0, 12);
+        spacer1.MouseFilter = MouseFilterEnum.Ignore;
+        _mainButtonContainer.AddChild(spacer1);
+
         // Bot count selector row
         AddBotCountSelector(_mainButtonContainer);
 
         AddMenuButton(_mainButtonContainer, "PLAY VS BOTS", AccentGreen, OnPlayBotsPressed);
+
+        Control spacer2 = new Control();
+        spacer2.CustomMinimumSize = new Vector2(0, 12);
+        spacer2.MouseFilter = MouseFilterEnum.Ignore;
+        _mainButtonContainer.AddChild(spacer2);
+
+        AddMenuButton(_mainButtonContainer, "SANDBOX", AccentGold, OnSandboxPressed);
+
+        Control spacer3 = new Control();
+        spacer3.CustomMinimumSize = new Vector2(0, 12);
+        spacer3.MouseFilter = MouseFilterEnum.Ignore;
+        _mainButtonContainer.AddChild(spacer3);
+
         AddMenuButton(_mainButtonContainer, "SETTINGS", TextSecondary, () => SettingsRequested?.Invoke());
         AddMenuButton(_mainButtonContainer, "QUIT", AccentRed, OnQuitPressed);
 
@@ -388,7 +405,6 @@ public partial class MainMenu : Control
         buttonArea.AddChild(_joinPanel);
 
         AddSubMenuHeader(_joinPanel, "JOIN GAME");
-        AddMenuButton(_joinPanel, "JOIN RANDOM", AccentGreen, OnJoinRandom);
         AddJoinCodeInput(_joinPanel);
         AddMenuButton(_joinPanel, "BACK", TextSecondary, OnBackToPlayOnline);
 
@@ -451,6 +467,35 @@ public partial class MainMenu : Control
             SpawnFallingBlock(true);
         }
 
+        // Wallet label - positioned in bottom-right corner with dark backing for readability
+        PanelContainer walletPanel = new PanelContainer();
+        walletPanel.MouseFilter = MouseFilterEnum.Ignore;
+        walletPanel.AnchorLeft = 1.0f;
+        walletPanel.AnchorTop = 1.0f;
+        walletPanel.AnchorRight = 1.0f;
+        walletPanel.AnchorBottom = 1.0f;
+        walletPanel.OffsetLeft = -280;
+        walletPanel.OffsetTop = -56;
+        walletPanel.OffsetRight = -16;
+        walletPanel.OffsetBottom = -16;
+        StyleBoxFlat walletStyle = new StyleBoxFlat();
+        walletStyle.BgColor = new Color(0.05f, 0.07f, 0.09f, 0.85f);
+        walletStyle.SetCornerRadiusAll(4);
+        walletStyle.SetContentMarginAll(10);
+        walletPanel.AddThemeStyleboxOverride("panel", walletStyle);
+        AddChild(walletPanel);
+
+        _walletLabel = new Label();
+        _walletLabel.Text = "";
+        _walletLabel.HorizontalAlignment = HorizontalAlignment.Right;
+        _walletLabel.AddThemeFontOverride("font", PixelFont);
+        _walletLabel.AddThemeFontSizeOverride("font_size", 16);
+        _walletLabel.AddThemeColorOverride("font_color", AccentGold);
+        _walletLabel.MouseFilter = MouseFilterEnum.Ignore;
+        walletPanel.AddChild(_walletLabel);
+
+        RefreshWalletDisplay();
+
         // Animate in: stagger button appearances
         AnimateEntrance();
     }
@@ -497,19 +542,44 @@ public partial class MainMenu : Control
         bool[][,] word1 = { LetterV, LetterO, LetterX, LetterE, LetterL };
         bool[][,] word2 = { LetterS, LetterI, LetterE, LetterG, LetterE };
 
-        const int blockSize = 8;
+        const int blockSize = 12;
         const int gap = 2;        // gap between blocks in a letter
-        const int letterGap = 12; // gap between letters
-        const int wordGap = 28;   // gap between words
+        const int letterGap = 16; // gap between letters
+        const int wordGap = 36;   // gap between words
         const int letterW = 5;
+        const int letterH = 7;
 
-        // Calculate total width
+        // Calculate total width and height for backdrop
         int word1Width = word1.Length * (letterW * (blockSize + gap) - gap) + (word1.Length - 1) * letterGap;
         int word2Width = word2.Length * (letterW * (blockSize + gap) - gap) + (word2.Length - 1) * letterGap;
         int totalWidth = word1Width + wordGap + word2Width;
+        int totalHeight = letterH * (blockSize + gap) - gap;
 
         float startX = (GetViewportRect().Size.X - totalWidth) / 2f;
-        float startY = 60f;
+        float startY = 50f;
+
+        // Dark semi-transparent backdrop panel behind the title for contrast
+        const float backdropPadX = 32f;
+        const float backdropPadY = 20f;
+        PanelContainer titleBackdrop = new PanelContainer();
+        titleBackdrop.Position = new Vector2(startX - backdropPadX, startY - backdropPadY);
+        titleBackdrop.Size = new Vector2(totalWidth + backdropPadX * 2, totalHeight + backdropPadY * 2);
+        titleBackdrop.MouseFilter = MouseFilterEnum.Ignore;
+        StyleBoxFlat backdropStyle = new StyleBoxFlat();
+        backdropStyle.BgColor = new Color(0.02f, 0.04f, 0.08f, 0.75f);
+        backdropStyle.BorderWidthBottom = 2;
+        backdropStyle.BorderWidthTop = 2;
+        backdropStyle.BorderWidthLeft = 2;
+        backdropStyle.BorderWidthRight = 2;
+        backdropStyle.BorderColor = new Color(0.3f, 0.5f, 0.9f, 0.35f);
+        backdropStyle.CornerRadiusTopLeft = 4;
+        backdropStyle.CornerRadiusTopRight = 4;
+        backdropStyle.CornerRadiusBottomLeft = 4;
+        backdropStyle.CornerRadiusBottomRight = 4;
+        backdropStyle.ShadowColor = new Color(0.2f, 0.4f, 1.0f, 0.15f);
+        backdropStyle.ShadowSize = 12;
+        titleBackdrop.AddThemeStyleboxOverride("panel", backdropStyle);
+        parent.AddChild(titleBackdrop);
 
         float curX = startX;
 
@@ -536,6 +606,30 @@ public partial class MainMenu : Control
         int rows = grid.GetLength(0);
         int cols = grid.GetLength(1);
 
+        // First pass: render shadow/outline blocks (offset dark copies for depth)
+        const float shadowOffsetX = 3f;
+        const float shadowOffsetY = 3f;
+        for (int r = 0; r < rows; r++)
+        {
+            for (int c = 0; c < cols; c++)
+            {
+                if (!grid[r, c]) continue;
+
+                ColorRect shadow = new ColorRect();
+                shadow.CustomMinimumSize = new Vector2(blockSize + 1, blockSize + 1);
+                shadow.Size = new Vector2(blockSize + 1, blockSize + 1);
+
+                float px = originX + c * (blockSize + gap);
+                float py = originY + r * (blockSize + gap);
+                shadow.Position = new Vector2(px + shadowOffsetX, py + shadowOffsetY);
+                shadow.Color = TitleShadowColor;
+                shadow.MouseFilter = MouseFilterEnum.Ignore;
+
+                parent.AddChild(shadow);
+            }
+        }
+
+        // Second pass: render main textured blocks on top
         for (int r = 0; r < rows; r++)
         {
             for (int c = 0; c < cols; c++)
@@ -554,12 +648,12 @@ public partial class MainMenu : Control
                 float py = originY + r * (blockSize + gap);
                 block.Position = new Vector2(px, py);
 
-                // Apply color modulation for variation + tinting
+                // Apply color modulation for variation + tinting (brighter range)
                 Color baseColor = isFirstWord ? TitleGreen1 : TitleGold1;
                 Color altColor = isFirstWord ? TitleGreen2 : TitleGold2;
                 float variation = _rng.RandfRange(0f, 1f);
-                Color tint = baseColor.Lerp(altColor, variation * 0.5f);
-                float bright = _rng.RandfRange(0.9f, 1.1f);
+                Color tint = baseColor.Lerp(altColor, variation * 0.6f);
+                float bright = _rng.RandfRange(1.0f, 1.2f);
                 block.SelfModulate = new Color(
                     Mathf.Clamp(tint.R * bright, 0f, 1f),
                     Mathf.Clamp(tint.G * bright, 0f, 1f),
@@ -588,7 +682,7 @@ public partial class MainMenu : Control
             int col = (int)block.GetMeta("grid_col");
 
             // Gentle floating wave
-            float waveOffset = Mathf.Sin(_time * 1.5f + col * 0.3f) * 3f;
+            float waveOffset = Mathf.Sin(_time * 1.5f + col * 0.3f) * 4f;
             block.Position = new Vector2(baseX, baseY + waveOffset);
         }
     }
@@ -814,7 +908,7 @@ public partial class MainMenu : Control
         panel.AddChild(row);
 
         Label codeLabel = new Label();
-        codeLabel.Text = "CODE:";
+        codeLabel.Text = "IP:";
         codeLabel.AddThemeFontOverride("font", PixelFont);
         codeLabel.AddThemeFontSizeOverride("font_size", 11);
         codeLabel.AddThemeColorOverride("font_color", TextSecondary);
@@ -822,9 +916,9 @@ public partial class MainMenu : Control
         row.AddChild(codeLabel);
 
         _joinCodeInput = new LineEdit();
-        _joinCodeInput.PlaceholderText = "ENTER CODE";
-        _joinCodeInput.CustomMinimumSize = new Vector2(140, 32);
-        _joinCodeInput.MaxLength = LobbyCodeLength;
+        _joinCodeInput.PlaceholderText = "IP ADDRESS";
+        _joinCodeInput.CustomMinimumSize = new Vector2(200, 32);
+        _joinCodeInput.MaxLength = 45; // IPv6 max length with port
         _joinCodeInput.AddThemeFontOverride("font", PixelFont);
         _joinCodeInput.AddThemeFontSizeOverride("font_size", 12);
         _joinCodeInput.AddThemeColorOverride("font_color", TextPrimary);
@@ -1063,6 +1157,16 @@ public partial class MainMenu : Control
         Visible = false;
     }
 
+    private void OnSandboxPressed()
+    {
+        GameManager? gameManager = GetTree().Root.GetNodeOrNull<GameManager>("Main");
+        if (gameManager != null)
+        {
+            gameManager.StartSandboxMode();
+        }
+        Visible = false;
+    }
+
     private void OnHostPressed()
     {
         // Reset host panel state
@@ -1100,6 +1204,10 @@ public partial class MainMenu : Control
 
         if (netManager != null)
         {
+            // Pass the commander name to the network manager before hosting
+            string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
+            netManager.LocalDisplayName = string.IsNullOrWhiteSpace(enteredName) ? "Host" : enteredName;
+
             Error err = netManager.Host();
             if (err != Error.Ok)
             {
@@ -1114,6 +1222,13 @@ public partial class MainMenu : Control
             }
         }
 
+        // Pass the name to GameManager
+        if (gameManager != null)
+        {
+            string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
+            gameManager.HumanPlayerName = string.IsNullOrWhiteSpace(enteredName) ? null : enteredName;
+        }
+
         if (lobbyManager != null)
         {
             MatchSettings settings = new MatchSettings { Visibility = visibility };
@@ -1121,6 +1236,17 @@ public partial class MainMenu : Control
                 ? "Open Lobby"
                 : $"Private [{_generatedLobbyCode}]";
             lobbyManager.ConfigureLobby(lobbyName, settings);
+
+            // Add the host as the first player in the lobby
+            if (netManager != null)
+            {
+                string hostName = netManager.LocalDisplayName;
+                lobbyManager.AddOrUpdateMember(
+                    netManager.LocalPeerId,
+                    PlayerSlot.Player1,
+                    hostName,
+                    false);
+            }
         }
 
         // Show the lobby code prominently
@@ -1147,49 +1273,38 @@ public partial class MainMenu : Control
         ShowPanel(_joinPanel);
     }
 
-    private void OnJoinRandom()
-    {
-        GD.Print("[MainMenu] Joining random open lobby...");
-
-        // Attempt to connect to a known address (placeholder: localhost for now).
-        // In a real implementation this would query a matchmaking server or Steam lobby list.
-        NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
-        if (netManager != null)
-        {
-            Error err = netManager.Join("127.0.0.1");
-            if (err != Error.Ok)
-            {
-                GD.PrintErr($"[MainMenu] Failed to join random: {err}");
-                return;
-            }
-        }
-
-        JoinRandomRequested?.Invoke();
-    }
-
     private void OnJoinWithCode()
     {
-        string code = _joinCodeInput?.Text?.Trim().ToUpperInvariant() ?? string.Empty;
+        string code = _joinCodeInput?.Text?.Trim() ?? string.Empty;
         if (string.IsNullOrEmpty(code))
         {
-            GD.Print("[MainMenu] No lobby code entered.");
+            GD.Print("[MainMenu] No IP address entered.");
             return;
         }
 
-        GD.Print($"[MainMenu] Joining lobby with code: {code}");
+        GD.Print($"[MainMenu] Joining game at IP: {code}");
 
-        // Attempt to connect (placeholder: localhost for now).
-        // In a real implementation the code would be resolved to an IP/lobby ID
-        // via a matchmaking service or Steam lobby metadata lookup.
         NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
         if (netManager != null)
         {
-            Error err = netManager.Join("127.0.0.1");
+            // Pass the commander name to the network manager before joining
+            string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
+            netManager.LocalDisplayName = string.IsNullOrWhiteSpace(enteredName) ? "Player" : enteredName;
+
+            Error err = netManager.Join(code);
             if (err != Error.Ok)
             {
-                GD.PrintErr($"[MainMenu] Failed to join with code: {err}");
+                GD.PrintErr($"[MainMenu] Failed to join: {err}");
                 return;
             }
+        }
+
+        // Pass the name to GameManager too
+        GameManager? gameManager = GetTree().Root.GetNodeOrNull<GameManager>("Main");
+        if (gameManager != null)
+        {
+            string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
+            gameManager.HumanPlayerName = string.IsNullOrWhiteSpace(enteredName) ? null : enteredName;
         }
 
         JoinWithCodeRequested?.Invoke(code);
@@ -1226,6 +1341,18 @@ public partial class MainMenu : Control
         if (payload.CurrentPhase == GamePhase.Menu)
         {
             ShowPanel(_mainButtonContainer);
+            RefreshWalletDisplay();
         }
+    }
+
+    /// <summary>
+    /// Updates the wallet label with the current persistent balance from the player profile.
+    /// </summary>
+    private void RefreshWalletDisplay()
+    {
+        if (_walletLabel == null) return;
+        ProgressionManager? pm = GetTree().Root.FindChild("ProgressionManager", true, false) as ProgressionManager;
+        long balance = pm?.Profile.WalletBalance ?? 0;
+        _walletLabel.Text = $"WALLET: ${balance:N0}";
     }
 }

@@ -63,6 +63,9 @@ public partial class RetroSFXGenerator : Node
         audio.RegisterSFX("drill_fire", GenerateDrillFire());
         audio.RegisterSFX("weapon_fire", GenerateCannonFire());
 
+        // Explosion impact
+        audio.RegisterSFX("explosion_impact", GenerateExplosionImpact());
+
         // Impact / damage
         audio.RegisterSFX("commander_hit", GenerateCommanderHit());
         audio.RegisterSFX("commander_death", GenerateCommanderDeath());
@@ -71,6 +74,10 @@ public partial class RetroSFXGenerator : Node
         // Phase transitions
         audio.RegisterSFX("fog_reveal", GenerateFogReveal());
         audio.RegisterSFX("game_over", GenerateGameOver());
+
+        // Combat countdown
+        audio.RegisterSFX("countdown_tick", GenerateCountdownTick());
+        audio.RegisterSFX("countdown_fight", GenerateCountdownFight());
 
         GD.Print("[RetroSFX] All retro SFX generated and registered.");
     }
@@ -195,6 +202,29 @@ public partial class RetroSFXGenerator : Node
         return CreateWav(data);
     }
 
+    // ─── Explosion impact: deep boom with rumble and crackle ───
+    private AudioStreamWav GenerateExplosionImpact()
+    {
+        int samples = (int)(SampleRate * 0.5f);
+        byte[] data = new byte[samples * 2];
+        Random rng = new Random(6);
+        for (int i = 0; i < samples; i++)
+        {
+            float t = i / (float)SampleRate;
+            float env = MathF.Max(0f, 1f - t * 2.5f);
+            // Deep bass boom with pitch drop
+            float boom = MathF.Sin(2f * MathF.PI * (50f - t * 30f) * t) * env * 0.6f;
+            // Sub-bass rumble
+            float rumble = MathF.Sin(2f * MathF.PI * 35f * t) * env * env * 0.3f;
+            // Noise crackle that fades quickly
+            float crackle = ((float)rng.NextDouble() * 2f - 1f) * MathF.Max(0f, 1f - t * 5f) * 0.4f;
+            // Mid-frequency impact body
+            float body = MathF.Sin(2f * MathF.PI * 100f * t) * MathF.Max(0f, 1f - t * 6f) * 0.3f;
+            WriteSample(data, i, Clamp(boom + rumble + crackle + body));
+        }
+        return CreateWav(data);
+    }
+
     // ─── Commander hit: impact thud ───
     private AudioStreamWav GenerateCommanderHit()
     {
@@ -282,6 +312,42 @@ public partial class RetroSFXGenerator : Node
             float val = MathF.Sign(MathF.Sin(2f * MathF.PI * freq * t)) * env * 0.35f;
             // Overall fadeout
             val *= MathF.Max(0f, 1f - t * 1.2f);
+            WriteSample(data, i, Clamp(val));
+        }
+        return CreateWav(data);
+    }
+
+    // ─── Countdown tick: short percussive beep (plays for 3, 2, 1) ───
+    private AudioStreamWav GenerateCountdownTick()
+    {
+        int samples = (int)(SampleRate * 0.15f);
+        byte[] data = new byte[samples * 2];
+        for (int i = 0; i < samples; i++)
+        {
+            float t = i / (float)SampleRate;
+            float env = MathF.Max(0f, 1f - t * 8f);
+            // Clean square wave at a mid-high pitch for a retro countdown feel
+            float freq = 440f;
+            float val = MathF.Sign(MathF.Sin(2f * MathF.PI * freq * t)) * env * 0.45f;
+            WriteSample(data, i, Clamp(val));
+        }
+        return CreateWav(data);
+    }
+
+    // ─── Countdown fight: triumphant rising chord (plays for "FIGHT!") ───
+    private AudioStreamWav GenerateCountdownFight()
+    {
+        int samples = (int)(SampleRate * 0.4f);
+        byte[] data = new byte[samples * 2];
+        for (int i = 0; i < samples; i++)
+        {
+            float t = i / (float)SampleRate;
+            float env = MathF.Min(t * 12f, 1f) * MathF.Max(0f, 1f - t * 2.5f);
+            // Major chord: root, major third, fifth
+            float tone1 = MathF.Sign(MathF.Sin(2f * MathF.PI * 523f * t)) * 0.25f; // C5
+            float tone2 = MathF.Sign(MathF.Sin(2f * MathF.PI * 659f * t)) * 0.2f;  // E5
+            float tone3 = MathF.Sign(MathF.Sin(2f * MathF.PI * 784f * t)) * 0.2f;  // G5
+            float val = (tone1 + tone2 + tone3) * env;
             WriteSample(data, i, Clamp(val));
         }
         return CreateWav(data);

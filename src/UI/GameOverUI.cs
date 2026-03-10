@@ -362,6 +362,28 @@ public partial class GameOverUI : Control
             AddStatRow("Shots Fired", $"{localPlayer.Stats.ShotsFired}");
             AddStatRow("Accuracy", $"{accuracy:F1}%");
             AddStatRow("Commander Kills", $"{localPlayer.Stats.CommanderKills}");
+
+            // Wallet / earnings separator
+            ColorRect walletLine = new ColorRect();
+            walletLine.CustomMinimumSize = new Vector2(0, 1);
+            walletLine.Color = BorderColor;
+            walletLine.MouseFilter = MouseFilterEnum.Ignore;
+            _statsContainer.AddChild(walletLine);
+
+            AddStatRow("Match Earnings", $"+${localPlayer.Stats.MatchEarnings:N0}");
+
+            // Show persistent wallet balance from the player profile
+            ProgressionManager? pm = GetTree().Root.FindChild("ProgressionManager", true, false) as ProgressionManager;
+            long walletBalance = pm?.Profile.WalletBalance ?? 0;
+            AddStatRow("Previous Balance", $"${(walletBalance - localPlayer.Stats.MatchEarnings):N0}");
+
+            ColorRect totalLine = new ColorRect();
+            totalLine.CustomMinimumSize = new Vector2(0, 2);
+            totalLine.Color = AccentGold;
+            totalLine.MouseFilter = MouseFilterEnum.Ignore;
+            _statsContainer.AddChild(totalLine);
+
+            AddStatRow("TOTAL BALANCE", $"${walletBalance:N0}");
         }
     }
 

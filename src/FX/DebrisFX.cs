@@ -1,6 +1,7 @@
 using Godot;
 using System.Collections.Generic;
 using VoxelSiege.Core;
+using VoxelSiege.Utility;
 using VoxelSiege.Voxel;
 
 namespace VoxelSiege.FX;
@@ -13,9 +14,9 @@ namespace VoxelSiege.FX;
 ///   - Metal: small dense cubes with metallic bounce
 ///   - Sand/Dirt: tiny particles with fast settle
 ///
-/// Physics debris is capped at MaxDebrisObjects (30). Beyond that, visual-only debris
-/// (simple MeshInstance3D with manual gravity) is used up to MaxVisualDebris (80).
-/// Settled debris persists on the ground as ruins (MaxRuinObjects=150).
+/// Physics debris is capped at MaxDebrisObjects (10000). Beyond that, visual-only debris
+/// (simple MeshInstance3D with manual gravity) is used up to MaxVisualDebris (10000).
+/// Settled debris persists on the ground as ruins (MaxRuinObjects=10000).
 /// </summary>
 public partial class DebrisFX : Node3D
 {
@@ -28,14 +29,15 @@ public partial class DebrisFX : Node3D
     private readonly Queue<VisualRuinEntry> _visualRuins = new();
     private int _totalAllocated;
     private int _totalVisualAllocated;
+    private VoxelTextureAtlas? _cachedAtlas;
 
     // Shared resources to avoid per-body allocations
     private static PhysicsMaterial? _sharedPhysicsMaterial;
     private static PhysicsMaterial? _sharedGlassPhysicsMaterial;
     private static PhysicsMaterial? _sharedMetalPhysicsMaterial;
 
-    // Spawn queuing: max 20 debris spawns per frame for responsive explosion debris
-    private const int MaxSpawnsPerFrame = 20;
+    // Spawn queuing: max 40 debris spawns per frame for responsive explosion debris
+    private const int MaxSpawnsPerFrame = 40;
     private int _spawnsThisFrame;
     private readonly Queue<QueuedSpawn> _spawnQueue = new();
 
@@ -159,6 +161,7 @@ public partial class DebrisFX : Node3D
         {
             _instance = null;
         }
+        _cachedAtlas = null;
     }
 
     // ── Public API ──────────────────────────────────────────────────────
@@ -336,10 +339,48 @@ public partial class DebrisFX : Node3D
     /// <summary>
     /// Creates a StandardMaterial3D configured for the given debris shape and color.
     /// Glass/Ice get transparency; Metal gets slight metallic look; others are opaque.
+    /// When a texture atlas is available, the material's albedo texture and UV scale/offset
+    /// are set so the BoxMesh's 0-1 UVs map to the correct atlas tile, keeping textures
+    /// on flying debris pieces.
     /// </summary>
-    private static StandardMaterial3D CreateDebrisMaterial(DebrisShape shape, Color color)
+    private StandardMaterial3D CreateDebrisMaterial(DebrisShape shape, Color color, VoxelMaterialType voxelMat = VoxelMaterialType.Stone)
     {
         StandardMaterial3D mat = new StandardMaterial3D();
+        mat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest;
+
+        // Lazily cache the texture atlas so we don't look up VoxelWorld every call
+        if (_cachedAtlas == null)
+        {
+            VoxelWorld? world = GetTree()?.Root.GetNodeOrNull<VoxelWorld>("Main/GameWorld");
+            if (world == null)
+            {
+                // Fallback: search by type in case the scene tree path differs
+                var root = GetTree()?.Root;
+                if (root != null)
+                {
+                    foreach (Node node in root.GetChildren())
+                    {
+                        world = FindVoxelWorldRecursive(node);
+                        if (world != null) break;
+                    }
+                }
+            }
+            if (world != null)
+            {
+                _cachedAtlas = world.TextureAtlas;
+            }
+        }
+
+        // Apply atlas texture if available so debris keeps its voxel texture
+        if (_cachedAtlas != null && _cachedAtlas.HasGeneratedTextures && _cachedAtlas.AtlasTexture != null)
+        {
+            mat.AlbedoTexture = _cachedAtlas.AtlasTexture;
+            Rect2 uvRect = _cachedAtlas.GetUvRect(voxelMat, VoxelFaceDirection.Front);
+            mat.Uv1Offset = new Vector3(uvRect.Position.X, uvRect.Position.Y, 0f);
+            mat.Uv1Scale = new Vector3(uvRect.Size.X, uvRect.Size.Y, 1f);
+            // Lighten albedo color so texture*color doesn't crush detail
+            color = color.Lerp(Colors.White, 0.6f);
+        }
 
         switch (shape)
         {
@@ -376,6 +417,21 @@ public partial class DebrisFX : Node3D
         }
 
         return mat;
+    }
+
+    /// <summary>
+    /// Recursively searches a subtree for a VoxelWorld node.
+    /// Used as a fallback when the expected scene path doesn't match.
+    /// </summary>
+    private static VoxelWorld? FindVoxelWorldRecursive(Node node)
+    {
+        if (node is VoxelWorld vw) return vw;
+        foreach (Node child in node.GetChildren())
+        {
+            VoxelWorld? found = FindVoxelWorldRecursive(child);
+            if (found != null) return found;
+        }
+        return null;
     }
 
     private static PhysicsMaterial GetPhysicsMaterialForShape(DebrisShape shape)
@@ -451,13 +507,13 @@ public partial class DebrisFX : Node3D
                 (float)GD.RandRange(0, Mathf.Tau),
                 (float)GD.RandRange(0, Mathf.Tau),
                 (float)GD.RandRange(0, Mathf.Tau));
-            // Reduced impulse so debris tumbles nearby instead of flying far
-            // Scale impulse down for smaller debris so pieces don't fly too far
-            Vector3 impulse = outwardDir * (float)GD.RandRange(1.0, 3.0) * impulseScale * sizeRatio;
+            // Scale impulse for debris scatter distance (tuned midpoint between
+            // original high-fly and previous too-close values)
+            Vector3 impulse = outwardDir * (float)GD.RandRange(2.0, 5.0) * impulseScale * sizeRatio;
             impulse += new Vector3(
-                (float)GD.RandRange(-1.0, 1.0) * sizeRatio,
-                (float)GD.RandRange(1.0, 3.0) * sizeRatio,
-                (float)GD.RandRange(-1.0, 1.0) * sizeRatio);
+                (float)GD.RandRange(-1.5, 1.5) * sizeRatio,
+                (float)GD.RandRange(2.0, 4.5) * sizeRatio,
+                (float)GD.RandRange(-1.5, 1.5) * sizeRatio);
             Vector3 angVel = new Vector3(
                 (float)GD.RandRange(-angularScale, angularScale),
                 (float)GD.RandRange(-angularScale, angularScale),
@@ -485,7 +541,7 @@ public partial class DebrisFX : Node3D
             {
                 // Scale mass proportionally to debris volume (cube of size ratio)
                 float scaledMass = mass * sizeRatio * sizeRatio * sizeRatio;
-                DebrisEntry entry = AcquireDebris(materialColor, shape, debrisSize, gravityScale, scaledMass);
+                DebrisEntry entry = AcquireDebris(materialColor, shape, debrisSize, gravityScale, scaledMass, material);
                 entry.SpawnTime = now;
                 entry.Lifetime = lifetime;
                 entry.IsSettled = false;
@@ -512,7 +568,7 @@ public partial class DebrisFX : Node3D
                     _activeVisual.RemoveAt(0);
                 }
 
-                VisualDebrisEntry vEntry = AcquireVisualDebris(materialColor, shape, debrisSize);
+                VisualDebrisEntry vEntry = AcquireVisualDebris(materialColor, shape, debrisSize, material);
                 vEntry.SpawnTime = now;
                 vEntry.Lifetime = lifetime;
                 vEntry.Velocity = impulse * 0.8f;
@@ -554,11 +610,14 @@ public partial class DebrisFX : Node3D
             double elapsed = now - entry.SpawnTime;
             double remaining = entry.Lifetime - elapsed;
 
-            // Check if the debris has settled (low velocity for a sustained period)
+            // Check if the debris has settled (low velocity for a sustained period).
+            // Only count settle time when debris is near ground or has clearly bounced
+            // (positive Y velocity after launch = it hit something and bounced up).
             if (!entry.IsSettled)
             {
                 float velSq = entry.Body.LinearVelocity.LengthSquared();
-                if (velSq < SettleVelocityThreshold * SettleVelocityThreshold)
+                bool likelyOnGround = entry.Body.LinearVelocity.Y >= -0.5f && elapsed > 0.3;
+                if (velSq < SettleVelocityThreshold * SettleVelocityThreshold && likelyOnGround)
                 {
                     entry.SettleTimer += dt;
                     if (entry.SettleTimer >= SettleTimeRequired)
@@ -719,6 +778,63 @@ public partial class DebrisFX : Node3D
         }
     }
 
+    // ── Explosion interaction ──────────────────────────────────────────
+
+    /// <summary>
+    /// Unfreezes and blasts settled debris ruins within the given radius.
+    /// Closer ruins get a stronger impulse. Converts them back to active debris.
+    /// </summary>
+    public static void BlastRuinsInRadius(Vector3 explosionCenter, float radius)
+    {
+        if (_instance == null) return;
+        float effectRadius = radius * 2.5f;
+        float effectRadiusSq = effectRadius * effectRadius;
+
+        // Snapshot the ruins queue to iterate safely
+        int count = _instance._ruins.Count;
+        for (int i = 0; i < count; i++)
+        {
+            RuinEntry ruin = _instance._ruins.Dequeue();
+            if (!IsInstanceValid(ruin.Body))
+            {
+                continue;
+            }
+
+            float distSq = (ruin.Body.GlobalPosition - explosionCenter).LengthSquared();
+            if (distSq <= effectRadiusSq)
+            {
+                // Unfreeze and blast this ruin
+                ruin.Body.Freeze = false;
+                ruin.Body.CollisionLayer = 4;      // Debris layer
+                ruin.Body.CollisionMask = 1 | 4;   // Collide with world + other debris
+
+                float dist = Mathf.Sqrt(distSq);
+                float falloff = 1f - Mathf.Clamp(dist / effectRadius, 0f, 1f);
+                float force = Mathf.Lerp(1f, 8f, falloff);
+                Vector3 pushDir = (ruin.Body.GlobalPosition - explosionCenter).Normalized();
+                if (pushDir.LengthSquared() < 0.01f) pushDir = Vector3.Up;
+                ruin.Body.ApplyImpulse(pushDir * force + Vector3.Up * force * 0.4f);
+
+                // Convert back to active debris so it settles again later
+                _instance._active.Add(new DebrisEntry
+                {
+                    Body = ruin.Body,
+                    Mesh = ruin.Mesh,
+                    SpawnTime = Time.GetTicksMsec() / 1000.0,
+                    Lifetime = GameConfig.DebrisDespawnTime,
+                    IsSettled = false,
+                    SettleTimer = 0f,
+                    Shape = DebrisShape.Cube,
+                });
+            }
+            else
+            {
+                // Out of range — put it back in the queue
+                _instance._ruins.Enqueue(ruin);
+            }
+        }
+    }
+
     // ── Ruin conversion ─────────────────────────────────────────────────
 
     /// <summary>
@@ -809,7 +925,7 @@ public partial class DebrisFX : Node3D
         _visualPool.Enqueue(ruin.Root);
     }
 
-    private DebrisEntry AcquireDebris(Color color, DebrisShape shape, Vector3 size, float gravityScale, float mass)
+    private DebrisEntry AcquireDebris(Color color, DebrisShape shape, Vector3 size, float gravityScale, float mass, VoxelMaterialType voxelMat = VoxelMaterialType.Stone)
     {
         DebrisEntry entry;
 
@@ -823,7 +939,7 @@ public partial class DebrisFX : Node3D
             boxMesh.Size = size;
             mesh.Mesh = boxMesh;
 
-            StandardMaterial3D mat = CreateDebrisMaterial(shape, color);
+            StandardMaterial3D mat = CreateDebrisMaterial(shape, color, voxelMat);
             mesh.SetSurfaceOverrideMaterial(0, mat);
 
             // Update physics properties for this material type
@@ -879,7 +995,7 @@ public partial class DebrisFX : Node3D
         newBoxMesh.Size = size;
         meshInst.Mesh = newBoxMesh;
 
-        StandardMaterial3D material = CreateDebrisMaterial(shape, color);
+        StandardMaterial3D material = CreateDebrisMaterial(shape, color, voxelMat);
         meshInst.SetSurfaceOverrideMaterial(0, material);
         rb.AddChild(meshInst);
 
@@ -899,7 +1015,7 @@ public partial class DebrisFX : Node3D
         return entry;
     }
 
-    private VisualDebrisEntry AcquireVisualDebris(Color color, DebrisShape shape, Vector3 size)
+    private VisualDebrisEntry AcquireVisualDebris(Color color, DebrisShape shape, Vector3 size, VoxelMaterialType voxelMat = VoxelMaterialType.Stone)
     {
         VisualDebrisEntry entry;
 
@@ -912,7 +1028,7 @@ public partial class DebrisFX : Node3D
             boxMesh.Size = size;
             mesh.Mesh = boxMesh;
 
-            StandardMaterial3D mat = CreateDebrisMaterial(shape, color);
+            StandardMaterial3D mat = CreateDebrisMaterial(shape, color, voxelMat);
             mesh.SetSurfaceOverrideMaterial(0, mat);
 
             entry.Root = root;
@@ -942,7 +1058,7 @@ public partial class DebrisFX : Node3D
         newBoxMesh.Size = size;
         meshInst.Mesh = newBoxMesh;
 
-        StandardMaterial3D material = CreateDebrisMaterial(shape, color);
+        StandardMaterial3D material = CreateDebrisMaterial(shape, color, voxelMat);
         meshInst.SetSurfaceOverrideMaterial(0, material);
         node.AddChild(meshInst);
 

@@ -26,6 +26,7 @@ public sealed class PlayerStats
     public int ShotsHit { get; set; }
     public int DamageDealt { get; set; }
     public int CommanderKills { get; set; }
+    public long MatchEarnings { get; set; }
 
     public float Accuracy => ShotsFired > 0 ? (float)ShotsHit / ShotsFired : 0f;
 }
@@ -110,6 +111,7 @@ public sealed class PlayerData
         Stats.ShotsHit = 0;
         Stats.DamageDealt = 0;
         Stats.CommanderKills = 0;
+        Stats.MatchEarnings = 0;
         IsAlive = true;
         IsReady = false;
     }

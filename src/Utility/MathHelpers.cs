@@ -61,6 +61,22 @@ public static class MathHelpers
             Mathf.RoundToInt(worldPosition.Z * inv));
     }
 
+    /// <summary>
+    /// Converts a world position to a microvoxel position using FloorToInt.
+    /// Unlike WorldToMicrovoxel (which rounds), this always returns the cell
+    /// that *contains* the point. Use for ground detection and collision checks
+    /// where boundary precision matters — RoundToInt can oscillate between
+    /// adjacent cells at voxel boundaries, causing jitter.
+    /// </summary>
+    public static Vector3I WorldToMicrovoxelFloor(Vector3 worldPosition)
+    {
+        float inv = 1.0f / GameConfig.MicrovoxelMeters;
+        return new Vector3I(
+            Mathf.FloorToInt(worldPosition.X * inv),
+            Mathf.FloorToInt(worldPosition.Y * inv),
+            Mathf.FloorToInt(worldPosition.Z * inv));
+    }
+
     public static Vector3I BuildToMicrovoxel(Vector3I buildUnitPosition)
     {
         return buildUnitPosition * GameConfig.MicrovoxelsPerBuildUnit;

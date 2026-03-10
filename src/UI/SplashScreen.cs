@@ -24,14 +24,14 @@ public partial class SplashScreen : Control
     // --- Voxel title textures (lazy-loaded) ---
     private static Texture2D? _titleTexGreen;
     private static Texture2D? _titleTexGold;
-    private static Texture2D TitleTexGreen => _titleTexGreen ??= ResourceLoader.Load<Texture2D>("res://assets/textures/voxels/dirt_32.png");
-    private static Texture2D TitleTexGold => _titleTexGold ??= ResourceLoader.Load<Texture2D>("res://assets/textures/voxels/sand_32.png");
+    private static Texture2D TitleTexGreen => _titleTexGreen ??= ResourceLoader.Load<Texture2D>("res://assets/textures/voxels/metal_32.png");
+    private static Texture2D TitleTexGold => _titleTexGold ??= ResourceLoader.Load<Texture2D>("res://assets/textures/voxels/obsidian_32.png");
 
-    // Voxel title colors (matching MainMenu)
-    private static readonly Color TitleGreen1 = new Color("2ea043");
-    private static readonly Color TitleGreen2 = new Color("3cb653");
-    private static readonly Color TitleGold1 = new Color("d4a029");
-    private static readonly Color TitleGold2 = new Color("e8b84a");
+    // Voxel title colors (matching MainMenu — steel blue + obsidian purple)
+    private static readonly Color TitleGreen1 = new Color("4a9eff");
+    private static readonly Color TitleGreen2 = new Color("6bb3ff");
+    private static readonly Color TitleGold1 = new Color("6b2fa0");
+    private static readonly Color TitleGold2 = new Color("8b4fcf");
 
     /// <summary>Emitted when the splash sequence is complete and the main menu should appear.</summary>
     [Signal]
@@ -87,6 +87,7 @@ public partial class SplashScreen : Control
     private float _loadingDotTimer;
     private int _loadingDotCount;
     private float _loadingProgress;
+    private float _loadingProgressVisual;  // smoothly animated toward _loadingProgress
     private int _loadingBlocksRevealed;
     private bool _loadingExplosionTriggered;
 
@@ -107,18 +108,6 @@ public partial class SplashScreen : Control
         if (!IsLoadingMode) return;
         _loadingProgress = Mathf.Clamp(progress, 0f, 1f);
 
-        // Reveal castle blocks proportional to progress
-        int targetBlocks = (int)(_castleBlocks.Count * _loadingProgress);
-        for (int i = _loadingBlocksRevealed; i < targetBlocks && i < _castleBlocks.Count; i++)
-        {
-            CastleBlock cb = _castleBlocks[i];
-            cb.Visible = true;
-            cb.Rect.Modulate = new Color(1, 1, 1, 1);
-            cb.Rect.Position = new Vector2(cb.BaseX, cb.BaseY);
-            _castleBlocks[i] = cb;
-        }
-        _loadingBlocksRevealed = targetBlocks;
-
         // Update loading label with percentage
         if (_loadingLabel != null)
         {
@@ -126,27 +115,14 @@ public partial class SplashScreen : Control
             _loadingLabel.Text = $"LOADING... {pct}%";
         }
 
-        // When progress reaches 1.0, trigger explosion
-        if (_loadingProgress >= 1f && !_loadingExplosionTriggered)
-        {
-            _loadingExplosionTriggered = true;
-            // Make sure all blocks are visible first
-            for (int i = 0; i < _castleBlocks.Count; i++)
-            {
-                CastleBlock cb = _castleBlocks[i];
-                cb.Visible = true;
-                cb.Rect.Modulate = new Color(1, 1, 1, 1);
-                cb.Rect.Position = new Vector2(cb.BaseX, cb.BaseY);
-                _castleBlocks[i] = cb;
-            }
-            _castleFullyBuilt = true;
-            StartExplosion();
-        }
+        // The explosion is triggered by ProcessCastleBuild once both the castle
+        // is fully built AND _loadingProgress >= 1.0. No need to trigger here;
+        // ProcessCastleBuild runs every frame and will detect the condition.
     }
 
     // Timing constants
     private const float CastleBuildDuration = 2.5f;  // seconds to build entire castle
-    private const float HoldDuration = 1.0f;          // hold after castle built
+    private const float HoldDuration = 1.5f;          // hold after castle built
     private const float ExplosionDuration = 2.0f;      // explosion + title reveal
     private const float TitleHoldDuration = 1.5f;      // hold title before transitioning
     private const float FadeOutDuration = 0.5f;        // fade to black before transition
@@ -280,20 +256,32 @@ public partial class SplashScreen : Control
 
     public override void _Ready()
     {
+        // When parented to a CanvasLayer (not a Control), anchors don't work because
+        // CanvasLayer has no rect. Force size to viewport so the splash covers everything.
+        Vector2 vpSize = GetViewportRect().Size;
         SetAnchorsPreset(LayoutPreset.FullRect);
+        Position = Vector2.Zero;
+        Size = vpSize;
         MouseFilter = MouseFilterEnum.Stop;
         _rng.Randomize();
 
-        // Full-screen dark backdrop (AddChild FIRST, then set anchors to avoid Godot offset bugs)
+        // Full-screen dark backdrop
         _backdrop = new ColorRect();
         _backdrop.Name = "SplashBackdrop";
         _backdrop.Color = BgDark;
+        _backdrop.ZIndex = -100;
+        _backdrop.MouseFilter = MouseFilterEnum.Ignore;
         AddChild(_backdrop);
-        _backdrop.SetAnchorsPreset(LayoutPreset.FullRect);
-        _backdrop.OffsetLeft = 0;
-        _backdrop.OffsetRight = 0;
-        _backdrop.OffsetTop = 0;
-        _backdrop.OffsetBottom = 0;
+        _backdrop.Position = Vector2.Zero;
+        _backdrop.Size = vpSize;
+
+        // In loading mode, if not already inside a CanvasLayer, wrap ourselves in one
+        // so the 3D scene's grey clear color doesn't bleed through. The initial splash
+        // doesn't need this since nothing is rendering behind it yet.
+        if (IsLoadingMode && GetParent() is not CanvasLayer)
+        {
+            CallDeferred(nameof(WrapInCanvasLayer));
+        }
 
         // Castle layer
         _castleLayer = new Control();
@@ -337,11 +325,8 @@ public partial class SplashScreen : Control
 
         if (IsLoadingMode)
         {
-            // Show title immediately (positioned above the castle in BuildVoxelTitle)
-            if (_titleLayer != null)
-                _titleLayer.Modulate = new Color(1, 1, 1, 1);
-            _titleVisible = true;
-            _titleFadeAlpha = 1f;
+            // Title starts hidden — revealed by the explosion, same as the intro splash
+            // (no more title-above-castle with wasted blank space after explosion)
 
             // Hide studio and press-any-key labels
             if (_studioLabel != null)
@@ -349,15 +334,7 @@ public partial class SplashScreen : Control
             if (_pressAnyKeyLabel != null)
                 _pressAnyKeyLabel.Visible = false;
 
-            // Hide all castle blocks initially (they appear via SetLoadingProgress)
-            for (int i = 0; i < _castleBlocks.Count; i++)
-            {
-                CastleBlock cb = _castleBlocks[i];
-                cb.Visible = false;
-                cb.Rect.Modulate = new Color(1, 1, 1, 0);
-                _castleBlocks[i] = cb;
-            }
-            _loadingBlocksRevealed = 0;
+            // Castle blocks are animated normally via ProcessCastleBuild (same as initial splash)
 
             // Add "LOADING" label at the bottom
             _loadingLabel = new Label();
@@ -379,6 +356,26 @@ public partial class SplashScreen : Control
         // Clean up any running tweens or references
         _castleBlocks.Clear();
         _titleBlocks.Clear();
+    }
+
+    /// <summary>
+    /// Wraps this SplashScreen in a CanvasLayer so that it renders on top of
+    /// any 3D scene, preventing the grey default background from bleeding through.
+    /// Called deferred from _Ready when the parent is not already a CanvasLayer.
+    /// </summary>
+    private void WrapInCanvasLayer()
+    {
+        Node? parent = GetParent();
+        if (parent == null || parent is CanvasLayer) return;
+
+        CanvasLayer layer = new CanvasLayer();
+        layer.Name = "SplashCanvasLayer";
+        layer.Layer = 100; // render on top of everything
+
+        // Reparent: remove from current parent, add layer, add self to layer
+        parent.RemoveChild(this);
+        parent.AddChild(layer);
+        layer.AddChild(this);
     }
 
     public override void _UnhandledInput(InputEvent @event)
@@ -436,9 +433,13 @@ public partial class SplashScreen : Control
 
         if (IsLoadingMode)
         {
-            // In loading mode, castle build is driven by SetLoadingProgress, not by time.
-            // Only process explosion once it has been triggered.
-            if (_explosionStarted)
+            // In loading mode, run the same castle build animation as the initial splash.
+            // The explosion is triggered when both the castle is fully built AND loading is done.
+            if (!_explosionStarted)
+            {
+                ProcessCastleBuild(dt);
+            }
+            else
             {
                 ProcessExplosion(dt);
             }
@@ -563,16 +564,43 @@ public partial class SplashScreen : Control
 
     private void ProcessCastleBuild(float dt)
     {
+        // Smoothly animate the visual progress toward the actual loading progress.
+        // This prevents the castle from appearing instantly when loading steps happen
+        // in rapid succession (each CallDeferred runs on the next frame).
+        if (IsLoadingMode && _loadingProgressVisual < _loadingProgress)
+        {
+            // Ramp at ~0.28/sec so the castle takes ~3.5 seconds to fully build,
+            // giving the player time to enjoy the animation before the explosion.
+            _loadingProgressVisual = Mathf.Min(_loadingProgress,
+                _loadingProgressVisual + dt * 0.28f);
+        }
+
         // Animate blocks appearing
         bool allVisible = true;
         for (int i = 0; i < _castleBlocks.Count; i++)
         {
             CastleBlock cb = _castleBlocks[i];
-            if (!cb.Visible && _elapsed >= cb.AppearTime)
+
+            if (IsLoadingMode)
             {
-                cb.Visible = true;
-                cb.Rect.Modulate = new Color(1, 1, 1, 0.01f);
-                _castleBlocks[i] = cb;
+                // In loading mode, reveal blocks proportional to smoothed visual progress (0..0.95).
+                // Reserve the last 5% so the castle is fully built just before progress hits 1.0.
+                float revealThreshold = (float)i / _castleBlocks.Count * 0.95f;
+                if (!cb.Visible && _loadingProgressVisual >= revealThreshold)
+                {
+                    cb.Visible = true;
+                    cb.Rect.Modulate = new Color(1, 1, 1, 0.01f);
+                    _castleBlocks[i] = cb;
+                }
+            }
+            else
+            {
+                if (!cb.Visible && _elapsed >= cb.AppearTime)
+                {
+                    cb.Visible = true;
+                    cb.Rect.Modulate = new Color(1, 1, 1, 0.01f);
+                    _castleBlocks[i] = cb;
+                }
             }
 
             if (cb.Visible)
@@ -596,8 +624,8 @@ public partial class SplashScreen : Control
             }
         }
 
-        // Show the studio label after a short delay
-        if (_studioLabel != null && _elapsed > 0.8f)
+        // Show the studio label after a short delay (not in loading mode)
+        if (!IsLoadingMode && _studioLabel != null && _elapsed > 0.8f)
         {
             float labelAlpha = _studioLabel.Modulate.A;
             if (labelAlpha < 1f)
@@ -620,10 +648,27 @@ public partial class SplashScreen : Control
 
         if (_castleFullyBuilt)
         {
-            _holdTimer += dt;
-            if (_holdTimer >= HoldDuration)
+            if (IsLoadingMode)
             {
-                StartExplosion();
+                // In loading mode, wait for loading to reach 1.0 AND for the visual
+                // progress animation to catch up, then hold briefly before exploding.
+                if (_loadingProgress >= 1f && _loadingProgressVisual >= 0.95f && !_loadingExplosionTriggered)
+                {
+                    _holdTimer += dt;
+                    if (_holdTimer >= HoldDuration)
+                    {
+                        _loadingExplosionTriggered = true;
+                        StartExplosion();
+                    }
+                }
+            }
+            else
+            {
+                _holdTimer += dt;
+                if (_holdTimer >= HoldDuration)
+                {
+                    StartExplosion();
+                }
             }
         }
     }
@@ -767,16 +812,7 @@ public partial class SplashScreen : Control
         int totalWidth = word1Width + wordGap + word2Width;
 
         float startX = (GetViewportRect().Size.X - totalWidth) / 2f;
-        float startY;
-        if (IsLoadingMode)
-        {
-            // In loading mode, position title above the castle (upper portion of screen)
-            startY = 80f;
-        }
-        else
-        {
-            startY = GetViewportRect().Size.Y / 2f - 7f * (blockSize + gap) / 2f; // vertically centered
-        }
+        float startY = GetViewportRect().Size.Y / 2f - 7f * (blockSize + gap) / 2f; // vertically centered
 
         float curX = startX;
 

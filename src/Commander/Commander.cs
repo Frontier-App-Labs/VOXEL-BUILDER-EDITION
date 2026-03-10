@@ -23,6 +23,35 @@ public partial class Commander : Node3D
     private float _fallStartY;
     private VoxelWorld? _cachedWorld;
 
+    // Panic timer: when an explosion lands nearby, the commander panics
+    // for this many seconds before returning to idle.
+    private float _panicTimer;
+
+    // The skeleton's feet are 0.48m below the root/hips origin.
+    // This offset is used for ground detection and floor snapping so the
+    // collision checks happen at the actual feet position, not the hips.
+    //
+    // Derivation: Commander voxelSize=0.08m.  Hips→LeftHip attach Y=0,
+    // thigh pivot Y=3 → knee at -3*0.08 = -0.24m below hips,
+    // shin pivot Y=3 → boot sole at -3*0.08 = -0.24m below knee.
+    // Total: -0.24 + -0.24 = -0.48m.
+    private const float FeetOffsetY = 0.48f;
+
+    // Maximum vertical speed (m/s) to prevent tunnelling through voxels during
+    // large delta-time frames (low FPS). One microvoxel per physics tick at 60Hz
+    // would be 0.5/0.0167 ≈ 30 m/s, so 20 m/s is a safe cap.
+    private const float MaxFallSpeed = 20f;
+
+    // Number of microvoxel cells to scan downward when searching for ground.
+    // Covers a 2m range (4 * 0.5m) which handles stepping off ledges and
+    // prevents the commander from hovering above gaps.
+    private const int GroundScanDepth = 4;
+
+    // Snap tolerance: if the feet are within this distance of the ground
+    // surface, snap without triggering a full fall cycle. Prevents Y-jitter
+    // from floating-point noise in the ground check.
+    private const float SnapTolerance = 0.05f;
+
     [Export]
     public PlayerSlot OwnerSlot { get; set; } = PlayerSlot.Player1;
 
@@ -66,6 +95,17 @@ public partial class Commander : Node3D
         _health.Died += OnDied;
     }
 
+    /// <summary>
+    /// Triggers panic animation for the given duration (seconds).
+    /// Called when an explosion lands nearby.
+    /// </summary>
+    public void TriggerPanic(float duration = 5f)
+    {
+        if (_health?.IsDead ?? false) return;
+        _panicTimer = Mathf.Max(_panicTimer, duration);
+        _animation?.SetState(CommanderAnimationState.Panic);
+    }
+
     public override void _Process(double delta)
     {
         if (_health?.IsDead ?? false)
@@ -73,7 +113,16 @@ public partial class Commander : Node3D
             return;
         }
 
-        // Animation is now handled by CommanderAnimation._Process
+        // Count down panic timer and revert to idle when it expires
+        if (_panicTimer > 0f)
+        {
+            _panicTimer -= (float)delta;
+            if (_panicTimer <= 0f)
+            {
+                _panicTimer = 0f;
+                _animation?.SetState(CommanderAnimationState.Idle);
+            }
+        }
     }
 
     public override void _PhysicsProcess(double delta)
@@ -93,63 +142,130 @@ public partial class Commander : Node3D
         }
 
         // --- Ground detection ---
-        // Check the voxel directly beneath the commander's feet.
-        // Convert the commander's world position to microvoxel coords and sample
-        // one microvoxel below the feet.
+        // Scan downward from the feet position to find the highest solid
+        // voxel surface beneath the commander. Uses FloorToInt-based
+        // conversion to avoid boundary oscillation that RoundToInt causes.
         bool hasGround = false;
+        float groundSurfaceY = 0f;
         if (_cachedWorld != null)
         {
-            Vector3 feetPos = GlobalPosition;
-            Vector3I microPos = MathHelpers.WorldToMicrovoxel(feetPos);
-            // Check the voxel at our feet and one below
-            if (_cachedWorld.GetVoxel(microPos).IsSolid
-                || _cachedWorld.GetVoxel(microPos + Vector3I.Down).IsSolid)
+            Vector3 feetPos = GlobalPosition - new Vector3(0, FeetOffsetY, 0);
+            Vector3I microPos = MathHelpers.WorldToMicrovoxelFloor(feetPos);
+
+            // First check if the feet are *inside* a solid voxel (sunk into
+            // the ground). If so, search upward to find the first air cell
+            // above -- the ground surface is the top of the voxel just below
+            // that air cell. This prevents the commander from getting stuck
+            // inside terrain after a big gravity step.
+            if (_cachedWorld.GetVoxel(microPos).IsSolid)
             {
                 hasGround = true;
+                // Search upward for the first air cell to find the true surface
+                Vector3I scanUp = microPos;
+                for (int i = 0; i < GroundScanDepth; i++)
+                {
+                    scanUp += Vector3I.Up;
+                    if (_cachedWorld.GetVoxel(scanUp).IsAir)
+                    {
+                        break;
+                    }
+                }
+                // Ground surface is the top of the voxel below the first air
+                groundSurfaceY = scanUp.Y * GameConfig.MicrovoxelMeters;
+            }
+            else
+            {
+                // Feet are in air -- scan downward to find solid ground below.
+                // Check multiple voxels to handle stepping off ledges and
+                // large dt fall steps that skip past a single-voxel check.
+                for (int i = 1; i <= GroundScanDepth; i++)
+                {
+                    Vector3I checkPos = microPos + new Vector3I(0, -i, 0);
+                    if (_cachedWorld.GetVoxel(checkPos).IsSolid)
+                    {
+                        hasGround = true;
+                        // Top surface of this solid voxel
+                        groundSurfaceY = (checkPos.Y + 1) * GameConfig.MicrovoxelMeters;
+                        break;
+                    }
+                }
             }
         }
 
         if (!hasGround)
         {
-            // --- Falling ---
+            // --- Falling (no ground within scan range) ---
             if (!_isFalling)
             {
-                // Just started falling – record the starting height
                 _isFalling = true;
                 _fallStartY = GlobalPosition.Y;
                 _animation?.SetState(CommanderAnimationState.Falling);
             }
 
             _verticalVelocity -= GameConfig.CommanderGravity * dt;
+            // Clamp fall speed to prevent tunnelling through voxels on
+            // low-FPS frames where dt is large.
+            if (_verticalVelocity < -MaxFallSpeed)
+            {
+                _verticalVelocity = -MaxFallSpeed;
+            }
+
             Vector3 pos = GlobalPosition;
             pos.Y += _verticalVelocity * dt;
             GlobalPosition = pos;
         }
-        else if (_isFalling)
+        else
         {
-            // --- Just landed ---
-            _isFalling = false;
-            float fallDistance = _fallStartY - GlobalPosition.Y;
-            _verticalVelocity = 0f;
+            // --- Ground found ---
+            float targetHipsY = groundSurfaceY + FeetOffsetY;
+            float currentY = GlobalPosition.Y;
+            float diff = targetHipsY - currentY;
 
-            if (fallDistance > GameConfig.CommanderFallDamageMinHeight)
+            if (_isFalling)
             {
-                float excessHeight = fallDistance - GameConfig.CommanderFallDamageMinHeight;
-                int damage = Mathf.CeilToInt(excessHeight * GameConfig.CommanderFallDamagePerMeter);
-                ApplyDamage(damage, null, GlobalPosition + Vector3.Down);
+                // Just landed -- snap to ground and apply fall damage
+                _isFalling = false;
+                float fallDistance = _fallStartY - targetHipsY;
+                _verticalVelocity = 0f;
+
+                Vector3 snapped = GlobalPosition;
+                snapped.Y = targetHipsY;
+                GlobalPosition = snapped;
+
+                if (fallDistance > GameConfig.CommanderFallDamageMinHeight)
+                {
+                    float excessHeight = fallDistance - GameConfig.CommanderFallDamageMinHeight;
+                    int damage = Mathf.CeilToInt(excessHeight * GameConfig.CommanderFallDamagePerMeter);
+                    ApplyDamage(damage, null, GlobalPosition + Vector3.Down);
+                }
+
+                // Restore the appropriate animation state
+                if (!(_health?.IsDead ?? false))
+                {
+                    _animation?.SetState(_panicTimer > 0f ? CommanderAnimationState.Panic : CommanderAnimationState.Idle);
+                }
             }
-
-            // Restore the appropriate animation state
-            if (!(_health?.IsDead ?? false))
+            else if (Mathf.Abs(diff) > SnapTolerance)
             {
-                if (IsExposed)
+                // Grounded but drifted away from ground surface (e.g., voxel
+                // destroyed beneath, or slight floating-point drift). Lerp
+                // smoothly toward the correct height to avoid jarring pops.
+                Vector3 pos = GlobalPosition;
+                pos.Y = Mathf.Lerp(currentY, targetHipsY, Mathf.Min(1f, dt * 20f));
+                GlobalPosition = pos;
+                _verticalVelocity = 0f;
+            }
+            else
+            {
+                // Already snapped and within tolerance -- hold position.
+                // Only write if actually different to avoid per-frame noise.
+                if (Mathf.Abs(diff) > 0.001f)
                 {
-                    _animation?.SetState(CommanderAnimationState.Panic);
+                    Vector3 pos = GlobalPosition;
+                    pos.Y = targetHipsY;
+                    GlobalPosition = pos;
                 }
-                else
-                {
-                    _animation?.SetState(CommanderAnimationState.Idle);
-                }
+                _verticalVelocity = 0f;
             }
         }
     }
@@ -160,7 +276,9 @@ public partial class Commander : Node3D
         BuildUnitPosition = buildUnitPosition;
         Vector3I microBase = MathHelpers.BuildToMicrovoxel(buildUnitPosition);
         Vector3 worldBase = MathHelpers.MicrovoxelToWorld(microBase);
-        Position = worldBase + new Vector3(GameConfig.BuildUnitMeters * 0.5f, GameConfig.BuildUnitMeters, GameConfig.BuildUnitMeters * 0.5f);
+        // Raise the root (hips) by FeetOffsetY so the feet sit on the floor
+        // surface.  The skeleton has feet at -FeetOffsetY relative to root.
+        Position = worldBase + new Vector3(GameConfig.BuildUnitMeters * 0.5f, FeetOffsetY, GameConfig.BuildUnitMeters * 0.5f);
         _verticalVelocity = 0f;
         _isFalling = false;
         EnsureVisuals();
@@ -194,18 +312,12 @@ public partial class Commander : Node3D
                 if (world.GetVoxel(shellVoxel + direction).IsAir)
                 {
                     IsExposed = true;
-                    _animation?.SetState(CommanderAnimationState.Panic);
                     return true;
                 }
             }
         }
 
         IsExposed = false;
-        if (!(_health?.IsDead ?? false))
-        {
-            _animation?.SetState(CommanderAnimationState.Idle);
-        }
-
         return false;
     }
 
@@ -239,7 +351,7 @@ public partial class Commander : Node3D
 
         if (remainingHealth > 0)
         {
-            _animation?.SetState(IsExposed ? CommanderAnimationState.Panic : CommanderAnimationState.Flinch);
+            _animation?.SetState(CommanderAnimationState.Flinch);
         }
     }
 
@@ -250,11 +362,46 @@ public partial class Commander : Node3D
         // Create the ragdoll from the body parts
         ActivateRagdollDeath();
 
+        // Blood splat: spray tiny red voxel debris outward from the commander
+        SpawnBloodSplat();
+
         // Slow-motion for dramatic effect
         Engine.TimeScale = GameConfig.SlowMoTimeScale;
         EventBus.Instance?.EmitCommanderKilled(new CommanderKilledEvent(OwnerSlot, _lastInstigator, GlobalPosition));
         await ToSignal(GetTree().CreateTimer(GameConfig.SlowMoDuration * GameConfig.SlowMoTimeScale), SceneTreeTimer.SignalName.Timeout);
         Engine.TimeScale = 1f;
+    }
+
+    /// <summary>
+    /// Spawns a burst of tiny blood-red voxel debris from the commander's position.
+    /// Uses multiple shades of red/crimson for variety.
+    /// </summary>
+    private void SpawnBloodSplat()
+    {
+        Vector3 pos = GlobalPosition + Vector3.Up * 0.5f; // center-mass height
+        Vector3 center = pos;
+
+        // Blood colors: dark red, bright red, crimson
+        Color[] bloodColors = new Color[]
+        {
+            new Color(0.6f, 0.05f, 0.05f),  // dark red
+            new Color(0.8f, 0.1f, 0.08f),   // bright red
+            new Color(0.5f, 0.0f, 0.0f),    // deep crimson
+            new Color(0.7f, 0.15f, 0.1f),   // blood red
+        };
+
+        // Spawn from several points around the body for a fuller splat
+        float bloodVoxelScale = 0.08f; // tiny voxels
+        for (int i = 0; i < 4; i++)
+        {
+            Vector3 offset = new Vector3(
+                (float)GD.RandRange(-0.3, 0.3),
+                (float)GD.RandRange(-0.2, 0.4),
+                (float)GD.RandRange(-0.3, 0.3));
+            Color color = bloodColors[i % bloodColors.Length];
+            FX.DebrisFX.SpawnDebris(this, pos + offset, color, center, 8,
+                VoxelMaterialType.Stone, bloodVoxelScale);
+        }
     }
 
     /// <summary>

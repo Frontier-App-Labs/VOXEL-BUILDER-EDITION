@@ -211,27 +211,48 @@ public partial class CommanderAnimation : Node
     private void AnimateFlinch(float dt)
     {
         _stateTime += dt;
+        _breathTime += dt; // keep breathing timer going for smooth transition back
         _flinchDecay = Mathf.Max(0f, _flinchDecay - dt * 4f);
 
-        // Apply decaying flinch rotation to spine and neck
-        SetRotation(_spine, _flinchRotation * _flinchDecay);
-        SetRotation(_neck, new Vector3(
+        // Blend between flinch and idle breathing based on decay
+        float breathOffset = Mathf.Sin(_breathTime * 2.5f) * 0.008f;
+
+        // Hips: flinch drop blended with breathing bob
+        SetPositionOffset(_hips, new Vector3(0, -0.01f * _flinchDecay + breathOffset * (1f - _flinchDecay), 0));
+
+        // Spine: flinch rotation blended with breathing lean
+        Vector3 breathSpine = new Vector3(
+            Mathf.Sin(_breathTime * 2.5f) * 0.03f,
+            0,
+            Mathf.Sin(_breathTime * 0.7f) * 0.02f
+        );
+        SetRotation(_spine, _flinchRotation * _flinchDecay + breathSpine * (1f - _flinchDecay));
+
+        // Neck: flinch jolt blended with idle head look
+        Vector3 flinchNeck = new Vector3(
             -_flinchDecay * 0.15f,
             _headLookAngle,
             _flinchDecay * (GD.Randf() - 0.5f) * 0.1f
-        ));
+        );
+        Vector3 idleNeck = new Vector3(
+            Mathf.Sin(_breathTime * 1.3f) * 0.04f,
+            _headLookAngle,
+            _headLookAngle * -0.15f
+        );
+        SetRotation(_neck, flinchNeck * _flinchDecay + idleNeck * (1f - _flinchDecay));
 
-        // Arms flair outward during flinch
-        SetRotation(_leftShoulder, new Vector3(0, 0, _flinchDecay * 0.2f));
-        SetRotation(_rightShoulder, new Vector3(0, 0, -_flinchDecay * 0.2f));
-        SetRotation(_leftElbow, new Vector3(-Deg(30) * _flinchDecay, 0, 0));
-        SetRotation(_rightElbow, new Vector3(-Deg(30) * _flinchDecay, 0, 0));
+        // Arms: flinch flair blended with idle sway
+        float armSwayZ = Mathf.Sin(_breathTime * 1.8f) * 0.06f * (1f - _flinchDecay);
+        SetRotation(_leftShoulder, new Vector3(0, 0, _flinchDecay * 0.2f + armSwayZ));
+        SetRotation(_rightShoulder, new Vector3(0, 0, -_flinchDecay * 0.2f - armSwayZ));
+        SetRotation(_leftElbow, new Vector3(-Deg(10) - Deg(20) * _flinchDecay, 0, 0));
+        SetRotation(_rightElbow, new Vector3(-Deg(10) - Deg(20) * _flinchDecay, 0, 0));
 
-        // Hips drop slightly
-        SetPositionOffset(_hips, new Vector3(0, -0.01f * _flinchDecay, 0));
-
-        // Continue idle breathing underneath
-        AnimateIdle(dt, 1.0f);
+        // Legs at rest
+        SetRotation(_leftHip, Vector3.Zero);
+        SetRotation(_rightHip, Vector3.Zero);
+        SetRotation(_leftKnee, Vector3.Zero);
+        SetRotation(_rightKnee, Vector3.Zero);
 
         // Return to idle after flinch completes
         if (_flinchDecay <= 0.01f)
@@ -247,44 +268,57 @@ public partial class CommanderAnimation : Node
     private void AnimatePanic(float dt)
     {
         _stateTime += dt;
-        _jitterSeed += dt * 15f;
+        _breathTime += dt * 1.8f; // slightly faster breathing (not 3x)
+        _headTime += dt * 2.0f;
+        _jitterSeed += dt * 6f; // slower jitter (was 15)
 
-        // Run idle at 3x speed for fast breathing
-        AnimateIdle(dt, 3.0f);
-
-        // Override head with rapid, nervous looking
+        // Override head with nervous looking (less frequent than before)
         if (_headTime >= _nextHeadLookChange)
         {
             _headTime = 0;
-            _headLookTarget = (GD.Randf() - 0.5f) * 0.8f; // Wider range
-            _nextHeadLookChange = GD.Randf() * 0.5f + 0.2f; // Much more frequent
+            _headLookTarget = (GD.Randf() - 0.5f) * 0.5f; // narrower range (was 0.8)
+            _nextHeadLookChange = GD.Randf() * 1.0f + 0.5f; // less frequent (was 0.2-0.7)
         }
+        _headLookAngle = Mathf.Lerp(_headLookAngle, _headLookTarget, dt * 3.0f);
 
-        // Add trembling jitter to spine and neck
-        float jitterX = Mathf.Sin(_jitterSeed * 17.3f) * 0.03f;
-        float jitterZ = Mathf.Sin(_jitterSeed * 31.1f) * 0.03f;
+        // Subtle nervous tremor (much reduced from before)
+        float jitterX = Mathf.Sin(_jitterSeed * 17.3f) * 0.01f;
+        float jitterZ = Mathf.Sin(_jitterSeed * 31.1f) * 0.01f;
 
-        if (_spine != null && _restRotations.ContainsKey(_spine))
-        {
-            _spine.Rotation += new Vector3(jitterX, 0, jitterZ);
-        }
+        // Hips: slightly faster breathing bob
+        float breathOffset = Mathf.Sin(_breathTime * 2.5f) * 0.008f;
+        SetPositionOffset(_hips, new Vector3(0, breathOffset, 0));
 
-        if (_neck != null && _restRotations.ContainsKey(_neck))
-        {
-            Vector3 rot = _neck.Rotation;
-            _neck.Rotation = new Vector3(
-                rot.X + Mathf.Sin(_jitterSeed * 11f) * 0.03f,
-                rot.Y,
-                Mathf.Sin(_jitterSeed * 13f) * 0.04f
-            );
-        }
+        // Spine: breathing lean + subtle tremor
+        SetRotation(_spine, new Vector3(
+            Mathf.Sin(_breathTime * 2.5f) * 0.03f + jitterX,
+            0,
+            Mathf.Sin(_breathTime * 0.7f) * 0.02f + jitterZ
+        ));
 
-        // Jitter the hips slightly
-        float hipJitterY = Mathf.Sin(_jitterSeed * 23.7f) * 0.002f;
-        if (_hips != null && _restPositions.ContainsKey(_hips))
-        {
-            _hips.Position += new Vector3(0, hipJitterY, 0);
-        }
+        // Neck: nervous head turns (reduced jitter)
+        SetRotation(_neck, new Vector3(
+            Mathf.Sin(_breathTime * 1.3f) * 0.04f + Mathf.Sin(_jitterSeed * 11f) * 0.01f,
+            _headLookAngle,
+            _headLookAngle * -0.15f + Mathf.Sin(_jitterSeed * 13f) * 0.01f
+        ));
+
+        // Arms: fast sway
+        float armSwayZ = Mathf.Sin(_breathTime * 1.8f) * 0.06f;
+        float armSwayX = Mathf.Sin(_breathTime * 1.2f) * 0.04f;
+        SetRotation(_leftShoulder, new Vector3(armSwayX, 0, armSwayZ));
+        SetRotation(_rightShoulder, new Vector3(-armSwayX, 0, -armSwayZ));
+        SetRotation(_leftElbow, new Vector3(-Deg(10), 0, 0));
+        SetRotation(_rightElbow, new Vector3(-Deg(10), 0, 0));
+
+        // Legs: weight shifting
+        float weightShift = Mathf.Sin(_breathTime * 0.6f) * 0.006f;
+        SetPositionOffset(_leftHip, new Vector3(weightShift, 0, 0));
+        SetRotation(_leftHip, new Vector3(Mathf.Sin(_breathTime * 0.8f) * 0.02f, 0, 0));
+        SetPositionOffset(_rightHip, new Vector3(-weightShift, 0, 0));
+        SetRotation(_rightHip, new Vector3(-Mathf.Sin(_breathTime * 0.8f) * 0.02f, 0, 0));
+        SetRotation(_leftKnee, Vector3.Zero);
+        SetRotation(_rightKnee, Vector3.Zero);
     }
 
     /// <summary>

@@ -320,6 +320,17 @@ public partial class LobbyUI : Control
         mainLayout.AddChild(bottomSpacer);
     }
 
+    private bool _isReady;
+    private bool _isHost;
+
+    /// <summary>
+    /// Sets whether the local player is the host (controls START button visibility).
+    /// </summary>
+    public void SetIsHost(bool isHost)
+    {
+        _isHost = isHost;
+    }
+
     public override void _Process(double delta)
     {
         UpdateLobbyDisplay();
@@ -359,6 +370,18 @@ public partial class LobbyUI : Control
         }
         if (_turnTimeLabel != null) _turnTimeLabel.Text = $"{lobby.Settings.TurnTimeSeconds:F0}s";
 
+        // Update ready button text to reflect current state
+        if (_readyButton != null)
+        {
+            _readyButton.Text = _isReady ? "UNREADY" : "READY UP";
+        }
+
+        // Show/hide START button: only visible for host when all players are ready
+        if (_startButton != null)
+        {
+            _startButton.Visible = _isHost && lobby.AreAllPlayersReady();
+        }
+
         // Update player slots
         // Build lookup by slot
         var slotMap = new Dictionary<int, LobbyMember>();
@@ -387,6 +410,15 @@ public partial class LobbyUI : Control
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Toggles the local ready state and returns the new value.
+    /// </summary>
+    public bool ToggleReady()
+    {
+        _isReady = !_isReady;
+        return _isReady;
     }
 
     private VBoxContainer CreatePlayerSlot(int slotNumber, Color playerColor)

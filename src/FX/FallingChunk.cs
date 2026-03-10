@@ -18,7 +18,7 @@ namespace VoxelSiege.FX;
 /// </summary>
 public partial class FallingChunk : RigidBody3D
 {
-    private const int MaxActiveFallingChunks = 500;
+    private const int MaxActiveFallingChunks = 10000;
     private const float MaxLifetime = 60.0f;
     private const float FrozenRuinLifetime = 45.0f;  // How long frozen ruins persist before cleanup
     private const float FrozenRuinFadeDuration = 2.0f;  // Seconds to fade out before removal
@@ -240,7 +240,7 @@ public partial class FallingChunk : RigidBody3D
             StandardMaterial3D mat = new StandardMaterial3D();
             mat.VertexColorUseAsAlbedo = true;
             mat.Roughness = 0.8f;
-            mat.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+            mat.CullMode = BaseMaterial3D.CullModeEnum.Back; // Both sides have explicit geometry with correct normals
             mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.PerPixel;
             mat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest;
             if (hasTransparentMaterial)
@@ -303,7 +303,76 @@ public partial class FallingChunk : RigidBody3D
             (float)GD.RandRange(-1.5, 1.5));
         ActiveChunks.Add(chunk);
 
+        // If the chunk contains flammable materials that were on fire,
+        // attach fire particles as a child so fire follows the falling chunk.
+        // Also remove the static fire at those world positions so it doesn't hover.
+        AttachFireIfBurning(chunk, validPositions, validMaterials);
+
         return chunk;
+    }
+
+    private static void AttachFireIfBurning(FallingChunk chunk, List<Vector3I> positions, List<VoxelMaterialType> materials)
+    {
+        FireSystem? fire = FireSystem.Instance;
+        if (fire == null) return;
+
+        bool hasBurning = false;
+        for (int i = 0; i < materials.Count; i++)
+        {
+            VoxelMaterialDefinition def = VoxelMaterials.GetDefinition(materials[i]);
+            if (def.IsFlammable && fire.IsOnFire(positions[i]))
+            {
+                fire.ExtinguishAt(positions[i]);
+                hasBurning = true;
+            }
+        }
+
+        if (!hasBurning) return;
+
+        // Attach a fire particle emitter as child of the chunk so it moves with it
+        GpuParticles3D fireParticles = new GpuParticles3D();
+        fireParticles.Name = "ChunkFire";
+        fireParticles.Amount = 12;
+        fireParticles.Lifetime = 0.6f;
+        fireParticles.Explosiveness = 0.1f;
+        fireParticles.OneShot = false;
+        fireParticles.LocalCoords = true; // Particles follow the chunk as it falls/rotates
+        fireParticles.FixedFps = 30;
+        fireParticles.ProcessMode = Node.ProcessModeEnum.Always;
+
+        ParticleProcessMaterial processMat = new ParticleProcessMaterial();
+        processMat.Direction = new Vector3(0f, 1f, 0f);
+        processMat.Spread = 30f;
+        processMat.InitialVelocityMin = 0.3f;
+        processMat.InitialVelocityMax = 0.8f;
+        processMat.Gravity = new Vector3(0f, 0.5f, 0f);
+        processMat.ScaleMin = 0.5f;
+        processMat.ScaleMax = 1.2f;
+
+        Gradient colorGradient = new Gradient();
+        colorGradient.SetColor(0, new Color(1.0f, 0.9f, 0.3f, 0.9f));
+        colorGradient.SetColor(1, new Color(0.8f, 0.2f, 0.0f, 0.0f));
+        GradientTexture1D gradientTex = new GradientTexture1D();
+        gradientTex.Gradient = colorGradient;
+        processMat.ColorRamp = gradientTex;
+        fireParticles.ProcessMaterial = processMat;
+
+        QuadMesh drawMesh = new QuadMesh();
+        drawMesh.Size = new Vector2(GameConfig.MicrovoxelMeters * 0.4f, GameConfig.MicrovoxelMeters * 0.4f);
+        StandardMaterial3D drawMat = new StandardMaterial3D();
+        drawMat.BillboardMode = BaseMaterial3D.BillboardModeEnum.Enabled;
+        drawMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+        drawMat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
+        drawMat.AlbedoColor = new Color(1.0f, 0.6f, 0.1f, 0.8f);
+        drawMat.EmissionEnabled = true;
+        drawMat.Emission = new Color(1.0f, 0.4f, 0.0f);
+        drawMat.EmissionEnergyMultiplier = 2.0f;
+        drawMesh.Material = drawMat;
+        fireParticles.DrawPass1 = drawMesh;
+
+        chunk.AddChild(fireParticles);
+        // Position at chunk center (local 0,0,0)
+        fireParticles.Position = Vector3.Zero;
     }
 
     // ── Mesh generation ─────────────────────────────────────────────────
@@ -353,6 +422,12 @@ public partial class FallingChunk : RigidBody3D
 
                 // Add this face as a quad (two triangles) with per-corner atlas UVs
                 AddFaceQuad(st, localOrigin, face, scale, FaceNormals[face], color, uvRect);
+                // Add a reversed back-face so interior surfaces are visible.
+                // Reuse the SAME normal as the outer face so both sides of each
+                // panel are lit identically. When a chunk flips during physics,
+                // the inner face that becomes visible shares the outer face's
+                // normal and receives the same lighting instead of appearing black.
+                AddFaceQuad(st, localOrigin, face, scale, FaceNormals[face], color, uvRect, reversed: true);
                 hasAnyFaces = true;
             }
         }
@@ -377,7 +452,7 @@ public partial class FallingChunk : RigidBody3D
     /// Vertex layout: v0=bottom-left, v1=top-left, v2=top-right, v3=bottom-right
     /// UV layout:     uv0=(0,1),      uv1=(0,0),   uv2=(1,0),    uv3=(1,1)  within tile rect
     /// </summary>
-    private static void AddFaceQuad(SurfaceTool st, Vector3 origin, int face, float size, Vector3 normal, Color color, Rect2 uvRect)
+    private static void AddFaceQuad(SurfaceTool st, Vector3 origin, int face, float size, Vector3 normal, Color color, Rect2 uvRect, bool reversed = false)
     {
         // Per-corner UVs spanning the full tile rect in the atlas.
         // This gives each voxel face the complete material texture baked into UVs,
@@ -429,33 +504,29 @@ public partial class FallingChunk : RigidBody3D
                 break;
         }
 
-        // Triangle 1: v0, v1, v2
-        st.SetColor(color);
-        st.SetNormal(normal);
-        st.SetUV(uv0);
-        st.AddVertex(v0);
-        st.SetColor(color);
-        st.SetNormal(normal);
-        st.SetUV(uv1);
-        st.AddVertex(v1);
-        st.SetColor(color);
-        st.SetNormal(normal);
-        st.SetUV(uv2);
-        st.AddVertex(v2);
-
-        // Triangle 2: v0, v2, v3
-        st.SetColor(color);
-        st.SetNormal(normal);
-        st.SetUV(uv0);
-        st.AddVertex(v0);
-        st.SetColor(color);
-        st.SetNormal(normal);
-        st.SetUV(uv2);
-        st.AddVertex(v2);
-        st.SetColor(color);
-        st.SetNormal(normal);
-        st.SetUV(uv3);
-        st.AddVertex(v3);
+        if (reversed)
+        {
+            // Reversed winding so back-faces have correct normals for lighting
+            // Triangle 1: v0, v2, v1
+            st.SetColor(color); st.SetNormal(normal); st.SetUV(uv0); st.AddVertex(v0);
+            st.SetColor(color); st.SetNormal(normal); st.SetUV(uv2); st.AddVertex(v2);
+            st.SetColor(color); st.SetNormal(normal); st.SetUV(uv1); st.AddVertex(v1);
+            // Triangle 2: v0, v3, v2
+            st.SetColor(color); st.SetNormal(normal); st.SetUV(uv0); st.AddVertex(v0);
+            st.SetColor(color); st.SetNormal(normal); st.SetUV(uv3); st.AddVertex(v3);
+            st.SetColor(color); st.SetNormal(normal); st.SetUV(uv2); st.AddVertex(v2);
+        }
+        else
+        {
+            // Triangle 1: v0, v1, v2
+            st.SetColor(color); st.SetNormal(normal); st.SetUV(uv0); st.AddVertex(v0);
+            st.SetColor(color); st.SetNormal(normal); st.SetUV(uv1); st.AddVertex(v1);
+            st.SetColor(color); st.SetNormal(normal); st.SetUV(uv2); st.AddVertex(v2);
+            // Triangle 2: v0, v2, v3
+            st.SetColor(color); st.SetNormal(normal); st.SetUV(uv0); st.AddVertex(v0);
+            st.SetColor(color); st.SetNormal(normal); st.SetUV(uv2); st.AddVertex(v2);
+            st.SetColor(color); st.SetNormal(normal); st.SetUV(uv3); st.AddVertex(v3);
+        }
     }
 
     // ── Collision shape ─────────────────────────────────────────────────
@@ -599,9 +670,10 @@ public partial class FallingChunk : RigidBody3D
             return;
         }
 
-        // Track settling
+        // Track settling — only accumulate settle time after ground contact
+        // to prevent chunks freezing mid-air at the peak of their arc
         float speed = LinearVelocity.Length();
-        if (speed < SettleVelocityThreshold)
+        if (speed < SettleVelocityThreshold && _hasHitGround)
         {
             _settleTimer += dt;
         }
@@ -702,26 +774,41 @@ public partial class FallingChunk : RigidBody3D
     /// Unfreezes any frozen ruins within the given explosion radius. This ensures
     /// that direct hits on settled debris blast them free again. Also applies a
     /// small impulse away from the explosion center.
+    /// Chunks within 50% of the blast radius (inner kill zone) are shattered
+    /// into debris particles and removed instead of merely pushed.
     /// </summary>
     public static void UnfreezeRuinsInRadius(Vector3 explosionCenter, float radius)
     {
-        float radiusSq = radius * radius;
+        // Use a generous radius so explosions affect settled chunks well beyond the voxel blast
+        float effectRadius = radius * 3f;
+        float effectRadiusSq = effectRadius * effectRadius;
+        // Inner kill zone: chunks within 50% of the actual blast radius are destroyed
+        float shatterRadius = radius * 0.5f;
+        float shatterRadiusSq = shatterRadius * shatterRadius;
         for (int i = ActiveChunks.Count - 1; i >= 0; i--)
         {
             FallingChunk chunk = ActiveChunks[i];
-            if (!IsInstanceValid(chunk) || !chunk._isFrozen)
+            if (!IsInstanceValid(chunk))
             {
                 continue;
             }
 
             float distSq = (chunk.GlobalPosition - explosionCenter).LengthSquared();
-            if (distSq <= radiusSq)
+            if (distSq <= shatterRadiusSq)
+            {
+                // Inner kill zone — shatter any chunk (frozen or active) into debris particles
+                chunk.Shatter();
+            }
+            else if (distSq <= effectRadiusSq && chunk._isFrozen)
             {
                 chunk.UnfreezeRuin();
-                // Push the ruin away from the blast
+                // Scale impulse by proximity — closer chunks get blasted harder
+                float dist = Mathf.Sqrt(distSq);
+                float falloff = 1f - Mathf.Clamp(dist / effectRadius, 0f, 1f);
+                float force = Mathf.Lerp(2f, 12f, falloff);
                 Vector3 pushDir = (chunk.GlobalPosition - explosionCenter).Normalized();
                 if (pushDir.LengthSquared() < 0.01f) pushDir = Vector3.Up;
-                chunk.ApplyImpulse(pushDir * 3f + Vector3.Up * 1.5f);
+                chunk.ApplyImpulse(pushDir * force + Vector3.Up * force * 0.5f);
             }
         }
     }

@@ -45,6 +45,16 @@ public partial class ProgressionManager : Node
         Save();
     }
 
+    /// <summary>
+    /// Adds the match earnings to the persistent wallet balance and saves.
+    /// </summary>
+    public void CommitMatchEarnings(long earnings)
+    {
+        if (earnings <= 0) return;
+        Profile.WalletBalance += earnings;
+        Save();
+    }
+
     private void OnVoxelChanged(VoxelChangeEvent payload)
     {
         if (payload.BeforeData == 0 && payload.AfterData != 0)

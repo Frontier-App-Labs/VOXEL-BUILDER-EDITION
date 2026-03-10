@@ -96,8 +96,11 @@ public partial class BuildUI : Control
     public event Action? PlaceCommanderRequested;
     public event Action? PlaceWeaponRequested;
     public event Action<WeaponType>? WeaponTypeSelected;
+    public event Action<WeaponType>? WeaponSellRequested;
     public event Action<PowerupType>? PowerupBuyRequested;
     public event Action<PowerupType>? PowerupSellRequested;
+    public event Action<string>? SandboxSaveRequested;
+    public event Action<string>? SandboxLoadRequested;
     public event Action<TroopType>? TroopBuyRequested;
     public event Action<TroopType>? TroopSellRequested;
     public event Action<BlueprintDefinition>? BlueprintSelected;
@@ -105,6 +108,12 @@ public partial class BuildUI : Control
 
     private Button? _readyBtn;
     private bool _readyTimerUrgent;
+
+    // Sandbox mode
+    private bool _sandboxMode;
+    private LineEdit? _sandboxNameInput;
+    private VBoxContainer? _sandboxBuildList;
+    private List<string> _sandboxBuildNames = new List<string>();
 
     public override void _Ready()
     {
@@ -405,7 +414,7 @@ public partial class BuildUI : Control
 
         ScrollContainer scrollContainer = new ScrollContainer();
         scrollContainer.HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled;
-        scrollContainer.VerticalScrollMode = ScrollContainer.ScrollMode.ShowNever;
+        scrollContainer.VerticalScrollMode = ScrollContainer.ScrollMode.Auto;
         scrollContainer.MouseFilter = MouseFilterEnum.Pass;
         scrollContainer.SizeFlagsVertical = SizeFlags.ExpandFill;
         panelRoot.AddChild(scrollContainer);
@@ -551,6 +560,7 @@ public partial class BuildUI : Control
             VBoxContainer bpInfo = new VBoxContainer();
             bpInfo.AddThemeConstantOverride("separation", 0);
             bpInfo.SizeFlagsVertical = SizeFlags.ShrinkCenter;
+            bpInfo.SizeFlagsHorizontal = SizeFlags.ExpandFill;
             bpInfo.MouseFilter = MouseFilterEnum.Ignore;
             bpRow.AddChild(bpInfo);
 
@@ -559,6 +569,7 @@ public partial class BuildUI : Control
             bpName.AddThemeFontOverride("font", PixelFont);
             bpName.AddThemeFontSizeOverride("font_size", 10);
             bpName.AddThemeColorOverride("font_color", TextPrimary);
+            bpName.ClipText = true;
             bpName.MouseFilter = MouseFilterEnum.Ignore;
             bpInfo.AddChild(bpName);
 
@@ -567,6 +578,7 @@ public partial class BuildUI : Control
             bpDesc.AddThemeFontOverride("font", PixelFont);
             bpDesc.AddThemeFontSizeOverride("font_size", 10);
             bpDesc.AddThemeColorOverride("font_color", TextSecondary);
+            bpDesc.AutowrapMode = TextServer.AutowrapMode.WordSmart;
             bpDesc.MouseFilter = MouseFilterEnum.Ignore;
             bpInfo.AddChild(bpDesc);
 
@@ -584,34 +596,6 @@ public partial class BuildUI : Control
 
             toolContainer.AddChild(bpBtn);
         }
-
-        // Separator
-        Control sep = new Control();
-        sep.CustomMinimumSize = new Vector2(0, 8);
-        sep.MouseFilter = MouseFilterEnum.Ignore;
-        toolContainer.AddChild(sep);
-
-        // Commander placement button
-        PanelContainer cmdPanel = CreateStyledPanel(new Color(AccentGold.R, AccentGold.G, AccentGold.B, 0.12f), 0);
-        cmdPanel.CustomMinimumSize = new Vector2(0, 48);
-        cmdPanel.MouseFilter = MouseFilterEnum.Stop;
-        toolContainer.AddChild(cmdPanel);
-
-        Button cmdBtn = new Button();
-        cmdBtn.Text = "\u2655  PLACE COMMANDER";
-        cmdBtn.Flat = true;
-        cmdBtn.AddThemeFontOverride("font", PixelFont);
-        cmdBtn.AddThemeFontSizeOverride("font_size", 12);
-        cmdBtn.AddThemeColorOverride("font_color", AccentGold);
-        cmdBtn.AddThemeColorOverride("font_hover_color", TextPrimary);
-        cmdBtn.MouseFilter = MouseFilterEnum.Stop;
-        cmdBtn.Pressed += () => PlaceCommanderRequested?.Invoke();
-        cmdPanel.AddChild(cmdBtn);
-        cmdBtn.SetAnchorsPreset(LayoutPreset.FullRect);
-        cmdBtn.OffsetLeft = 0;
-        cmdBtn.OffsetRight = 0;
-        cmdBtn.OffsetTop = 0;
-        cmdBtn.OffsetBottom = 0;
 
         // Separator before weapons
         Control weapSep = new Control();
@@ -694,6 +678,14 @@ public partial class BuildUI : Control
             weapClickArea.MouseFilter = MouseFilterEnum.Stop;
             weapClickArea.Modulate = new Color(1, 1, 1, 0);
             weapClickArea.Pressed += () => SelectWeaponType(capturedIndex);
+            weapClickArea.GuiInput += (InputEvent @event) =>
+            {
+                if (@event is InputEventMouseButton mb && mb.ButtonIndex == MouseButton.Right && mb.Pressed)
+                {
+                    WeaponSellRequested?.Invoke(WeaponOptions[capturedIndex].Type);
+                    weapClickArea.AcceptEvent();
+                }
+            };
             weapBtn.AddChild(weapClickArea);
             weapClickArea.SetAnchorsPreset(LayoutPreset.FullRect);
             weapClickArea.OffsetLeft = 0;
@@ -929,20 +921,65 @@ public partial class BuildUI : Control
         scrollBottomPad.MouseFilter = MouseFilterEnum.Ignore;
         toolContainer.AddChild(scrollBottomPad);
 
-        // ── READY button — FIXED at the bottom, outside the ScrollContainer ──
+        // ── PLACE COMMANDER + READY — FIXED at the bottom, outside the ScrollContainer ──
         // Separator line
         ColorRect readyLine = new ColorRect();
         readyLine.CustomMinimumSize = new Vector2(0, 2);
-        readyLine.Color = AccentGreen;
+        readyLine.Color = AccentGold;
         readyLine.MouseFilter = MouseFilterEnum.Ignore;
         panelRoot.AddChild(readyLine);
+
+        // Commander placement button — always visible at the bottom
+        MarginContainer cmdMargin = new MarginContainer();
+        cmdMargin.AddThemeConstantOverride("margin_left", 14);
+        cmdMargin.AddThemeConstantOverride("margin_right", 14);
+        cmdMargin.AddThemeConstantOverride("margin_top", 6);
+        cmdMargin.AddThemeConstantOverride("margin_bottom", 4);
+        cmdMargin.MouseFilter = MouseFilterEnum.Ignore;
+        panelRoot.AddChild(cmdMargin);
+
+        Button cmdBtn = new Button();
+        cmdBtn.Text = "\u2655  PLACE COMMANDER";
+        cmdBtn.CustomMinimumSize = new Vector2(0, 40);
+        cmdBtn.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        cmdBtn.AddThemeFontOverride("font", PixelFont);
+        cmdBtn.AddThemeFontSizeOverride("font_size", 12);
+        cmdBtn.AddThemeColorOverride("font_color", AccentGold);
+        cmdBtn.AddThemeColorOverride("font_hover_color", BgDark);
+        cmdBtn.MouseFilter = MouseFilterEnum.Stop;
+        cmdBtn.Pressed += () => PlaceCommanderRequested?.Invoke();
+
+        StyleBoxFlat cmdNormal = new StyleBoxFlat();
+        cmdNormal.BgColor = new Color(AccentGold.R, AccentGold.G, AccentGold.B, 0.15f);
+        cmdNormal.ContentMarginLeft = 8;
+        cmdNormal.ContentMarginRight = 8;
+        cmdNormal.ContentMarginTop = 6;
+        cmdNormal.ContentMarginBottom = 6;
+        cmdBtn.AddThemeStyleboxOverride("normal", cmdNormal);
+
+        StyleBoxFlat cmdHover = new StyleBoxFlat();
+        cmdHover.BgColor = AccentGold;
+        cmdHover.ContentMarginLeft = 8;
+        cmdHover.ContentMarginRight = 8;
+        cmdHover.ContentMarginTop = 6;
+        cmdHover.ContentMarginBottom = 6;
+        cmdBtn.AddThemeStyleboxOverride("hover", cmdHover);
+
+        cmdMargin.AddChild(cmdBtn);
+
+        // Ready separator
+        ColorRect readyLine2 = new ColorRect();
+        readyLine2.CustomMinimumSize = new Vector2(0, 2);
+        readyLine2.Color = AccentGreen;
+        readyLine2.MouseFilter = MouseFilterEnum.Ignore;
+        panelRoot.AddChild(readyLine2);
 
         // Margin around the ready button
         MarginContainer readyMargin = new MarginContainer();
         readyMargin.AddThemeConstantOverride("margin_left", 14);
         readyMargin.AddThemeConstantOverride("margin_right", 14);
-        readyMargin.AddThemeConstantOverride("margin_top", 8);
-        readyMargin.AddThemeConstantOverride("margin_bottom", 10);
+        readyMargin.AddThemeConstantOverride("margin_top", 6);
+        readyMargin.AddThemeConstantOverride("margin_bottom", 8);
         readyMargin.MouseFilter = MouseFilterEnum.Ignore;
         panelRoot.AddChild(readyMargin);
 
@@ -1430,5 +1467,204 @@ public partial class BuildUI : Control
     private void OnBudgetChanged(BudgetChangedEvent payload)
     {
         _currentBudget = payload.NewBudget;
+    }
+
+    // ========== Sandbox Mode ==========
+
+    /// <summary>
+    /// Enables sandbox mode: hides commander/weapon/troop sections,
+    /// shows save/load panel with build name input and saved build list.
+    /// </summary>
+    public void EnableSandboxMode(List<string> savedBuildNames)
+    {
+        _sandboxMode = true;
+        _sandboxBuildNames = savedBuildNames ?? new List<string>();
+
+        // Change ready button text to "EXIT SANDBOX"
+        if (_readyBtn != null)
+        {
+            _readyBtn.Text = "EXIT SANDBOX";
+        }
+
+        // Add sandbox panel as a floating overlay
+        BuildSandboxPanel();
+    }
+
+    private void BuildSandboxPanel()
+    {
+        // Floating panel on the right side
+        PanelContainer sandboxPanel = CreateStyledPanel(PanelBg, 0);
+        sandboxPanel.SetAnchorsPreset(LayoutPreset.CenterRight);
+        sandboxPanel.OffsetLeft = -240;
+        sandboxPanel.OffsetRight = -10;
+        sandboxPanel.OffsetTop = -200;
+        sandboxPanel.OffsetBottom = 200;
+        sandboxPanel.CustomMinimumSize = new Vector2(230, 400);
+        sandboxPanel.MouseFilter = MouseFilterEnum.Stop;
+        AddChild(sandboxPanel);
+
+        VBoxContainer content = new VBoxContainer();
+        content.AddThemeConstantOverride("separation", 6);
+        sandboxPanel.AddChild(content);
+
+        // Header
+        MarginContainer headerMargin = new MarginContainer();
+        headerMargin.AddThemeConstantOverride("margin_left", 10);
+        headerMargin.AddThemeConstantOverride("margin_top", 10);
+        headerMargin.MouseFilter = MouseFilterEnum.Ignore;
+        content.AddChild(headerMargin);
+
+        Label header = new Label();
+        header.Text = "SANDBOX";
+        header.AddThemeFontOverride("font", PixelFont);
+        header.AddThemeFontSizeOverride("font_size", 12);
+        header.AddThemeColorOverride("font_color", AccentGold);
+        header.MouseFilter = MouseFilterEnum.Ignore;
+        headerMargin.AddChild(header);
+
+        // Name input
+        MarginContainer nameMargin = new MarginContainer();
+        nameMargin.AddThemeConstantOverride("margin_left", 10);
+        nameMargin.AddThemeConstantOverride("margin_right", 10);
+        nameMargin.MouseFilter = MouseFilterEnum.Ignore;
+        content.AddChild(nameMargin);
+
+        _sandboxNameInput = new LineEdit();
+        _sandboxNameInput.PlaceholderText = "Build name...";
+        _sandboxNameInput.AddThemeFontOverride("font", PixelFont);
+        _sandboxNameInput.AddThemeFontSizeOverride("font_size", 10);
+        _sandboxNameInput.CustomMinimumSize = new Vector2(0, 32);
+        nameMargin.AddChild(_sandboxNameInput);
+
+        // Save button
+        MarginContainer btnMargin = new MarginContainer();
+        btnMargin.AddThemeConstantOverride("margin_left", 10);
+        btnMargin.AddThemeConstantOverride("margin_right", 10);
+        btnMargin.MouseFilter = MouseFilterEnum.Ignore;
+        content.AddChild(btnMargin);
+
+        Button saveBtn = new Button();
+        saveBtn.Text = "SAVE BUILD";
+        saveBtn.AddThemeFontOverride("font", PixelFont);
+        saveBtn.AddThemeFontSizeOverride("font_size", 10);
+        saveBtn.CustomMinimumSize = new Vector2(0, 32);
+        saveBtn.Pressed += OnSandboxSavePressed;
+        btnMargin.AddChild(saveBtn);
+
+        // Separator
+        ColorRect sep = new ColorRect();
+        sep.CustomMinimumSize = new Vector2(0, 1);
+        sep.Color = BorderColor;
+        sep.MouseFilter = MouseFilterEnum.Ignore;
+        content.AddChild(sep);
+
+        // Saved builds header
+        MarginContainer listHeaderMargin = new MarginContainer();
+        listHeaderMargin.AddThemeConstantOverride("margin_left", 10);
+        listHeaderMargin.MouseFilter = MouseFilterEnum.Ignore;
+        content.AddChild(listHeaderMargin);
+
+        Label listHeader = new Label();
+        listHeader.Text = "SAVED BUILDS";
+        listHeader.AddThemeFontOverride("font", PixelFont);
+        listHeader.AddThemeFontSizeOverride("font_size", 10);
+        listHeader.AddThemeColorOverride("font_color", TextSecondary);
+        listHeader.MouseFilter = MouseFilterEnum.Ignore;
+        listHeaderMargin.AddChild(listHeader);
+
+        // Scrollable build list
+        ScrollContainer scroll = new ScrollContainer();
+        scroll.SizeFlagsVertical = SizeFlags.ExpandFill;
+        scroll.CustomMinimumSize = new Vector2(0, 150);
+        scroll.MouseFilter = MouseFilterEnum.Stop;
+        content.AddChild(scroll);
+
+        _sandboxBuildList = new VBoxContainer();
+        _sandboxBuildList.AddThemeConstantOverride("separation", 4);
+        scroll.AddChild(_sandboxBuildList);
+
+        RefreshSandboxBuildList();
+    }
+
+    private void RefreshSandboxBuildList()
+    {
+        if (_sandboxBuildList == null) return;
+
+        // Clear existing
+        foreach (Node child in _sandboxBuildList.GetChildren())
+        {
+            child.QueueFree();
+        }
+
+        if (_sandboxBuildNames.Count == 0)
+        {
+            MarginContainer emptyMargin = new MarginContainer();
+            emptyMargin.AddThemeConstantOverride("margin_left", 10);
+            emptyMargin.MouseFilter = MouseFilterEnum.Ignore;
+            _sandboxBuildList.AddChild(emptyMargin);
+
+            Label emptyLabel = new Label();
+            emptyLabel.Text = "No saved builds";
+            emptyLabel.AddThemeFontOverride("font", PixelFont);
+            emptyLabel.AddThemeFontSizeOverride("font_size", 8);
+            emptyLabel.AddThemeColorOverride("font_color", TextSecondary);
+            emptyLabel.MouseFilter = MouseFilterEnum.Ignore;
+            emptyMargin.AddChild(emptyLabel);
+            return;
+        }
+
+        foreach (string buildName in _sandboxBuildNames)
+        {
+            string capturedName = buildName;
+            PanelContainer buildBtn = CreateStyledPanel(new Color(0, 0, 0, 0), 0);
+            buildBtn.CustomMinimumSize = new Vector2(0, 28);
+            buildBtn.MouseFilter = MouseFilterEnum.Stop;
+
+            MarginContainer buildMargin = new MarginContainer();
+            buildMargin.AddThemeConstantOverride("margin_left", 10);
+            buildMargin.MouseFilter = MouseFilterEnum.Ignore;
+            buildBtn.AddChild(buildMargin);
+
+            Label buildLabel = new Label();
+            buildLabel.Text = buildName;
+            buildLabel.AddThemeFontOverride("font", PixelFont);
+            buildLabel.AddThemeFontSizeOverride("font_size", 9);
+            buildLabel.AddThemeColorOverride("font_color", TextPrimary);
+            buildLabel.MouseFilter = MouseFilterEnum.Ignore;
+            buildMargin.AddChild(buildLabel);
+
+            Button clickArea = new Button();
+            clickArea.Flat = true;
+            clickArea.MouseFilter = MouseFilterEnum.Stop;
+            clickArea.Modulate = new Color(1, 1, 1, 0);
+            clickArea.Pressed += () =>
+            {
+                SandboxLoadRequested?.Invoke(capturedName);
+                if (_sandboxNameInput != null) _sandboxNameInput.Text = capturedName;
+            };
+            buildBtn.AddChild(clickArea);
+            clickArea.SetAnchorsPreset(LayoutPreset.FullRect);
+
+            _sandboxBuildList.AddChild(buildBtn);
+        }
+    }
+
+    private void OnSandboxSavePressed()
+    {
+        string name = _sandboxNameInput?.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = $"Build_{_sandboxBuildNames.Count + 1}";
+            if (_sandboxNameInput != null) _sandboxNameInput.Text = name;
+        }
+
+        SandboxSaveRequested?.Invoke(name);
+
+        // Add to local list if not already there
+        if (!_sandboxBuildNames.Contains(name))
+        {
+            _sandboxBuildNames.Add(name);
+        }
+        RefreshSandboxBuildList();
     }
 }

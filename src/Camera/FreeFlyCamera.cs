@@ -141,7 +141,10 @@ public partial class FreeFlyCamera : Camera3D
     public void ResetToFullArenaBounds()
     {
         ComputeFullArenaBounds();
-        _hasCustomBounds = false;
+        // Mark as having custom bounds so Activate() doesn't jump to a default
+        // overhead position — the camera should stay where it is and just unlock
+        // its movement range to the full arena.
+        _hasCustomBounds = true;
     }
 
     /// <summary>
@@ -451,6 +454,16 @@ public partial class FreeFlyCamera : Camera3D
         {
             _voxelCollisionEnabled = false;
             Deactivate();
+        }
+        else if (e.CurrentPhase == GamePhase.Menu)
+        {
+            // Disable camera input on the main menu so scroll wheel doesn't zoom,
+            // but keep the camera current so the menu background battle is visible.
+            _voxelCollisionEnabled = false;
+            _isActive = false;
+            SetProcessUnhandledInput(false);
+            // Keep Current = true and SetProcess enabled so UpdateMenuOrbitCamera
+            // can position the camera each frame via SetLookTarget.
         }
     }
 

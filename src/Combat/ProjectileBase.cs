@@ -41,6 +41,10 @@ public partial class ProjectileBase : Node3D
     private bool _drillInsideSolid;
     private bool _drillHasBored;
 
+    // --- Launch immunity: skip voxel collision for the first few frames ---
+    // This prevents projectiles from detonating on their own launcher's structure.
+    private float _launchImmunityTimer = 0.15f;
+
     [Export]
     public float GravityMultiplier { get; set; } = 1f;
 
@@ -230,7 +234,13 @@ public partial class ProjectileBase : Node3D
             }
         }
 
-        if (_drillMode)
+        // Skip voxel collision during launch immunity so projectiles clear
+        // their own launcher's structure (pillars, crenellations, etc.)
+        if (_launchImmunityTimer > 0f)
+        {
+            _launchImmunityTimer -= dt;
+        }
+        else if (_drillMode)
         {
             ProcessDrillCollision(previousPosition, GlobalPosition);
         }

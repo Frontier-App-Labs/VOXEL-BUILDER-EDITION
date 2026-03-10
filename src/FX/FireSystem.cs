@@ -8,8 +8,10 @@ using VoxelValue = VoxelSiege.Voxel.Voxel;
 namespace VoxelSiege.FX;
 
 /// <summary>
-/// Singleton fire spread manager. Tracks burning voxels, ticks fire each turn,
-/// spreads to neighbors, spawns particle/light effects, and destroys consumed voxels.
+/// Singleton fire spread manager. Tracks burning voxels, ticks fire in REAL TIME
+/// (every frame), spreads to neighbors including multi-block gap jumps, spawns
+/// particle/light effects, and destroys consumed voxels.
+/// Fire runs continuously via _Process regardless of game phase or turn state.
 /// </summary>
 public partial class FireSystem : Node
 {
@@ -37,7 +39,7 @@ public partial class FireSystem : Node
     private const int MaxFireParticles = 100;
     private const int MaxFireLights = 20;
     private const float SpreadChance = 0.4f;
-    private const float IntensityPerTick = 0.15f;
+    private const float IntensityGrowthRate = 0.3f;       // per second (was 0.15 per turn)
     private const float FuelConsumeRate = 0.5f;
     private const float LightIntensityThreshold = 0.6f;
     private const float SpreadIntensityThreshold = 0.4f;
@@ -53,30 +55,28 @@ public partial class FireSystem : Node
     private static ShaderMaterial? _sharedFireOverlayMaterial;
 #pragma warning restore CS0169
 
-    // 6 cardinal directions for neighbor checks
-    private static readonly Vector3I[] Neighbors =
-    {
-        Vector3I.Right,
-        Vector3I.Left,
-        Vector3I.Up,
-        Vector3I.Down,
-        new Vector3I(0, 0, -1),
-        new Vector3I(0, 0, 1),
-    };
+    // ── Real-time timers ────────────────────────────────────────────────
+    private float _spreadTimer;
+    private float _damageTimer;
+
+    // ── Pre-computed spread offsets ──────────────────────────────────────
+    // All offsets within FireSpreadRadius, sorted by distance so adjacent
+    // cells are checked first (better for early-out optimizations).
+    private static Vector3I[]? _spreadOffsets;
+    private static float[]? _spreadDistances;
 
     // ── Lifecycle ────────────────────────────────────────────────────────
 
     public override void _EnterTree()
     {
         Instance = this;
+        // Fire visuals and logic run regardless of pause or game phase
+        ProcessMode = ProcessModeEnum.Always;
     }
 
     public override void _Ready()
     {
-        if (EventBus.Instance != null)
-        {
-            EventBus.Instance.TurnChanged += OnTurnChanged;
-        }
+        BuildSpreadOffsets();
     }
 
     public override void _ExitTree()
@@ -85,10 +85,35 @@ public partial class FireSystem : Node
         {
             Instance = null;
         }
+    }
 
-        if (EventBus.Instance != null)
+    /// <summary>
+    /// Real-time fire tick. Runs every frame to accumulate damage and spread timers.
+    /// </summary>
+    public override void _Process(double delta)
+    {
+        if (_burningVoxels.Count == 0)
         {
-            EventBus.Instance.TurnChanged -= OnTurnChanged;
+            return;
+        }
+
+        float dt = (float)delta;
+
+        // Damage tick — runs frequently for continuous feel
+        _damageTimer += dt;
+        if (_damageTimer >= GameConfig.FireDamageTickInterval)
+        {
+            float elapsed = _damageTimer;
+            _damageTimer = 0f;
+            ProcessDamageTick(elapsed);
+        }
+
+        // Spread tick — runs less often to avoid runaway performance cost
+        _spreadTimer += dt;
+        if (_spreadTimer >= GameConfig.FireSpreadInterval)
+        {
+            _spreadTimer = 0f;
+            ProcessSpreadTick();
         }
     }
 
@@ -133,35 +158,83 @@ public partial class FireSystem : Node
     }
 
     /// <summary>
-    /// Called between turns to advance fire simulation.
+    /// Legacy entry point kept for external callers. Now a no-op since fire
+    /// is processed in real-time via _Process.
     /// </summary>
     public void ProcessFireTick(VoxelWorld world)
     {
-        if (_burningVoxels.Count == 0)
+        // Fire now runs in real-time via _Process — this is intentionally empty.
+    }
+
+    /// <summary>
+    /// Returns the number of currently burning voxels.
+    /// </summary>
+    public int BurningCount => _burningVoxels.Count;
+
+    /// <summary>
+    /// Returns true if the given microvoxel position is currently on fire.
+    /// </summary>
+    public bool IsOnFire(Vector3I microvoxelPos)
+    {
+        return _burningVoxels.ContainsKey(microvoxelPos);
+    }
+
+    /// <summary>
+    /// Extinguishes fire at a specific position (e.g. when a burning voxel becomes a falling chunk).
+    /// </summary>
+    public void ExtinguishAt(Vector3I microvoxelPos)
+    {
+        if (_burningVoxels.Remove(microvoxelPos))
+        {
+            RecycleEffects(microvoxelPos);
+        }
+    }
+
+    /// <summary>
+    /// Clears all fires and recycles all effects.
+    /// </summary>
+    public void ExtinguishAll()
+    {
+        List<Vector3I> keys = new List<Vector3I>(_burningVoxels.Keys);
+        foreach (Vector3I pos in keys)
+        {
+            RecycleEffects(pos);
+        }
+        _burningVoxels.Clear();
+    }
+
+    // ── Real-time tick internals ────────────────────────────────────────
+
+    /// <summary>
+    /// Applies fire damage and fuel consumption to all burning voxels.
+    /// Called every FireDamageTickInterval seconds for continuous burn.
+    /// </summary>
+    private void ProcessDamageTick(float elapsed)
+    {
+        VoxelWorld? world = GetVoxelWorld();
+        if (world == null)
         {
             return;
         }
 
-        // Snapshot keys to avoid modifying collection while iterating
         List<Vector3I> positions = new List<Vector3I>(_burningVoxels.Keys);
         List<Vector3I> toRemove = new List<Vector3I>();
-        List<(Vector3I pos, FireState state)> toIgnite = new List<(Vector3I, FireState)>();
         HashSet<Vector3I> affectedArea = new HashSet<Vector3I>();
 
         foreach (Vector3I pos in positions)
         {
             FireState state = _burningVoxels[pos];
 
-            // 1. Increase intensity
-            state.Intensity = Mathf.Min(state.Intensity + IntensityPerTick, 1.0f);
-            state.Timer += 1.0f;
+            // Grow intensity over time
+            state.Intensity = Mathf.Min(state.Intensity + IntensityGrowthRate * elapsed, 1.0f);
+            state.Timer += elapsed;
 
-            // 2. Consume fuel
-            state.Fuel -= state.Intensity * FuelConsumeRate;
+            // Consume fuel proportional to intensity and elapsed time
+            state.Fuel -= state.Intensity * FuelConsumeRate * elapsed;
 
             if (state.Fuel <= 0f)
             {
-                // 3. Destroy the voxel
+                // Destroy the voxel — it has been consumed by fire
                 world.SetVoxel(pos, VoxelValue.Air);
                 toRemove.Add(pos);
                 affectedArea.Add(pos);
@@ -169,56 +242,6 @@ public partial class FireSystem : Node
             }
 
             _burningVoxels[pos] = state;
-
-            // 4. Spread to flammable neighbors if intensity is high enough
-            if (state.Intensity > SpreadIntensityThreshold)
-            {
-                for (int d = 0; d < Neighbors.Length; d++)
-                {
-                    Vector3I neighborPos = pos + Neighbors[d];
-                    if (_burningVoxels.ContainsKey(neighborPos))
-                    {
-                        continue;
-                    }
-
-                    // Check if already queued for ignition this tick
-                    bool alreadyQueued = false;
-                    for (int q = 0; q < toIgnite.Count; q++)
-                    {
-                        if (toIgnite[q].pos == neighborPos)
-                        {
-                            alreadyQueued = true;
-                            break;
-                        }
-                    }
-                    if (alreadyQueued)
-                    {
-                        continue;
-                    }
-
-                    VoxelValue neighborVoxel = world.GetVoxel(neighborPos);
-                    if (neighborVoxel.IsAir)
-                    {
-                        continue;
-                    }
-
-                    VoxelMaterialDefinition neighborDef = VoxelMaterials.GetDefinition(neighborVoxel.Material);
-                    if (!neighborDef.IsFlammable || !FuelByMaterial.TryGetValue(neighborVoxel.Material, out float neighborFuel))
-                    {
-                        continue;
-                    }
-
-                    if (GD.Randf() < SpreadChance)
-                    {
-                        toIgnite.Add((neighborPos, new FireState
-                        {
-                            Intensity = 0.1f,
-                            Fuel = neighborFuel,
-                            Timer = 0f,
-                        }));
-                    }
-                }
-            }
 
             // Update visual effects
             SpawnOrUpdateEffects(pos, state.Intensity);
@@ -231,7 +254,110 @@ public partial class FireSystem : Node
             RecycleEffects(pos);
         }
 
-        // Add newly ignited neighbors
+        // Handle structural collapse from fire-destroyed voxels
+        if (affectedArea.Count > 0)
+        {
+            HandleStructuralCollapse(world, affectedArea);
+        }
+    }
+
+    /// <summary>
+    /// Checks for fire spread to nearby flammable voxels, including gap-jumping
+    /// up to FireSpreadRadius blocks away. Called every FireSpreadInterval seconds.
+    /// </summary>
+    private void ProcessSpreadTick()
+    {
+        VoxelWorld? world = GetVoxelWorld();
+        if (world == null)
+        {
+            return;
+        }
+
+        if (_spreadOffsets == null || _spreadDistances == null)
+        {
+            return;
+        }
+
+        List<Vector3I> positions = new List<Vector3I>(_burningVoxels.Keys);
+        List<(Vector3I pos, FireState state)> toIgnite = new();
+
+        foreach (Vector3I pos in positions)
+        {
+            FireState state = _burningVoxels[pos];
+
+            // Only spread when fire is intense enough
+            if (state.Intensity <= SpreadIntensityThreshold)
+            {
+                continue;
+            }
+
+            // Check all offsets within the spread radius
+            for (int i = 0; i < _spreadOffsets.Length; i++)
+            {
+                Vector3I candidatePos = pos + _spreadOffsets[i];
+                float dist = _spreadDistances[i];
+
+                if (_burningVoxels.ContainsKey(candidatePos))
+                {
+                    continue;
+                }
+
+                // Check if already queued for ignition this tick
+                bool alreadyQueued = false;
+                for (int q = 0; q < toIgnite.Count; q++)
+                {
+                    if (toIgnite[q].pos == candidatePos)
+                    {
+                        alreadyQueued = true;
+                        break;
+                    }
+                }
+                if (alreadyQueued)
+                {
+                    continue;
+                }
+
+                VoxelValue candidateVoxel = world.GetVoxel(candidatePos);
+                if (candidateVoxel.IsAir)
+                {
+                    continue;
+                }
+
+                VoxelMaterialDefinition candidateDef = VoxelMaterials.GetDefinition(candidateVoxel.Material);
+                if (!candidateDef.IsFlammable || !FuelByMaterial.TryGetValue(candidateVoxel.Material, out float candidateFuel))
+                {
+                    continue;
+                }
+
+                // Spread chance decreases with distance — adjacent blocks use full
+                // SpreadChance, farther blocks (gap jumps) use the lower FireJumpChance
+                // scaled by intensity
+                float chance;
+                if (dist <= 1.01f)
+                {
+                    // Direct neighbor (face-adjacent)
+                    chance = SpreadChance * state.Intensity;
+                }
+                else
+                {
+                    // Gap jump — chance falls off with distance
+                    float falloff = 1.0f / dist;
+                    chance = GameConfig.FireJumpChance * state.Intensity * falloff;
+                }
+
+                if (GD.Randf() < chance)
+                {
+                    toIgnite.Add((candidatePos, new FireState
+                    {
+                        Intensity = 0.1f,
+                        Fuel = candidateFuel,
+                        Timer = 0f,
+                    }));
+                }
+            }
+        }
+
+        // Add newly ignited voxels
         foreach ((Vector3I pos, FireState state) in toIgnite)
         {
             if (!_burningVoxels.ContainsKey(pos))
@@ -240,67 +366,89 @@ public partial class FireSystem : Node
                 SpawnOrUpdateEffects(pos, state.Intensity);
             }
         }
+    }
 
-        // Find disconnected voxels in the affected area (fire can cause structural collapse)
-        if (affectedArea.Count > 0)
+    /// <summary>
+    /// After fire destroys voxels, check for disconnected structures and
+    /// spawn falling chunks for structural collapse.
+    /// </summary>
+    private void HandleStructuralCollapse(VoxelWorld world, HashSet<Vector3I> affectedArea)
+    {
+        Vector3 min = Vector3.One * float.MaxValue;
+        Vector3 max = Vector3.One * float.MinValue;
+        foreach (Vector3I pos in affectedArea)
         {
-            Vector3 min = Vector3.One * float.MaxValue;
-            Vector3 max = Vector3.One * float.MinValue;
-            foreach (Vector3I pos in affectedArea)
+            Vector3 worldPos = MathHelpers.MicrovoxelToWorld(pos);
+            min = new Vector3(Mathf.Min(min.X, worldPos.X), Mathf.Min(min.Y, worldPos.Y), Mathf.Min(min.Z, worldPos.Z));
+            max = new Vector3(Mathf.Max(max.X, worldPos.X), Mathf.Max(max.Y, worldPos.Y), Mathf.Max(max.Z, worldPos.Z));
+        }
+
+        // Expand search bounds by a margin
+        float margin = 3.0f * GameConfig.MicrovoxelMeters;
+        Aabb searchBounds = new Aabb(min - Vector3.One * margin, (max - min) + Vector3.One * margin * 2f);
+        List<Vector3I> disconnected = world.FindDisconnectedVoxels(searchBounds);
+
+        if (disconnected.Count > 0)
+        {
+            // Group into connected components and spawn FallingChunks
+            Vector3 explosionCenter = (min + max) * 0.5f;
+            List<List<Vector3I>> components = FallingChunk.GroupConnectedComponents(
+                new HashSet<Vector3I>(disconnected), world);
+
+            foreach (List<Vector3I> component in components)
             {
-                Vector3 worldPos = MathHelpers.MicrovoxelToWorld(pos);
-                min = new Vector3(Mathf.Min(min.X, worldPos.X), Mathf.Min(min.Y, worldPos.Y), Mathf.Min(min.Z, worldPos.Z));
-                max = new Vector3(Mathf.Max(max.X, worldPos.X), Mathf.Max(max.Y, worldPos.Y), Mathf.Max(max.Z, worldPos.Z));
+                FallingChunk.Create(component, world, explosionCenter);
             }
+        }
 
-            // Expand search bounds by a margin
-            float margin = 3.0f * GameConfig.MicrovoxelMeters;
-            Aabb searchBounds = new Aabb(min - Vector3.One * margin, (max - min) + Vector3.One * margin * 2f);
-            List<Vector3I> disconnected = world.FindDisconnectedVoxels(searchBounds);
+        world.ReturnList(disconnected);
+    }
 
-            if (disconnected.Count > 0)
+    // ── Spread offset pre-computation ───────────────────────────────────
+
+    /// <summary>
+    /// Pre-computes all integer offsets within FireSpreadRadius, excluding the
+    /// origin, sorted by Euclidean distance so adjacent cells are checked first.
+    /// </summary>
+    private static void BuildSpreadOffsets()
+    {
+        if (_spreadOffsets != null)
+        {
+            return;
+        }
+
+        int r = GameConfig.FireSpreadRadius;
+        List<(Vector3I offset, float dist)> offsets = new();
+
+        for (int x = -r; x <= r; x++)
+        {
+            for (int y = -r; y <= r; y++)
             {
-                // Group into connected components and spawn FallingChunks
-                Vector3 explosionCenter = (min + max) * 0.5f;
-                List<List<Vector3I>> components = FallingChunk.GroupConnectedComponents(
-                    new HashSet<Vector3I>(disconnected), world);
-
-                foreach (List<Vector3I> component in components)
+                for (int z = -r; z <= r; z++)
                 {
-                    FallingChunk.Create(component, world, explosionCenter);
+                    if (x == 0 && y == 0 && z == 0)
+                    {
+                        continue;
+                    }
+
+                    float dist = Mathf.Sqrt(x * x + y * y + z * z);
+                    if (dist <= r)
+                    {
+                        offsets.Add((new Vector3I(x, y, z), dist));
+                    }
                 }
             }
-
-            world.ReturnList(disconnected);
         }
-    }
 
-    /// <summary>
-    /// Returns the number of currently burning voxels.
-    /// </summary>
-    public int BurningCount => _burningVoxels.Count;
+        // Sort by distance — adjacent first, then gap jumps
+        offsets.Sort((a, b) => a.dist.CompareTo(b.dist));
 
-    /// <summary>
-    /// Clears all fires and recycled all effects.
-    /// </summary>
-    public void ExtinguishAll()
-    {
-        List<Vector3I> keys = new List<Vector3I>(_burningVoxels.Keys);
-        foreach (Vector3I pos in keys)
+        _spreadOffsets = new Vector3I[offsets.Count];
+        _spreadDistances = new float[offsets.Count];
+        for (int i = 0; i < offsets.Count; i++)
         {
-            RecycleEffects(pos);
-        }
-        _burningVoxels.Clear();
-    }
-
-    // ── Event handlers ──────────────────────────────────────────────────
-
-    private void OnTurnChanged(TurnChangedEvent payload)
-    {
-        VoxelWorld? world = GetVoxelWorld();
-        if (world != null)
-        {
-            ProcessFireTick(world);
+            _spreadOffsets[i] = offsets[i].offset;
+            _spreadDistances[i] = offsets[i].dist;
         }
     }
 
@@ -393,7 +541,6 @@ public partial class FireSystem : Node
         particles.OneShot = false;
         particles.FixedFps = 30;
         particles.DrawOrder = GpuParticles3D.DrawOrderEnum.Lifetime;
-        // Keep fire visuals animating between turns — damage is turn-based only
         particles.ProcessMode = ProcessModeEnum.Always;
 
         // Process material — controls particle motion

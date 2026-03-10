@@ -10,6 +10,7 @@ public partial class TurnManager : Node
     private int _turnIndex;
     private float _remainingTurnTime;
     private bool _isRunning;
+    private PlayerSlot? _forcedPlayer;
 
     public IReadOnlyList<PlayerSlot> TurnOrder => _turnOrder;
     public int RoundNumber { get; private set; } = 1;
@@ -67,6 +68,14 @@ public partial class TurnManager : Node
             return false;
         }
 
+        // Artillery Dominance: always snap back to the forced player
+        if (_forcedPlayer.HasValue)
+        {
+            RoundNumber++;
+            ForceCurrentPlayer(_forcedPlayer.Value);
+            return true;
+        }
+
         _turnIndex++;
         if (_turnIndex >= _turnOrder.Count)
         {
@@ -86,6 +95,32 @@ public partial class TurnManager : Node
     public bool SkipTurn(float turnTimeSeconds)
     {
         return AdvanceTurn(turnTimeSeconds);
+    }
+
+    /// <summary>
+    /// Forces the current turn to the specified player (e.g. Artillery Dominance).
+    /// </summary>
+    /// <summary>
+    /// Forces the current turn to the specified player with unlimited time.
+    /// While forced, AdvanceTurn/SkipTurn always return to this player.
+    /// Call ClearForcedPlayer() to resume normal turn rotation.
+    /// </summary>
+    public void ForceCurrentPlayer(PlayerSlot player)
+    {
+        int idx = _turnOrder.IndexOf(player);
+        if (idx >= 0)
+        {
+            _forcedPlayer = player;
+            _turnIndex = idx;
+            _remainingTurnTime = float.PositiveInfinity;
+            _isRunning = true;
+            EmitTurnChanged(float.PositiveInfinity);
+        }
+    }
+
+    public void ClearForcedPlayer()
+    {
+        _forcedPlayer = null;
     }
 
     public void RemovePlayer(PlayerSlot player, float turnTimeSeconds)

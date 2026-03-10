@@ -22,12 +22,30 @@ public static class PixelSkyGenerator
     /// <returns>A ready-to-use <see cref="ShaderMaterial"/> for the sky.</returns>
     public static ShaderMaterial CreatePixelSky(SkyPreset preset = SkyPreset.GoldenHour)
     {
+        GD.Print($"[PixelSkyGenerator] Loading sky shader from '{ShaderPath}'...");
+
+        if (!ResourceLoader.Exists(ShaderPath))
+        {
+            GD.PushError($"[PixelSkyGenerator] Sky shader file does not exist at '{ShaderPath}'.");
+            return new ShaderMaterial();
+        }
+
         Shader shader = GD.Load<Shader>(ShaderPath);
         if (shader == null)
         {
             GD.PushError($"[PixelSkyGenerator] Failed to load sky shader at '{ShaderPath}'.");
             return new ShaderMaterial();
         }
+
+        // Verify the shader code is present (catches corrupted/empty files)
+        string? code = shader.Code;
+        if (string.IsNullOrEmpty(code))
+        {
+            GD.PushError("[PixelSkyGenerator] Sky shader loaded but Code is empty/null.");
+            return new ShaderMaterial();
+        }
+
+        GD.Print($"[PixelSkyGenerator] Shader loaded OK ({code.Length} chars). Applying preset '{preset}'...");
 
         ShaderMaterial mat = new ShaderMaterial();
         mat.Shader = shader;
@@ -141,7 +159,7 @@ public static class PixelSkyGenerator
     private static void ApplyGoldenHour(ShaderMaterial mat)
     {
         mat.SetShaderParameter("pixel_density", 48.0f);
-        mat.SetShaderParameter("color_bands", 6);
+        mat.SetShaderParameter("color_bands", 6.0f);
 
         mat.SetShaderParameter("zenith_color",        new Color(0.10f, 0.10f, 0.24f));
         mat.SetShaderParameter("upper_sky_color",     new Color(0.18f, 0.30f, 0.55f));
@@ -172,7 +190,7 @@ public static class PixelSkyGenerator
     private static void ApplyHighNoon(ShaderMaterial mat)
     {
         mat.SetShaderParameter("pixel_density", 48.0f);
-        mat.SetShaderParameter("color_bands", 5);
+        mat.SetShaderParameter("color_bands", 5.0f);
 
         mat.SetShaderParameter("zenith_color",        new Color(0.15f, 0.22f, 0.55f));
         mat.SetShaderParameter("upper_sky_color",     new Color(0.25f, 0.45f, 0.80f));
@@ -203,7 +221,7 @@ public static class PixelSkyGenerator
     private static void ApplyOvercast(ShaderMaterial mat)
     {
         mat.SetShaderParameter("pixel_density", 48.0f);
-        mat.SetShaderParameter("color_bands", 4);
+        mat.SetShaderParameter("color_bands", 4.0f);
 
         mat.SetShaderParameter("zenith_color",        new Color(0.35f, 0.38f, 0.42f));
         mat.SetShaderParameter("upper_sky_color",     new Color(0.45f, 0.48f, 0.52f));

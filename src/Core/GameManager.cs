@@ -38,6 +38,13 @@ public partial class GameManager : Node
     private PowerupExecutor? _powerupExecutor;
     private float _phaseCountdownSeconds;
 
+    // Networking
+    private NetworkManager? _networkManager;
+    private LobbyManager? _lobbyManager;
+    private SyncManager? _syncManager;
+    private LobbyUI? _lobbyUI;
+    private CanvasLayer? _lobbyUILayer;
+
     // Build phase interaction state
     private Vector3I _buildCursorBuildUnit;
     private bool _buildCursorValid;
@@ -72,7 +79,8 @@ public partial class GameManager : Node
     // Remembers the last attacked enemy per player so targeting defaults to them next turn
     private readonly Dictionary<PlayerSlot, PlayerSlot> _lastAttackedEnemy = new Dictionary<PlayerSlot, PlayerSlot>();
 
-    // Spectator view preference: when true, bot turns use top-down instead of free-fly
+    // Spectator view preference: when true, bot turns (and post-fire cinematics) use
+    // top-down instead of free-fly. Sticky — persists until the player presses V again.
     private bool _spectatorTopDown;
 
     // UI (buttons only — labels handled by BuildUI / CombatUI)
@@ -81,10 +89,20 @@ public partial class GameManager : Node
     private Button? _skipTurnButton;
     private SplashScreen? _splashScreen;
     private SplashScreen? _loadingSplash;
+    private CanvasLayer? _loadingSplashLayer;
     private PauseMenu? _pauseMenu;
     private Label? _buildWarningLabel;
     private GameOverlayUI? _gameOverlayUI;
     private SettingsUI? _settingsUI;
+
+    // Combat countdown overlay (shown between build and combat phases)
+    private CanvasLayer? _countdownLayer;
+    private ColorRect? _countdownBg;
+    private Label? _countdownLabel;
+    private bool _countdownActive;
+    private float _countdownTimer;
+    private int _countdownStep; // 0=preparing, 1=3, 2=2, 3=1, 4=FIGHT!, 5=fade out, 6=done
+    private bool _combatSetupDone;
 
     // Commander naming popup (shown after build phase for human players)
     private PanelContainer? _namePopup;
@@ -95,6 +113,29 @@ public partial class GameManager : Node
     private PlayerSlot _activeBuilder = PlayerSlot.Player1;
     private int _activeBuilderIndex;
     private static readonly PlayerSlot[] BuildOrder = { PlayerSlot.Player1, PlayerSlot.Player2, PlayerSlot.Player3, PlayerSlot.Player4 };
+
+    // Artillery Dominance: when a player destroys ALL enemy weapons, an automated
+    // bombardment rains projectiles on the enemy base(s) until all enemy commanders are dead.
+    private bool _artilleryDominanceActive;
+    private PlayerSlot _artilleryDominanceWinner;
+    private float _bombardmentTimer;
+    private int _bombardmentSalvoCount;
+    private int _bombardmentTargetIndex; // which enemy fort to bomb next (sequential)
+    private List<PlayerSlot>? _bombardmentTargets; // cached list of enemy forts to bomb
+    private CanvasLayer? _dominanceBannerLayer;
+
+    // Combat intro flyover: camera zooms from top-down into the starting player's base
+    private bool _combatIntroActive;
+    private float _combatIntroTimer;
+    private const float CombatIntroDuration = 1.5f; // seconds for top-down zoom-in
+
+    // Deferred game-over: when the final kill happens, let the kill cam play first
+    private bool _pendingGameOver;
+    private PlayerSlot? _pendingWinner;
+
+    // Sandbox mode: build freely with no opponents, save/load builds
+    private bool _isSandbox;
+    private BlueprintSystem? _blueprintSystem;
 
     // Menu battle scene state
     private float _menuBattleTimer;
@@ -223,6 +264,25 @@ public partial class GameManager : Node
         if (mainMenuNode != null)
         {
             mainMenuNode.SettingsRequested += OnMainMenuSettingsRequested;
+            mainMenuNode.HostGameRequested += OnHostGameRequested;
+            mainMenuNode.JoinWithCodeRequested += OnJoinWithCodeRequested;
+        }
+
+        // Wire up networking
+        _networkManager = GetNodeOrNull<NetworkManager>("NetworkManager");
+        _lobbyManager = GetNodeOrNull<LobbyManager>("LobbyManager");
+        _syncManager = GetNodeOrNull<SyncManager>("SyncManager");
+
+        if (_networkManager != null)
+        {
+            _networkManager.PeerConnected += OnNetworkPeerConnected;
+            _networkManager.PeerDisconnected += OnNetworkPeerDisconnected;
+            _networkManager.PlayerAnnounced += OnPlayerAnnounced;
+            _networkManager.PlayerReadyChanged += OnPlayerReadyChanged;
+            _networkManager.LobbyStateReceived += OnLobbyStateReceived;
+            _networkManager.MatchStartReceived += OnMatchStartReceived;
+            _networkManager.ConnectedToServer += OnConnectedToServer;
+            _networkManager.ConnectionFailed += OnConnectionFailed;
         }
 
         // Look for splash screen — if present, hide main menu and let splash play first
@@ -236,6 +296,10 @@ public partial class GameManager : Node
                 mainMenu.Visible = false;
             }
             _splashScreen.SplashFinished += OnSplashFinished;
+
+            // Start generating menu background terrain DURING the splash so it's
+            // ready by the time the splash finishes (instead of generating after).
+            CallDeferred(nameof(GenerateMenuBackgroundTerrain));
         }
         else if (AutoStartPrototypeMatch)
         {
@@ -250,16 +314,22 @@ public partial class GameManager : Node
 
     private void OnSplashFinished()
     {
-        // Remove splash screen
+        // Remove splash screen (and its CanvasLayer wrapper if SplashScreen created one)
         if (_splashScreen != null)
         {
             _splashScreen.SplashFinished -= OnSplashFinished;
+            Node? splashParent = _splashScreen.GetParent();
             _splashScreen.QueueFree();
             _splashScreen = null;
+            // If the splash wrapped itself in a CanvasLayer, clean that up too
+            if (splashParent is CanvasLayer wrapper && wrapper.Name == "SplashCanvasLayer")
+            {
+                wrapper.QueueFree();
+            }
         }
 
-        // Generate preview terrain so the semi-transparent main menu has something behind it
-        GenerateMenuBackgroundTerrain();
+        // Terrain was already generated during the splash (kicked off in _Ready),
+        // so we just need to show the main menu and start the background battle.
 
         // Show the main menu
         Control? mainMenu = GetNodeOrNull<Control>("MainMenu");
@@ -267,6 +337,9 @@ public partial class GameManager : Node
         {
             mainMenu.Visible = true;
         }
+
+        // Now that the splash is gone, activate the background battle
+        _menuBattleActive = true;
 
         if (AutoStartPrototypeMatch)
         {
@@ -531,10 +604,12 @@ public partial class GameManager : Node
         _menuWeaponsD.Add(_weaponPlacer.PlaceWeapon<Mortar>(this, _voxelWorld,
             new Vector3I(dWpn2BUx, dWpnBUy, dWpn2BUz), PlayerSlot.Player4));
 
-        _menuBattleTimer = 1.5f;
+        _menuBattleTimer = 3.0f; // delay before first shot after menu appears
         _menuOrbitAngle = 0f;
         _menuFireRound = 0;
-        _menuBattleActive = true;
+        // Don't activate battle yet — wait until splash finishes so weapons
+        // don't start firing while the splash screen is still visible.
+        // OnSplashFinished() or ReturnToMainMenu() will set _menuBattleActive = true.
 
         // Position camera but do NOT activate it — prevents player from moving
         // camera during menu. We set position directly via Current + GlobalPosition.
@@ -727,6 +802,9 @@ public partial class GameManager : Node
             case GamePhase.Menu:
                 ProcessMenuBattle(delta);
                 break;
+            case GamePhase.Lobby:
+                // Lobby UI handles its own rendering via _Process
+                break;
             case GamePhase.Building:
                 ProcessBuildPhase(delta);
                 break;
@@ -738,8 +816,14 @@ public partial class GameManager : Node
                 break;
         }
 
-        // Countdown timer for timed phases
-        if (_phaseCountdownSeconds > 0f)
+        // Update combat countdown overlay (runs during FogReveal phase)
+        if (_countdownActive)
+        {
+            ProcessCombatCountdown((float)delta);
+        }
+
+        // Countdown timer for timed phases (disabled in sandbox mode)
+        if (_phaseCountdownSeconds > 0f && !_isSandbox)
         {
             _phaseCountdownSeconds = Mathf.Max(0f, _phaseCountdownSeconds - (float)delta);
             if (_phaseCountdownSeconds <= 0f)
@@ -814,10 +898,10 @@ public partial class GameManager : Node
     }
 
     /// <summary>
-    /// Called from CombatUI when a weapon button is clicked (preview/selection only).
-    /// Highlights the selected weapon in 3D but does NOT move the camera.
-    /// The player must confirm their selection (via confirm button, Enter, or Space)
-    /// before the camera transitions to targeting mode.
+    /// Called from CombatUI when a weapon button is clicked.
+    /// Selects the weapon and enters targeting mode immediately.
+    /// If already in targeting mode, switches the weapon without resetting
+    /// the camera or target point so the player's aim is preserved.
     /// </summary>
     public void OnWeaponSelectedFromUI(int weaponIndex)
     {
@@ -831,32 +915,35 @@ public partial class GameManager : Node
             return;
         }
 
-        _selectedWeaponIndex = weaponIndex % weaponList.Count;
-        _weaponConfirmed = false;
+        int newIndex = weaponIndex % weaponList.Count;
 
-        // Highlight the selected weapon in the 3D world (preview only)
-        UpdateWeaponHighlight();
-
-        GD.Print($"[Combat] Weapon {_selectedWeaponIndex} selected (preview). Click CONFIRM or press Enter/Space to lock in.");
-    }
-
-    /// <summary>
-    /// Called from CombatUI when the player confirms their weapon selection.
-    /// Locks in the weapon choice and transitions the camera to targeting mode.
-    /// </summary>
-    public void OnWeaponConfirmedFromUI(int weaponIndex)
-    {
-        if (CurrentPhase != GamePhase.Combat || _turnManager?.CurrentPlayer is not PlayerSlot currentPlayer)
+        // If already in targeting mode, just swap the weapon without resetting
+        // the camera or target so the player's aim is preserved.
+        if (_isAiming && _weaponConfirmed)
         {
+            _selectedWeaponIndex = newIndex;
+            UpdateWeaponHighlight();
+
+            // If there's an active target, recalculate the trajectory preview
+            // for the new weapon's projectile speed / arc.
+            if (_hasTarget && _aimingSystem != null && _aimingSystem.HasTarget)
+            {
+                WeaponBase? newWeapon = weaponList[newIndex];
+                if (newWeapon != null && GodotObject.IsInstanceValid(newWeapon))
+                {
+                    _aimingSystem.SetTargetPoint(
+                        newWeapon.GlobalPosition,
+                        _aimingSystem.TargetPoint,
+                        newWeapon.ProjectileSpeed,
+                        newWeapon.WeaponId);
+                }
+            }
+
+            GD.Print($"[Combat] Switched to weapon {_selectedWeaponIndex} (target preserved).");
             return;
         }
 
-        if (!_weapons.TryGetValue(currentPlayer, out List<WeaponBase>? weaponList) || weaponList.Count == 0)
-        {
-            return;
-        }
-
-        _selectedWeaponIndex = weaponIndex % weaponList.Count;
+        _selectedWeaponIndex = newIndex;
         _weaponConfirmed = true;
 
         // Highlight the confirmed weapon in the 3D world
@@ -868,15 +955,142 @@ public partial class GameManager : Node
         TransitionToTargeting(currentPlayer);
     }
 
+
     /// <summary>
-    /// Confirms the currently keyboard-selected weapon, same as clicking CONFIRM in the UI.
+    /// Starts sandbox mode: a single build zone with no opponents or timer.
+    /// The player can build freely and save/load their designs.
     /// </summary>
-    private void ConfirmWeaponFromKeyboard()
+    public void StartSandboxMode()
     {
-        if (_selectedWeaponIndex >= 0)
+        if (CurrentPhase != GamePhase.Menu && CurrentPhase != GamePhase.GameOver)
         {
-            OnWeaponConfirmedFromUI(_selectedWeaponIndex);
+            GD.Print("[GameManager] StartSandboxMode ignored: match already in progress.");
+            return;
         }
+
+        _isSandbox = true;
+        Settings.BotCount = 0;
+        Settings.StartingBudget = GameConfig.SandboxBudget;
+
+        // Reuse the normal match flow but with sandbox flag
+        StartPrototypeMatch();
+    }
+
+    /// <summary>
+    /// Saves the current sandbox build using BlueprintSystem.
+    /// </summary>
+    public void SaveSandboxBuild(string buildName)
+    {
+        if (!_isSandbox || _voxelWorld == null)
+        {
+            GD.Print("[Sandbox] Cannot save: not in sandbox mode.");
+            return;
+        }
+
+        if (!_buildZones.TryGetValue(PlayerSlot.Player1, out BuildZone zone))
+        {
+            GD.Print("[Sandbox] Cannot save: no build zone found.");
+            return;
+        }
+
+        if (_blueprintSystem == null)
+        {
+            _blueprintSystem = new BlueprintSystem();
+        }
+
+        BlueprintData blueprint = _blueprintSystem.Capture(_voxelWorld, zone, buildName);
+        _blueprintSystem.SaveBlueprint(blueprint);
+
+        // Track in player profile
+        PlayerProfile? profile = _progressionManager?.Profile;
+        if (profile != null)
+        {
+            if (!profile.SavedBuilds.Contains(buildName))
+            {
+                profile.SavedBuilds.Add(buildName);
+            }
+            SaveSystem.SaveJson("user://profile.json", profile);
+        }
+
+        GD.Print($"[Sandbox] Build '{buildName}' saved ({blueprint.Voxels.Count} voxels).");
+    }
+
+    /// <summary>
+    /// Loads a sandbox build into the current build zone.
+    /// </summary>
+    public void LoadSandboxBuild(string buildName)
+    {
+        if (_voxelWorld == null)
+        {
+            GD.Print("[Sandbox] Cannot load: no voxel world.");
+            return;
+        }
+
+        if (!_buildZones.TryGetValue(_isSandbox ? PlayerSlot.Player1 : _activeBuilder, out BuildZone zone))
+        {
+            GD.Print("[Sandbox] Cannot load: no build zone found.");
+            return;
+        }
+
+        if (_blueprintSystem == null)
+        {
+            _blueprintSystem = new BlueprintSystem();
+        }
+
+        BlueprintData? blueprint = _blueprintSystem.LoadBlueprint(buildName);
+        if (blueprint == null)
+        {
+            GD.Print($"[Sandbox] Build '{buildName}' not found.");
+            return;
+        }
+
+        // Clear existing voxels in the zone (only player-placed, not foundation)
+        var clearChanges = new List<(Vector3I Position, Voxel.Voxel NewVoxel)>();
+        for (int z = zone.OriginMicrovoxels.Z; z <= zone.MaxMicrovoxelsInclusive.Z; z++)
+        {
+            for (int y = zone.OriginMicrovoxels.Y; y <= zone.MaxMicrovoxelsInclusive.Y; y++)
+            {
+                for (int x = zone.OriginMicrovoxels.X; x <= zone.MaxMicrovoxelsInclusive.X; x++)
+                {
+                    Vector3I pos = new Vector3I(x, y, z);
+                    Voxel.Voxel v = _voxelWorld.GetVoxel(pos);
+                    if (!v.IsAir && v.Material != VoxelMaterialType.Foundation)
+                    {
+                        clearChanges.Add((pos, Voxel.Voxel.Air));
+                    }
+                }
+            }
+        }
+        if (clearChanges.Count > 0)
+        {
+            _voxelWorld.ApplyBulkChanges(clearChanges, PlayerSlot.Player1);
+        }
+
+        // Place the blueprint voxels
+        var placeChanges = new List<(Vector3I Position, Voxel.Voxel NewVoxel)>();
+        foreach (BlueprintVoxelData bv in blueprint.Voxels)
+        {
+            Vector3I worldPos = zone.OriginMicrovoxels + new Vector3I(bv.X, bv.Y, bv.Z);
+            Voxel.Voxel voxel = new Voxel.Voxel(bv.Data);
+            if (voxel.Material != VoxelMaterialType.Foundation) // Don't overwrite foundation
+            {
+                placeChanges.Add((worldPos, voxel));
+            }
+        }
+        if (placeChanges.Count > 0)
+        {
+            _voxelWorld.ApplyBulkChanges(placeChanges, PlayerSlot.Player1);
+        }
+
+        GD.Print($"[Sandbox] Build '{buildName}' loaded ({placeChanges.Count} voxels placed).");
+    }
+
+    /// <summary>
+    /// Returns the list of saved sandbox build names from the player profile.
+    /// </summary>
+    public List<string> GetSavedBuildNames()
+    {
+        return _progressionManager?.Profile?.SavedBuilds ?? new List<string>();
     }
 
     /// <summary>
@@ -913,14 +1127,21 @@ public partial class GameManager : Node
             }
         }
 
-        // Show a loading splash screen before starting the match
+        // Show a loading splash screen before starting the match.
+        // Wrap in a CanvasLayer so the Control actually renders (GameManager is a Node, not CanvasItem).
+        _loadingSplashLayer = new CanvasLayer();
+        _loadingSplashLayer.Name = "LoadingSplashLayer";
+        _loadingSplashLayer.Layer = 99;
+        AddChild(_loadingSplashLayer);
+
         _loadingSplash = new SplashScreen();
         _loadingSplash.Name = "LoadingSplash";
         _loadingSplash.IsLoadingMode = true;
-        AddChild(_loadingSplash);
+        _loadingSplashLayer.AddChild(_loadingSplash);
 
-        // Hide the HUD during the splash
+        // Hide the HUD and world during the splash so the loading screen covers everything
         if (_hudRoot != null) _hudRoot.Visible = false;
+        if (_voxelWorld != null) _voxelWorld.Visible = false;
 
         // When the splash finishes (after explosion + fade), remove it and show HUD
         _loadingSplash.SplashFinished += OnLoadingSplashFinished;
@@ -931,14 +1152,15 @@ public partial class GameManager : Node
 
     private void PerformMatchSetupDuringLoading()
     {
+        // Step 1: Seed players and reset match state
         if (_loadingSplash == null) return;
 
-        // Re-seed players so HumanPlayerName (set from the menu) is picked up.
-        // SeedLocalPlayers ran in _Ready before the menu set HumanPlayerName,
-        // so the display names would otherwise be stale defaults.
-        SeedLocalPlayers();
-
-        // Reset players
+        // Only seed local players if we're not in an online match
+        // (online players were already seeded by SeedOnlinePlayers)
+        if (_networkManager == null || !_networkManager.IsOnline)
+        {
+            SeedLocalPlayers();
+        }
         foreach (PlayerData player in _players.Values)
         {
             player.ResetForMatch(Settings);
@@ -946,22 +1168,44 @@ public partial class GameManager : Node
 
         _loadingSplash.SetLoadingProgress(0.2f);
 
-        // Set up build zones
-        SetupBuildZones();
+        // Yield to engine so the loading screen can render, then continue
+        CallDeferred(nameof(LoadingStep2_BuildZones));
+    }
 
+    private void LoadingStep2_BuildZones()
+    {
+        if (_loadingSplash == null) return;
+
+        SetupBuildZones();
         _loadingSplash.SetLoadingProgress(0.4f);
 
-        // Clear world, generate terrain, decorate with zone borders and vegetation
-        GenerateBuildFoundations();
+        CallDeferred(nameof(LoadingStep3_Terrain));
+    }
 
+    private void LoadingStep3_Terrain()
+    {
+        if (_loadingSplash == null) return;
+
+        GenerateBuildFoundations();
         _loadingSplash.SetLoadingProgress(0.7f);
 
-        // Set up VoxelGI and lighting
-        SetupVoxelGiAndLighting();
+        CallDeferred(nameof(LoadingStep4_Lighting));
+    }
 
+    private void LoadingStep4_Lighting()
+    {
+        if (_loadingSplash == null) return;
+
+        SetupVoxelGiAndLighting();
         _loadingSplash.SetLoadingProgress(0.9f);
 
-        // Position camera and prepare for build phase
+        CallDeferred(nameof(LoadingStep5_Finalize));
+    }
+
+    private void LoadingStep5_Finalize()
+    {
+        if (_loadingSplash == null) return;
+
         _activeBuilderIndex = 0;
         _activeBuilder = BuildOrder[_activeBuilderIndex];
         PositionCameraAtBuildZone(PlayerSlot.Player1);
@@ -972,23 +1216,42 @@ public partial class GameManager : Node
 
     private void OnLoadingSplashFinished()
     {
-        // Remove the loading splash
+        // Remove the loading splash and its canvas layer
         if (_loadingSplash != null)
         {
             _loadingSplash.SplashFinished -= OnLoadingSplashFinished;
             _loadingSplash.QueueFree();
             _loadingSplash = null;
         }
+        if (_loadingSplashLayer != null)
+        {
+            _loadingSplashLayer.QueueFree();
+            _loadingSplashLayer = null;
+        }
 
-        // Show the HUD again
-        if (_hudRoot != null) _hudRoot.Visible = true;
+        // Show the world now that loading is complete
+        if (_voxelWorld != null) _voxelWorld.Visible = true;
 
-        // Start the build phase
-        SetPhase(GamePhase.Building, PrototypeBuildPhaseSeconds);
+        // Start the build phase FIRST so BuildUI receives PhaseChanged/BudgetChanged
+        // events and populates itself before the HUD becomes visible
+        SetPhase(GamePhase.Building, _isSandbox ? 0f : PrototypeBuildPhaseSeconds);
         _camera?.Activate();
 
         // Re-apply camera position AFTER activation to ensure it takes effect
         PositionCameraAtBuildZone(_activeBuilder);
+
+        // Show the HUD after phase events have propagated so UI is already populated
+        if (_hudRoot != null) _hudRoot.Visible = true;
+
+        // In sandbox mode, hide the ready button and show sandbox controls
+        if (_isSandbox)
+        {
+            if (_readyButton != null) _readyButton.Visible = false;
+            BuildUI? buildUI = GetNodeOrNull<BuildUI>("BuildHUD")
+                ?? GetNodeOrNull<BuildUI>("%BuildUI")
+                ?? GetTree().Root.FindChild("BuildHUD", true, false) as BuildUI;
+            buildUI?.EnableSandboxMode(GetSavedBuildNames());
+        }
     }
 
     /// <summary>
@@ -1032,6 +1295,36 @@ public partial class GameManager : Node
         }
         _botControllers.Clear();
 
+        // Clean up combat countdown overlay if active
+        _countdownActive = false;
+        if (_countdownLayer != null)
+        {
+            _countdownLayer.QueueFree();
+            _countdownLayer = null;
+        }
+        _countdownBg = null;
+        _countdownLabel = null;
+
+        // Clean up artillery dominance state
+        _artilleryDominanceActive = false;
+        if (_dominanceBannerLayer != null && IsInstanceValid(_dominanceBannerLayer))
+        {
+            _dominanceBannerLayer.QueueFree();
+            _dominanceBannerLayer = null;
+        }
+
+        // Clean up loading splash if active
+        if (_loadingSplash != null)
+        {
+            _loadingSplash.QueueFree();
+            _loadingSplash = null;
+        }
+        if (_loadingSplashLayer != null)
+        {
+            _loadingSplashLayer.QueueFree();
+            _loadingSplashLayer = null;
+        }
+
         // Reset turn manager
         _turnManager?.StopTurnClock();
 
@@ -1053,6 +1346,10 @@ public partial class GameManager : Node
     /// </summary>
     public void ReturnToMainMenu()
     {
+        // Restore normal time scale (may have been slowed for bombardment)
+        Engine.TimeScale = 1.0;
+        _artilleryDominanceActive = false;
+
         // 1. Clean up all match objects (commanders, weapons, bots, projectiles, FX, etc.)
         CleanupMatchState();
 
@@ -1060,6 +1357,7 @@ public partial class GameManager : Node
         //    GenerateMenuBackgroundTerrain clears the voxel world, rebuilds the arena
         //    with decorative fortresses, and calls SetupMenuBattleScene() at the end.
         GenerateMenuBackgroundTerrain();
+        _menuBattleActive = true; // No splash when returning, activate battle immediately
 
         // 3. Switch camera back to the passive FreeFlyCamera (menu orbit) and deactivate CombatCamera
         _combatCamera?.Deactivate();
@@ -1068,9 +1366,349 @@ public partial class GameManager : Node
             _camera.Current = true;
         }
 
-        // 4. Set phase to Menu — this shows the MainMenu UI, hides combat elements,
+        // 4. Shut down networking if online
+        _networkManager?.Shutdown();
+        _lobbyManager?.Clear();
+        HideLobbyUI();
+
+        // 5. Set phase to Menu — this shows the MainMenu UI, hides combat elements,
         //    and suppresses camera shake so the demo battle runs quietly in the background.
         SetPhase(GamePhase.Menu);
+    }
+
+    private void ExitSandboxMode()
+    {
+        _isSandbox = false;
+        ReturnToMainMenu();
+    }
+
+    // ─────────────────────────────────────────────────
+    //  MULTIPLAYER NETWORKING
+    // ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// Called when the host clicks "HOST GAME" in the main menu.
+    /// The lobby manager is already populated and the network host is started by MainMenu.
+    /// We just need to transition to the lobby screen.
+    /// </summary>
+    private void OnHostGameRequested(bool isPublic)
+    {
+        GD.Print($"[GameManager] Host game requested (public={isPublic})");
+        ShowLobbyUI(isHost: true);
+        SetPhase(GamePhase.Lobby);
+    }
+
+    /// <summary>
+    /// Called when the player clicks "JOIN" with an IP address in the main menu.
+    /// NetworkManager.Join() has already been called by MainMenu.
+    /// We show the lobby screen and wait for server connection.
+    /// </summary>
+    private void OnJoinWithCodeRequested(string code)
+    {
+        GD.Print($"[GameManager] Join with code requested: {code}");
+        ShowLobbyUI(isHost: false);
+        SetPhase(GamePhase.Lobby);
+    }
+
+    /// <summary>
+    /// Client successfully connected to the server.
+    /// </summary>
+    private void OnConnectedToServer()
+    {
+        GD.Print("[GameManager] Successfully connected to server.");
+    }
+
+    /// <summary>
+    /// Client failed to connect to the server.
+    /// </summary>
+    private void OnConnectionFailed()
+    {
+        GD.Print("[GameManager] Connection failed, returning to menu.");
+        HideLobbyUI();
+        _lobbyManager?.Clear();
+        SetPhase(GamePhase.Menu);
+    }
+
+    /// <summary>
+    /// A new peer connected to the network session.
+    /// On the host, this means a new player joined.
+    /// On clients, this fires for every peer (including when they connect).
+    /// </summary>
+    private void OnNetworkPeerConnected(long peerId)
+    {
+        GD.Print($"[GameManager] Peer connected: {peerId}");
+
+        // Host: add peer to lobby when they announce their name (see OnPlayerAnnounced).
+        // The host also sees itself connect (peerId=1), which is already handled in StartHosting.
+    }
+
+    /// <summary>
+    /// A peer disconnected from the network session.
+    /// </summary>
+    private void OnNetworkPeerDisconnected(long peerId)
+    {
+        GD.Print($"[GameManager] Peer disconnected: {peerId}");
+
+        if (_lobbyManager == null || _networkManager == null) return;
+
+        _lobbyManager.RemoveMember(peerId);
+
+        // If we're the host, broadcast updated lobby state to remaining peers
+        if (_networkManager.IsHost)
+        {
+            BroadcastLobbyState();
+        }
+    }
+
+    /// <summary>
+    /// A remote player announced their display name (host-side only).
+    /// </summary>
+    private void OnPlayerAnnounced(long peerId, string displayName)
+    {
+        if (_lobbyManager == null || _networkManager == null) return;
+
+        if (!_networkManager.IsHost)
+        {
+            // Clients should not process announcements directly
+            return;
+        }
+
+        GD.Print($"[GameManager] Player announced: '{displayName}' (peer {peerId})");
+
+        // Assign the next available slot
+        PlayerSlot? slot = _lobbyManager.GetNextAvailableSlot();
+        if (slot == null)
+        {
+            GD.Print($"[GameManager] Lobby is full, rejecting peer {peerId}");
+            // Could disconnect the peer here, but for now just ignore
+            return;
+        }
+
+        _lobbyManager.AddOrUpdateMember(peerId, slot.Value, displayName, false);
+
+        // Broadcast updated lobby state to all peers
+        BroadcastLobbyState();
+    }
+
+    /// <summary>
+    /// A remote peer changed their ready state (host-side only).
+    /// </summary>
+    private void OnPlayerReadyChanged(long peerId, bool ready)
+    {
+        if (_lobbyManager == null || _networkManager == null) return;
+
+        if (!_networkManager.IsHost)
+        {
+            return;
+        }
+
+        GD.Print($"[GameManager] Player ready changed: peer {peerId} -> {ready}");
+        _lobbyManager.SetReady(peerId, ready);
+
+        // Broadcast updated lobby state
+        BroadcastLobbyState();
+    }
+
+    /// <summary>
+    /// Received a full lobby state from the host (client-side).
+    /// </summary>
+    private void OnLobbyStateReceived(LobbyStatePayload payload)
+    {
+        if (_lobbyManager == null) return;
+
+        GD.Print($"[GameManager] Lobby state received with {payload.Players.Length} players");
+        _lobbyManager.ApplyStatePayload(payload);
+    }
+
+    /// <summary>
+    /// Host told us to start the match.
+    /// </summary>
+    private void OnMatchStartReceived(MatchStartPayload settings)
+    {
+        GD.Print("[GameManager] Match start received from host.");
+
+        // Apply match settings from the host
+        Settings.BuildTimeSeconds = settings.BuildTimeSeconds;
+        Settings.StartingBudget = settings.StartingBudget;
+        Settings.ArenaSize = settings.ArenaSize;
+        Settings.TurnTimeSeconds = settings.TurnTimeSeconds;
+        Settings.BotCount = 0; // No bots in online play
+
+        // Seed players from the lobby members
+        SeedOnlinePlayers();
+
+        HideLobbyUI();
+        StartPrototypeMatch();
+    }
+
+    /// <summary>
+    /// Broadcasts the current lobby state from host to all peers.
+    /// </summary>
+    private void BroadcastLobbyState()
+    {
+        if (_lobbyManager == null || _networkManager == null || !_networkManager.IsHost) return;
+
+        LobbyStatePayload payload = _lobbyManager.BuildStatePayload();
+        byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(payload);
+        _networkManager.Rpc(nameof(NetworkManager.BroadcastLobbyState), data);
+    }
+
+    /// <summary>
+    /// Creates and shows the lobby UI overlay.
+    /// </summary>
+    private void ShowLobbyUI(bool isHost)
+    {
+        HideLobbyUI(); // Clean up any existing lobby UI
+
+        _lobbyUILayer = new CanvasLayer();
+        _lobbyUILayer.Name = "LobbyUILayer";
+        _lobbyUILayer.Layer = 50;
+        AddChild(_lobbyUILayer);
+
+        _lobbyUI = new LobbyUI();
+        _lobbyUI.Name = "LobbyUI";
+        _lobbyUI.SetIsHost(isHost);
+        _lobbyUILayer.AddChild(_lobbyUI);
+
+        // Wire up lobby UI events
+        _lobbyUI.ReadyToggled += OnLobbyReadyToggled;
+        _lobbyUI.StartGameRequested += OnLobbyStartGameRequested;
+        _lobbyUI.LeaveLobbyRequested += OnLobbyLeaveRequested;
+
+        // Hide the main menu
+        Control? mainMenu = GetNodeOrNull<Control>("MainMenu");
+        if (mainMenu != null)
+        {
+            mainMenu.Visible = false;
+        }
+    }
+
+    /// <summary>
+    /// Removes the lobby UI overlay.
+    /// </summary>
+    private void HideLobbyUI()
+    {
+        if (_lobbyUI != null)
+        {
+            _lobbyUI.ReadyToggled -= OnLobbyReadyToggled;
+            _lobbyUI.StartGameRequested -= OnLobbyStartGameRequested;
+            _lobbyUI.LeaveLobbyRequested -= OnLobbyLeaveRequested;
+            _lobbyUI.QueueFree();
+            _lobbyUI = null;
+        }
+        if (_lobbyUILayer != null)
+        {
+            _lobbyUILayer.QueueFree();
+            _lobbyUILayer = null;
+        }
+    }
+
+    /// <summary>
+    /// Player toggled their ready state in the lobby UI.
+    /// </summary>
+    private void OnLobbyReadyToggled()
+    {
+        if (_networkManager == null || _lobbyManager == null || _lobbyUI == null) return;
+
+        bool newReady = _lobbyUI.ToggleReady();
+
+        if (_networkManager.IsHost)
+        {
+            // Host updates their own ready state directly
+            _lobbyManager.SetReady(_networkManager.LocalPeerId, newReady);
+            BroadcastLobbyState();
+        }
+        else
+        {
+            // Client sends ready state to the host
+            _networkManager.RpcId(1, nameof(NetworkManager.SetPlayerReady), newReady);
+        }
+    }
+
+    /// <summary>
+    /// Host clicked START in the lobby UI.
+    /// </summary>
+    private void OnLobbyStartGameRequested()
+    {
+        if (_networkManager == null || _lobbyManager == null) return;
+
+        if (!_networkManager.IsHost)
+        {
+            GD.Print("[GameManager] Only the host can start the game.");
+            return;
+        }
+
+        if (!_lobbyManager.AreAllPlayersReady())
+        {
+            GD.Print("[GameManager] Not all players are ready.");
+            return;
+        }
+
+        GD.Print("[GameManager] Host starting the match!");
+
+        // Set bot count to 0 for online play
+        Settings.BotCount = 0;
+
+        // Build match start payload with current settings
+        MatchStartPayload matchPayload = new MatchStartPayload(
+            Settings.BuildTimeSeconds,
+            Settings.StartingBudget,
+            Settings.ArenaSize,
+            Settings.TurnTimeSeconds);
+
+        // Broadcast start to all peers (including self)
+        byte[] data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(matchPayload);
+        _networkManager.Rpc(nameof(NetworkManager.StartMatch), data);
+    }
+
+    /// <summary>
+    /// Player clicked LEAVE in the lobby UI.
+    /// </summary>
+    private void OnLobbyLeaveRequested()
+    {
+        GD.Print("[GameManager] Leaving lobby.");
+        _networkManager?.Shutdown();
+        _lobbyManager?.Clear();
+        HideLobbyUI();
+
+        // Show main menu again
+        Control? mainMenu = GetNodeOrNull<Control>("MainMenu");
+        if (mainMenu != null)
+        {
+            mainMenu.Visible = true;
+        }
+
+        SetPhase(GamePhase.Menu);
+    }
+
+    /// <summary>
+    /// Seeds the player list from lobby members for an online match.
+    /// Unlike SeedLocalPlayers (which creates bots), this creates one PlayerData
+    /// per connected lobby member.
+    /// </summary>
+    private void SeedOnlinePlayers()
+    {
+        if (_lobbyManager == null) return;
+
+        _players.Clear();
+
+        foreach (LobbyMember member in _lobbyManager.Members.Values)
+        {
+            int slotIndex = (int)member.Slot;
+            Color color = slotIndex < GameConfig.PlayerColors.Length
+                ? GameConfig.PlayerColors[slotIndex]
+                : Colors.White;
+
+            _players[member.Slot] = new PlayerData
+            {
+                PeerId = member.PeerId,
+                Slot = member.Slot,
+                DisplayName = member.DisplayName,
+                PlayerColor = color,
+            };
+        }
+
+        GD.Print($"[GameManager] Seeded {_players.Count} online players.");
     }
 
     /// <summary>
@@ -1079,7 +1717,11 @@ public partial class GameManager : Node
     private void StartMatchAfterSplash()
     {
         // Re-seed players so HumanPlayerName (set from the menu) is picked up.
-        SeedLocalPlayers();
+        // Skip if players were already seeded for an online match.
+        if (_networkManager == null || !_networkManager.IsOnline)
+        {
+            SeedLocalPlayers();
+        }
 
         foreach (PlayerData player in _players.Values)
         {
@@ -1145,6 +1787,14 @@ public partial class GameManager : Node
                 if (CameraShake.Instance != null) CameraShake.Instance.Enabled = false;
                 break;
 
+            case GamePhase.Lobby:
+                _ghostPreview?.Hide();
+                if (_readyButton != null) _readyButton.Visible = false;
+                if (_skipTurnButton != null) _skipTurnButton.Visible = false;
+                _combatCamera?.Deactivate();
+                if (CameraShake.Instance != null) CameraShake.Instance.Enabled = false;
+                break;
+
             case GamePhase.Building:
                 Input.MouseMode = Input.MouseModeEnum.Visible;
                 _isDragBuilding = false;
@@ -1185,7 +1835,11 @@ public partial class GameManager : Node
                 // (projectile follow, impact cam, kill cam, targeting).
                 _camera?.ResetToFullArenaBounds();
                 _camera?.Activate();
-                PositionFreeFlyBehindZone(_turnManager?.CurrentPlayer ?? PlayerSlot.Player1);
+
+                // Start the intro flyover — camera orbits the arena before settling
+                _combatIntroActive = true;
+                _combatIntroTimer = 0f;
+                _turnManager?.StopTurnClock(); // Don't tick turns during intro
 
                 // Populate CombatUI with actual placed weapons for the first player
                 if (_turnManager?.CurrentPlayer is PlayerSlot firstPlayer)
@@ -1209,17 +1863,22 @@ public partial class GameManager : Node
         switch (CurrentPhase)
         {
             case GamePhase.Building:
-                // Advance to next player, or proceed to fog reveal if all done
+                // Advance to next player, or proceed to countdown if all done
                 if (_activeBuilderIndex < _players.Count - 1)
                 {
                     AdvanceToNextBuilder();
                     return;
                 }
-                SetPhase(GamePhase.FogReveal, PrototypeFogRevealSeconds);
+                StartCombatCountdown();
                 break;
 
             case GamePhase.FogReveal:
-                SetPhase(GamePhase.Combat, 0f);
+                // FogReveal timer no longer auto-transitions; the countdown overlay handles it.
+                // If the countdown is not active (e.g. direct SetPhase call), fall through to combat.
+                if (!_countdownActive)
+                {
+                    SetPhase(GamePhase.Combat, 0f);
+                }
                 break;
         }
     }
@@ -1280,6 +1939,11 @@ public partial class GameManager : Node
         _voxelGiSetup = new VoxelGiSetup();
         _voxelGiSetup.Name = "VoxelGiSetup";
         AddChild(_voxelGiSetup);
+
+        // Force initialization now — _Ready() may not fire within the same
+        // deferred callback chain, leaving the sky uninitialized until the
+        // next idle frame (which may never come if another CallDeferred runs first).
+        _voxelGiSetup.ForceInitialize();
 
         // Bake GI now that terrain geometry is present
         _voxelGiSetup.BakeGi();
@@ -1873,7 +2537,8 @@ public partial class GameManager : Node
         EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(player.Slot, player.Budget, -weaponCost));
 
         GD.Print($"[Build] {_selectedWeaponType} placed for {_activeBuilder} at {_buildCursorBuildUnit} (cost: ${weaponCost}).");
-        // Stay in weapon placement mode so the user can place more weapons
+        // Return to block mode so the user can keep building
+        _placementMode = PlacementMode.Block;
     }
 
     /// <summary>
@@ -1990,6 +2655,13 @@ public partial class GameManager : Node
             return;
         }
 
+        // In sandbox mode, "Ready" returns to the main menu
+        if (_isSandbox)
+        {
+            ExitSandboxMode();
+            return;
+        }
+
         // Human players must place a commander and at least 1 weapon before readying up
         if (!IsBot(_activeBuilder))
         {
@@ -2030,13 +2702,43 @@ public partial class GameManager : Node
     {
         if (_activeBuilderIndex < _players.Count - 1)
         {
-            // Current player clicked ready, advance to next player
-            AdvanceToNextBuilder();
+            // Check if all remaining players are bots — if so, skip camera
+            // animations and go straight to the countdown overlay. Bot builds
+            // will run behind the overlay in PerformCombatSetupBehindOverlay.
+            bool allRemainingAreBots = true;
+            for (int i = _activeBuilderIndex + 1; i < BuildOrder.Length; i++)
+            {
+                if (_players.ContainsKey(BuildOrder[i]) && !IsBot(BuildOrder[i]))
+                {
+                    allRemainingAreBots = false;
+                    break;
+                }
+            }
+
+            if (allRemainingAreBots)
+            {
+                // Run all remaining bot build phases now (no camera movement)
+                for (int i = _activeBuilderIndex + 1; i < BuildOrder.Length; i++)
+                {
+                    PlayerSlot botSlot = BuildOrder[i];
+                    if (_players.ContainsKey(botSlot) && IsBot(botSlot))
+                    {
+                        RunBotBuildPhase(botSlot);
+                    }
+                }
+                _activeBuilderIndex = _players.Count - 1;
+                StartCombatCountdown();
+            }
+            else
+            {
+                // Next player is human — advance normally
+                AdvanceToNextBuilder();
+            }
         }
         else
         {
-            // Last player clicked ready, proceed to fog reveal
-            SetPhase(GamePhase.FogReveal, PrototypeFogRevealSeconds);
+            // Last player clicked ready — show countdown overlay and prepare combat
+            StartCombatCountdown();
         }
     }
 
@@ -2176,13 +2878,328 @@ public partial class GameManager : Node
     }
 
     // ─────────────────────────────────────────────────
+    //  COMBAT COUNTDOWN OVERLAY
+    // ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// Shows a fullscreen black overlay with "PREPARING BATTLE..." text,
+    /// performs combat setup behind it, then runs a 3-2-1-FIGHT countdown
+    /// before fading out to reveal the arena.
+    /// </summary>
+    private void StartCombatCountdown()
+    {
+        if (_countdownActive) return;
+
+        _countdownActive = true;
+        _countdownStep = 0; // preparing
+        _countdownTimer = 0f;
+        _combatSetupDone = false;
+
+        // Freeze the camera FIRST — prevent any visible camera movement before
+        // the overlay renders. Disable processing so the camera holds its current frame.
+        _camera?.SetProcess(false);
+        _camera?.SetProcessUnhandledInput(false);
+        _combatCamera?.SetProcess(false);
+
+        // Create the overlay CanvasLayer at layer 100 (above everything)
+        _countdownLayer = new CanvasLayer();
+        _countdownLayer.Name = "CombatCountdownLayer";
+        _countdownLayer.Layer = 100;
+        AddChild(_countdownLayer);
+
+        // Black background covering the full viewport
+        _countdownBg = new ColorRect();
+        _countdownBg.Name = "CountdownBg";
+        _countdownBg.Color = new Color(0f, 0f, 0f, 1f);
+        _countdownBg.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        _countdownLayer.AddChild(_countdownBg);
+        // Force offsets to zero after anchors are set
+        _countdownBg.OffsetLeft = 0;
+        _countdownBg.OffsetRight = 0;
+        _countdownBg.OffsetTop = 0;
+        _countdownBg.OffsetBottom = 0;
+
+        // Label for countdown text
+        _countdownLabel = new Label();
+        _countdownLabel.Name = "CountdownLabel";
+        _countdownLabel.Text = "PREPARING BATTLE...";
+        _countdownLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        _countdownLabel.VerticalAlignment = VerticalAlignment.Center;
+        _countdownLabel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        _countdownLabel.OffsetLeft = 0;
+        _countdownLabel.OffsetRight = 0;
+        _countdownLabel.OffsetTop = 0;
+        _countdownLabel.OffsetBottom = 0;
+        _countdownLabel.MouseFilter = Control.MouseFilterEnum.Ignore;
+
+        // Use the game's pixel font
+        Font? pixelFont = GD.Load<Font>("res://assets/fonts/PressStart2P-Regular.ttf");
+        if (pixelFont != null)
+        {
+            _countdownLabel.AddThemeFontOverride("font", pixelFont);
+        }
+        _countdownLabel.AddThemeFontSizeOverride("font_size", 28);
+        _countdownLabel.AddThemeColorOverride("font_color", new Color("e8e4df"));
+
+        _countdownLayer.AddChild(_countdownLabel);
+
+        // Hide the HUD during the countdown
+        if (_hudRoot != null) _hudRoot.Visible = false;
+
+        // Defer phase change so the overlay renders first — no camera movement
+        // is visible because cameras are frozen above.
+        CallDeferred(nameof(DeferredCombatSetupStart));
+    }
+
+    /// <summary>
+    /// Called one frame after the countdown overlay was created so it has rendered.
+    /// Now safe to change phase and set up cameras behind the overlay.
+    /// </summary>
+    private void DeferredCombatSetupStart()
+    {
+        // Transition to FogReveal phase (hides build UI, ghost preview, etc.)
+        SetPhase(GamePhase.FogReveal, 0f);
+
+        // Perform combat setup behind the overlay
+        PerformCombatSetupBehindOverlay();
+    }
+
+    /// <summary>
+    /// Runs the heavy combat setup work (fortress finalization, troop deployment, etc.)
+    /// while the countdown overlay is covering the screen.
+    /// </summary>
+    private void PerformCombatSetupBehindOverlay()
+    {
+        // Do all the work that OnPhaseEntered(Combat) normally does,
+        // but without actually entering combat phase yet.
+        BuildPrototypeFortresses();
+        DeployAllTroops();
+        _turnManager?.Configure(_players.Keys, Settings.TurnTimeSeconds);
+        _turnManager?.StopTurnClock(); // Don't tick the turn clock during countdown
+        _selectedWeaponIndex = -1;
+        _isAiming = false;
+        _hasTarget = false;
+        _aimingSystem?.ClearTarget();
+
+        // Set up camera so it's ready when the overlay drops
+        _camera?.ResetToFullArenaBounds();
+        _camera?.Activate();
+        PositionFreeFlyBehindZone(_turnManager?.CurrentPlayer ?? PlayerSlot.Player1);
+
+        _combatSetupDone = true;
+        GD.Print("[GameManager] Combat setup complete behind overlay, starting countdown.");
+    }
+
+    /// <summary>
+    /// Drives the countdown overlay state machine each frame.
+    /// Steps: 0=preparing, 1=show "3", 2=show "2", 3=show "1", 4=show "FIGHT!", 5=fade out, 6=done.
+    /// </summary>
+    private void ProcessCombatCountdown(float delta)
+    {
+        _countdownTimer += delta;
+
+        switch (_countdownStep)
+        {
+            case 0: // PREPARING BATTLE...
+                // Wait until combat setup is done, with a minimum display time of 0.5s
+                if (_combatSetupDone && _countdownTimer >= 0.5f)
+                {
+                    _countdownStep = 1;
+                    _countdownTimer = 0f;
+                    UpdateCountdownDisplay("3", 64);
+                    AudioDirector.Instance?.PlaySFX("countdown_tick");
+                }
+                break;
+
+            case 1: // "3"
+                if (_countdownTimer >= 1.0f)
+                {
+                    _countdownStep = 2;
+                    _countdownTimer = 0f;
+                    UpdateCountdownDisplay("2", 64);
+                    AudioDirector.Instance?.PlaySFX("countdown_tick");
+                }
+                break;
+
+            case 2: // "2"
+                if (_countdownTimer >= 1.0f)
+                {
+                    _countdownStep = 3;
+                    _countdownTimer = 0f;
+                    UpdateCountdownDisplay("1", 64);
+                    AudioDirector.Instance?.PlaySFX("countdown_tick");
+                }
+                break;
+
+            case 3: // "1"
+                if (_countdownTimer >= 1.0f)
+                {
+                    _countdownStep = 4;
+                    _countdownTimer = 0f;
+                    UpdateCountdownDisplay("FIGHT!", 48);
+                    AudioDirector.Instance?.PlaySFX("countdown_fight");
+                }
+                break;
+
+            case 4: // "FIGHT!"
+                if (_countdownTimer >= 0.8f)
+                {
+                    _countdownStep = 5;
+                    _countdownTimer = 0f;
+                }
+                break;
+
+            case 5: // Fade out
+            {
+                float fadeDuration = 0.5f;
+                float alpha = Mathf.Clamp(1f - _countdownTimer / fadeDuration, 0f, 1f);
+                if (_countdownBg != null) _countdownBg.Modulate = new Color(1f, 1f, 1f, alpha);
+                if (_countdownLabel != null) _countdownLabel.Modulate = new Color(1f, 1f, 1f, alpha);
+
+                if (_countdownTimer >= fadeDuration)
+                {
+                    _countdownStep = 6;
+                    FinishCombatCountdown();
+                }
+                break;
+            }
+        }
+
+        // Pulse/scale effect on the countdown numbers (steps 1-4)
+        if (_countdownStep >= 1 && _countdownStep <= 4 && _countdownLabel != null)
+        {
+            // Quick scale-in at the start of each number
+            float scaleProgress = Mathf.Clamp(_countdownTimer / 0.15f, 0f, 1f);
+            float scale = Mathf.Lerp(1.5f, 1.0f, scaleProgress);
+            _countdownLabel.PivotOffset = _countdownLabel.Size / 2f;
+            _countdownLabel.Scale = new Vector2(scale, scale);
+        }
+    }
+
+    private void UpdateCountdownDisplay(string text, int fontSize)
+    {
+        if (_countdownLabel == null) return;
+        _countdownLabel.Text = text;
+        _countdownLabel.AddThemeFontSizeOverride("font_size", fontSize);
+        // Reset scale for the new pulse
+        _countdownLabel.Scale = new Vector2(1.5f, 1.5f);
+    }
+
+    /// <summary>
+    /// Cleans up the countdown overlay and enters combat phase proper.
+    /// </summary>
+    private void FinishCombatCountdown()
+    {
+        _countdownActive = false;
+
+        // Remove the overlay
+        if (_countdownLayer != null)
+        {
+            _countdownLayer.QueueFree();
+            _countdownLayer = null;
+        }
+        _countdownBg = null;
+        _countdownLabel = null;
+
+        // Show the HUD again
+        if (_hudRoot != null) _hudRoot.Visible = true;
+
+        // Now enter combat phase — but skip the heavy setup work since we already did it.
+        // We directly set the phase and handle the remaining UI setup.
+        CurrentPhase = GamePhase.Combat;
+        _phaseCountdownSeconds = 0f;
+
+        // Toggle voxel edge grid off
+        RenderingServer.GlobalShaderParameterSet("edge_grid_enabled", 0.0f);
+
+        // Show combat HUD
+        CanvasLayer? combatHUD = GetNodeOrNull<CanvasLayer>("CombatHUD");
+        if (combatHUD != null) combatHUD.Visible = true;
+
+        // UI state
+        Input.MouseMode = Input.MouseModeEnum.Visible;
+        if (_skipTurnButton != null) _skipTurnButton.Visible = true;
+        if (_readyButton != null) _readyButton.Visible = false;
+
+        // Populate CombatUI with actual placed weapons for the first player
+        if (_turnManager?.CurrentPlayer is PlayerSlot firstPlayer)
+        {
+            RefreshCombatUIWeapons(firstPlayer);
+        }
+
+        // Start the turn clock now that the countdown is done
+        _turnManager?.StartTurnClock(Settings.TurnTimeSeconds);
+
+        // Emit phase changed event
+        EventBus.Instance?.EmitPhaseChanged(new PhaseChangedEvent(GamePhase.FogReveal, GamePhase.Combat));
+        _steamPlatform?.Platform.SetRichPresence("status", GamePhase.Combat.ToString());
+
+        GD.Print("[GameManager] Combat countdown complete, combat phase started.");
+    }
+
+    // ─────────────────────────────────────────────────
     //  COMBAT PHASE
     // ─────────────────────────────────────────────────
 
     private void ProcessCombatPhase(double delta)
     {
+        // Combat intro flyover — orbit the arena before handing control to the player
+        if (_combatIntroActive)
+        {
+            ProcessCombatIntro((float)delta);
+            return;
+        }
+
+        // When Artillery Dominance is active, run the automated bombardment
+        // instead of normal turn-based combat
+        if (_artilleryDominanceActive)
+        {
+            ProcessBombardment(delta);
+            return;
+        }
+
         // Update voxel hover highlight during targeting mode
         UpdateTargetingHighlight();
+    }
+
+    private void ProcessCombatIntro(float dt)
+    {
+        _combatIntroTimer += dt;
+
+        if (_camera == null)
+        {
+            _combatIntroActive = false;
+            return;
+        }
+
+        PlayerSlot firstPlayer = _turnManager?.CurrentPlayer ?? PlayerSlot.Player1;
+        Vector3 fortCenter = ComputePlayerFortressCenter(firstPlayer) + new Vector3(0f, 4f, 0f);
+        Vector3 arenaCenter = ComputeArenaMidpoint();
+
+        // Compute the final behind-zone position (same as PositionFreeFlyBehindZone)
+        Vector3 awayDir = new Vector3(fortCenter.X - arenaCenter.X, 0f, fortCenter.Z - arenaCenter.Z);
+        if (awayDir.LengthSquared() < 0.01f) awayDir = new Vector3(0f, 0f, 1f);
+        awayDir = awayDir.Normalized();
+        Vector3 behindPos = fortCenter + new Vector3(0f, 40f, 0f) + awayDir * 49f;
+
+        // Start position: directly above the fortress looking down
+        Vector3 topDownPos = fortCenter + new Vector3(0f, 65f, 0f);
+
+        float progress = Mathf.Clamp(_combatIntroTimer / CombatIntroDuration, 0f, 1f);
+        float t = progress * progress * (3f - 2f * progress); // smoothstep easing
+
+        // Smoothly zoom from top-down to behind-zone position
+        Vector3 currentPos = topDownPos.Lerp(behindPos, t);
+        Vector3 lookTarget = fortCenter; // always look at the fortress
+        _camera.SetLookTarget(currentPos, lookTarget);
+
+        if (progress >= 1f)
+        {
+            // Intro complete — hand control to the player
+            _combatIntroActive = false;
+            PositionFreeFlyBehindZone(firstPlayer);
+            _turnManager?.StartTurnClock(Settings.TurnTimeSeconds);
+        }
     }
 
     private void HandleCombatInput(InputEvent @event)
@@ -2192,32 +3209,12 @@ public partial class GameManager : Node
             return;
         }
 
-        // Enter key: confirm weapon selection (same as clicking the CONFIRM button)
-        if (@event is InputEventKey enterKey && enterKey.Pressed && enterKey.Keycode == Key.Enter)
-        {
-            if (_selectedWeaponIndex >= 0 && !_weaponConfirmed && !_isAiming)
-            {
-                ConfirmWeaponFromKeyboard();
-            }
-        }
-
-        // Space bar: confirm weapon if selected but unconfirmed, fire if target is set,
-        // otherwise enter targeting mode (if already confirmed)
+        // Space bar / fire action: fire if target is set
         if (@event.IsActionPressed("fire_weapon"))
         {
             if (_hasTarget && _aimingSystem != null && _aimingSystem.HasTarget)
             {
                 FireCurrentPlayerWeapon();
-            }
-            else if (_selectedWeaponIndex >= 0 && !_weaponConfirmed && !_isAiming)
-            {
-                // Weapon selected but not confirmed — confirm it first
-                ConfirmWeaponFromKeyboard();
-            }
-            else if (_weaponConfirmed && !_isAiming)
-            {
-                _isAiming = true;
-                TransitionToTargeting(currentPlayer);
             }
         }
 
@@ -2231,27 +3228,33 @@ public partial class GameManager : Node
             }
         }
 
-        // Spectator view toggle (V key): during bot turns, toggle between
-        // top-down stagnant view and free-fly camera. The preference persists
-        // across bot turns until the player toggles again or their own turn starts.
+        // Spectator view toggle (V key): toggle top-down spectator preference.
+        // The preference is sticky — it persists across all turns until the player
+        // presses V again. During bot turns the camera switches immediately;
+        // during the human's own turn, only the preference is toggled (the camera
+        // stays in aiming position, but top-down will activate after they fire).
         if (@event is InputEventKey viewKey && viewKey.Pressed && viewKey.Keycode == Key.V)
         {
+            _spectatorTopDown = !_spectatorTopDown;
             if (IsBot(currentPlayer))
             {
-                _spectatorTopDown = !_spectatorTopDown;
-                // Don't interrupt cinematic camera moments (projectile follow, impact, kill cam, railgun beam)
-                if (_combatCamera != null &&
-                    _combatCamera.CurrentMode != CombatCamera.Mode.FollowProjectile &&
-                    _combatCamera.CurrentMode != CombatCamera.Mode.Impact &&
-                    _combatCamera.CurrentMode != CombatCamera.Mode.KillCam &&
-                    _combatCamera.CurrentMode != CombatCamera.Mode.RailgunBeam)
+                // When toggling top-down ON, always switch immediately — even during
+                // cinematic moments (projectile follow, impact, kill cam). The player
+                // wants to stay in the overhead view and not track bot projectiles.
+                if (_spectatorTopDown)
                 {
-                    if (_spectatorTopDown)
-                    {
-                        _camera?.Deactivate();
-                        _combatCamera.TopDown(ComputeArenaMidpoint());
-                    }
-                    else
+                    _camera?.Deactivate();
+                    _combatCamera?.Deactivate();
+                    _combatCamera?.TopDown(ComputeArenaMidpoint());
+                }
+                else
+                {
+                    // Toggling OFF: only switch if not mid-cinematic
+                    if (_combatCamera != null &&
+                        _combatCamera.CurrentMode != CombatCamera.Mode.FollowProjectile &&
+                        _combatCamera.CurrentMode != CombatCamera.Mode.Impact &&
+                        _combatCamera.CurrentMode != CombatCamera.Mode.KillCam &&
+                        _combatCamera.CurrentMode != CombatCamera.Mode.RailgunBeam)
                     {
                         SwitchToFreeFlyCamera();
                     }
@@ -2557,7 +3560,7 @@ public partial class GameManager : Node
         // Remove the green selection highlight from all weapons
         ClearAllWeaponHighlights();
 
-        // Hide the target enemy selector UI and reset confirm button state
+        // Hide the target enemy selector UI
         CombatUI? combatUI = GetNodeOrNull<CombatUI>("%CombatUI")
             ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
         combatUI?.HideTargetSelector();
@@ -3090,6 +4093,13 @@ public partial class GameManager : Node
             killer.Stats.CommanderKills++;
         }
 
+        // Activate kill cam: orbit the death location
+        if (_combatCamera != null)
+        {
+            _camera?.Deactivate();
+            _combatCamera.KillCam(payload.WorldPosition);
+        }
+
         _turnManager?.RemovePlayer(payload.Victim, Settings.TurnTimeSeconds);
         int aliveCount = 0;
         PlayerSlot? winner = null;
@@ -3104,11 +4114,11 @@ public partial class GameManager : Node
 
         if (aliveCount <= 1)
         {
-            SetPhase(GamePhase.GameOver);
-            foreach ((PlayerSlot slot, PlayerData _) in _players)
-            {
-                _progressionManager?.AwardMatchCompleted(winner.HasValue && winner.Value == slot);
-            }
+            _artilleryDominanceActive = false;
+            // Don't go to GameOver immediately — let the kill cam play out first.
+            // OnCombatCameraCinematicFinished will trigger the actual GameOver.
+            _pendingGameOver = true;
+            _pendingWinner = winner;
         }
     }
 
@@ -3120,6 +4130,13 @@ public partial class GameManager : Node
     private void OnTurnChanged(TurnChangedEvent payload)
     {
         if (CurrentPhase != GamePhase.Combat || _combatCamera == null)
+        {
+            return;
+        }
+
+        // During artillery dominance, don't reposition camera or toggle UI —
+        // the top-down overview and hidden combat HUD should remain locked.
+        if (_artilleryDominanceActive)
         {
             return;
         }
@@ -3213,18 +4230,18 @@ public partial class GameManager : Node
                 _camera?.Deactivate();
                 _combatCamera.TopDown(ComputeArenaMidpoint());
             }
-            else
+            else if (IsBot(payload.CurrentPlayer))
             {
+                // Bot turn: show the bot's base briefly before it fires
                 SwitchToFreeFlyCamera();
                 PositionFreeFlyBehindZone(payload.CurrentPlayer);
             }
-        }
-
-        // When it's the human player's turn, clear the spectator preference
-        // so it doesn't carry into their aiming/targeting flow.
-        if (!IsBot(payload.CurrentPlayer))
-        {
-            _spectatorTopDown = false;
+            else
+            {
+                // Human turn: position behind their build zone so they can aim
+                SwitchToFreeFlyCamera();
+                PositionFreeFlyBehindZone(payload.CurrentPlayer);
+            }
         }
 
         // If the current player is a bot, schedule automatic play after a short delay
@@ -3256,9 +4273,27 @@ public partial class GameManager : Node
     }
 
     /// <summary>
+    /// Returns true if the player has at least one intact (not destroyed) weapon,
+    /// regardless of cooldown. Used for game-over decisions — the game should NOT
+    /// end just because weapons are on cooldown (they'll be ready next round).
+    /// </summary>
+    private bool PlayerHasIntactWeapons(PlayerSlot player)
+    {
+        if (!_weapons.TryGetValue(player, out List<WeaponBase>? weaponList) || weaponList == null)
+        {
+            return false;
+        }
+
+        return weaponList.Exists(w =>
+            GodotObject.IsInstanceValid(w) && !w.IsDestroyed);
+    }
+
+    /// <summary>
     /// Returns true if any alive player in the current turn order has at least
-    /// one usable weapon. Used to detect the "all weapons destroyed" end condition
-    /// and prevent an infinite skip loop.
+    /// one intact weapon (regardless of cooldown). Used to detect the "all weapons
+    /// destroyed" end condition. Weapons on cooldown will be ready next round, so
+    /// the game should NOT end just because everything is on cooldown — only when
+    /// all weapons are truly destroyed.
     /// </summary>
     private bool AnyPlayerHasUsableWeapons()
     {
@@ -3269,7 +4304,7 @@ public partial class GameManager : Node
 
         foreach (PlayerSlot slot in _turnManager.TurnOrder)
         {
-            if (PlayerHasUsableWeapons(slot))
+            if (PlayerHasIntactWeapons(slot))
             {
                 return true;
             }
@@ -3299,12 +4334,33 @@ public partial class GameManager : Node
 
         GD.Print($"[Combat] Game over — no weapons remain. Winner by health: {winner?.ToString() ?? "none (draw)"}");
 
+        // Mark all non-winners as eliminated so GameOverUI shows a single winner
+        if (winner.HasValue)
+        {
+            foreach ((PlayerSlot slot, PlayerData playerData) in _players)
+            {
+                if (slot != winner.Value && playerData.IsAlive)
+                {
+                    playerData.IsAlive = false;
+                }
+            }
+        }
+
         _turnManager?.StopTurnClock();
+        Engine.TimeScale = 1.0;
+        _artilleryDominanceActive = false;
         SetPhase(GamePhase.GameOver);
 
         foreach ((PlayerSlot slot, PlayerData _) in _players)
         {
             _progressionManager?.AwardMatchCompleted(winner.HasValue && winner.Value == slot);
+        }
+        // Commit match earnings to wallet only if the local player won.
+        // Losing a match earns no currency.
+        if (winner.HasValue && winner.Value == PlayerSlot.Player1
+            && _players.TryGetValue(PlayerSlot.Player1, out PlayerData? localP1))
+        {
+            _progressionManager?.CommitMatchEarnings(localP1.Stats.MatchEarnings);
         }
     }
 
@@ -3393,7 +4449,23 @@ public partial class GameManager : Node
             botZoneCenter = Utility.MathHelpers.MicrovoxelToWorld(mid);
         }
 
-        var enemy = AI.BotCombatPlanner.SelectTargetStatic(enemies, difficulty, rng, threatScores, botZoneCenter);
+        // Determine which enemies still have usable weapons — armed enemies are
+        // real threats and should be prioritized over defenceless ones.
+        HashSet<PlayerSlot> armedEnemies = new HashSet<PlayerSlot>();
+        foreach (var (enemySlot, _) in enemies)
+        {
+            if (_weapons.TryGetValue(enemySlot, out List<WeaponBase>? enemyWeapons))
+            {
+                // Purge destroyed weapons before checking
+                enemyWeapons.RemoveAll(w => w == null || !GodotObject.IsInstanceValid(w) || w.IsDestroyed);
+                if (enemyWeapons.Count > 0)
+                {
+                    armedEnemies.Add(enemySlot);
+                }
+            }
+        }
+
+        var enemy = AI.BotCombatPlanner.SelectTargetStatic(enemies, difficulty, rng, threatScores, botZoneCenter, armedEnemies);
 
         if (!_buildZones.TryGetValue(enemy.Slot, out BuildZone enemyZone))
         {
@@ -3430,10 +4502,10 @@ public partial class GameManager : Node
         // Reduce scatter when targeting the commander for a more lethal shot
         float baseScatter = difficulty switch
         {
-            AI.BotDifficulty.Easy => 3.0f,
-            AI.BotDifficulty.Medium => 1.5f,
-            AI.BotDifficulty.Hard => 0.5f,
-            _ => 2.0f,
+            AI.BotDifficulty.Easy => 2.0f,
+            AI.BotDifficulty.Medium => 1.0f,
+            AI.BotDifficulty.Hard => 0.3f,
+            _ => 1.5f,
         };
         // Reduce scatter when aiming at high-priority targets (commander, weapons)
         float scatter = baseScatter;
@@ -3452,6 +4524,15 @@ public partial class GameManager : Node
 
         // Use SetTargetPoint for accurate ballistic solution (same as player click-to-target)
         _aimingSystem.SetTargetPoint(weapon.GlobalPosition, targetPos, weapon.ProjectileSpeed, weapon.WeaponId);
+
+        // Boost pitch for cannon so the arc clears fortress walls and obstacles.
+        // The pure low-arc solution often clips walls on the way to the target.
+        // A small pitch increase (~8 degrees) gives a slightly higher trajectory
+        // that still looks like a cannon shot but clears most rooftop structures.
+        if (weapon.WeaponId == "cannon")
+        {
+            _aimingSystem.PitchRadians += Mathf.DegToRad(8f);
+        }
 
         // Rotate the weapon to face the target
         RotateWeaponToward(weapon, targetPos);
@@ -3473,8 +4554,10 @@ public partial class GameManager : Node
 
         if (projectile != null)
         {
-            // Follow the projectile with the combat camera (cinematic moment)
-            if (_combatCamera != null && GodotObject.IsInstanceValid(projectile))
+            // Follow the projectile with the combat camera (cinematic moment),
+            // but skip the follow cam when spectator top-down is active so the
+            // player keeps their overhead view during bot turns.
+            if (_combatCamera != null && GodotObject.IsInstanceValid(projectile) && !_spectatorTopDown)
             {
                 _camera?.Deactivate();
                 _combatCamera.FollowProjectile(projectile);
@@ -3584,6 +4667,31 @@ public partial class GameManager : Node
         {
             instigatorData.Stats.VoxelsDestroyed++;
 
+            // Only earn currency from destroying player-built structures (voxels inside
+            // a build zone), not from terrain, trees, or bombardment. This prevents
+            // farming currency from the map and getting huge payouts from backup bombs.
+            bool isInBuildZone = false;
+            if (!_artilleryDominanceActive)
+            {
+                foreach (var kvp in _buildZones)
+                {
+                    if (kvp.Value.ContainsMicrovoxel(payload.Position))
+                    {
+                        isInBuildZone = true;
+                        break;
+                    }
+                }
+            }
+
+            if (isInBuildZone)
+            {
+                var destroyedMaterial = (Voxel.VoxelMaterialType)(payload.BeforeData & 0xFF);
+                if (GameConfig.MaterialEarnValues.TryGetValue(destroyedMaterial, out int earnValue))
+                {
+                    instigatorData.Stats.MatchEarnings += earnValue;
+                }
+            }
+
             // Record ShotsHit (once per round to avoid double-counting from
             // a single shot that destroys multiple voxels)
             if (_hitRecordedThisRound.Add(instigator))
@@ -3635,6 +4743,148 @@ public partial class GameManager : Node
         }
 
         GD.Print($"[Combat] {payload.WeaponId} belonging to {payload.Owner} was destroyed at {payload.WorldPosition}.");
+
+        // Check for Artillery Dominance: if any living player has destroyed ALL
+        // enemy weapons, an automated bombardment rains projectiles on the enemy.
+        if (CurrentPhase == GamePhase.Combat && !_artilleryDominanceActive)
+        {
+            CheckArtilleryDominance();
+        }
+    }
+
+    /// <summary>
+    /// Checks if any player has achieved Artillery Dominance (all enemy weapons destroyed).
+    /// If so, an automated bombardment begins: projectiles rain down on all enemy bases
+    /// from above until every enemy commander is dead. The player watches from a top-down camera.
+    /// </summary>
+    private void CheckArtilleryDominance()
+    {
+        foreach (var kvp in _players)
+        {
+            PlayerSlot candidate = kvp.Key;
+            if (!kvp.Value.IsAlive) continue;
+
+            // Does this player still have weapons?
+            if (!_weapons.TryGetValue(candidate, out List<WeaponBase>? ownWeapons)) continue;
+            int ownAlive = ownWeapons.FindAll(w => w != null && IsInstanceValid(w) && !w.IsDestroyed).Count;
+            if (ownAlive == 0) continue;
+
+            // Check if ALL other living players have zero weapons
+            bool allEnemiesDisarmed = true;
+            foreach (var other in _players)
+            {
+                if (other.Key == candidate || !other.Value.IsAlive) continue;
+                if (_weapons.TryGetValue(other.Key, out List<WeaponBase>? enemyWeapons))
+                {
+                    int enemyAlive = enemyWeapons.FindAll(w => w != null && IsInstanceValid(w) && !w.IsDestroyed).Count;
+                    if (enemyAlive > 0)
+                    {
+                        allEnemiesDisarmed = false;
+                        break;
+                    }
+                }
+            }
+
+            if (allEnemiesDisarmed)
+            {
+                _artilleryDominanceActive = true;
+                _artilleryDominanceWinner = candidate;
+                _bombardmentTimer = 2.0f; // brief pause before first bomb so player can read the banner
+                _bombardmentSalvoCount = 0;
+                _bombardmentTargetIndex = 0;
+                _bombardmentTargets = null; // will be built on first ProcessBombardment call
+                Engine.TimeScale = 0.5; // half speed for dramatic effect + reduced physics load
+                GD.Print($"[Combat] ARTILLERY DOMINANCE! {kvp.Value.DisplayName} controls the battlefield — automated bombardment begins!");
+
+                // Hide combat UI (weapon buttons, crosshairs, etc.)
+                CanvasLayer? combatHUD = GetNodeOrNull<CanvasLayer>("CombatHUD");
+                if (combatHUD != null) combatHUD.Visible = false;
+                if (_skipTurnButton != null) _skipTurnButton.Visible = false;
+
+                // Stop the turn clock
+                _turnManager?.StopTurnClock();
+
+                // Show "BACKUP HAS ARRIVED!" banner
+                ShowDominanceBanner();
+
+                // Switch to a top-down overview camera so the player can watch the barrage
+                SwitchToTopDownOverview();
+
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Runs the automated Artillery Dominance bombardment. Called each frame from ProcessCombatPhase
+    /// while <see cref="_artilleryDominanceActive"/> is true. Spawns salvos of 3-5 projectiles
+    /// every 1-2 seconds, targeting positions around enemy commanders with random spread.
+    /// The bombardment continues until all enemy commanders are dead (OnCommanderKilled handles GameOver).
+    /// </summary>
+    private void ProcessBombardment(double delta)
+    {
+        _bombardmentTimer -= (float)delta;
+        if (_bombardmentTimer > 0f)
+            return;
+
+        if (_voxelWorld == null)
+            return;
+
+        // Build/refresh target list on first call or when targets die
+        if (_bombardmentTargets == null || _bombardmentTargets.Count == 0)
+        {
+            _bombardmentTargets = new List<PlayerSlot>();
+            foreach (var kvp in _players)
+            {
+                if (kvp.Key == _artilleryDominanceWinner) continue;
+                if (!kvp.Value.IsAlive) continue;
+                _bombardmentTargets.Add(kvp.Key);
+            }
+            _bombardmentTargetIndex = 0;
+        }
+
+        // Remove dead targets
+        _bombardmentTargets.RemoveAll(s => !_players.ContainsKey(s) || !_players[s].IsAlive);
+        if (_bombardmentTargets.Count == 0)
+            return;
+
+        // Pick the next enemy fort sequentially
+        if (_bombardmentTargetIndex >= _bombardmentTargets.Count)
+            _bombardmentTargetIndex = 0;
+
+        PlayerSlot enemySlot = _bombardmentTargets[_bombardmentTargetIndex];
+        _bombardmentTargetIndex++;
+        _bombardmentSalvoCount++;
+
+        // 3 second gap before next bomb
+        _bombardmentTimer = 3.0f;
+
+        GD.Print($"[Combat] Bombardment bomb #{_bombardmentSalvoCount} targeting {enemySlot}!");
+
+        // Target the center of the enemy's build zone
+        Vector3 fortCenter = ComputePlayerFortressCenter(enemySlot);
+
+        // Spawn projectile high above the fortress center
+        Random rng = new Random(System.Environment.TickCount ^ _bombardmentSalvoCount);
+        float spawnHeight = 50f + (float)rng.NextDouble() * 10f;
+        Vector3 spawnPos = new Vector3(fortCenter.X, spawnHeight, fortCenter.Z);
+
+        // Straight down velocity
+        Vector3 velocity = new Vector3(0f, -20f, 0f);
+
+        // One bomb at a time: 200 damage, 12 microvoxel blast radius (6m), 1.5x scale
+        // Guaranteed 100% destruction within radius — multiple salvos ensure total annihilation
+        ProjectileBase projectile = new ProjectileBase();
+        projectile.SetProjectileType("mortar_shell");
+        GetTree().CurrentScene.AddChild(projectile);
+        projectile.GlobalPosition = spawnPos;
+        projectile.Initialize(_voxelWorld, _artilleryDominanceWinner, velocity, 200, 12f);
+        projectile.Scale = Vector3.One * 1.5f;
+
+        // Smoke trail for dramatic effect
+        TrailFX.CreateSmokeTrail(projectile);
+
+        AudioDirector.Instance?.PlaySFX("missile_fire", spawnPos);
     }
 
     /// <summary>
@@ -3683,6 +4933,126 @@ public partial class GameManager : Node
     }
 
     /// <summary>
+    /// Switches to a top-down overview camera looking down at the entire arena.
+    /// Used during Artillery Dominance so the player can see the whole battlefield
+    /// while bombarding defenseless enemies.
+    /// </summary>
+    private void SwitchToTopDownOverview()
+    {
+        _combatCamera?.Deactivate();
+        if (_camera == null) return;
+
+        _camera.ResetToFullArenaBounds();
+        _camera.Activate();
+
+        // Position camera high above the arena center, looking nearly straight down
+        // with a slight offset so the player can see depth
+        Vector3 arenaCenter = ComputeArenaMidpoint();
+        float overviewHeight = 75f;
+        Vector3 cameraPos = arenaCenter + new Vector3(0f, overviewHeight, 16f);
+        Vector3 lookTarget = arenaCenter;
+
+        _camera.GlobalPosition = cameraPos;
+        _camera.TransitionToLookTarget(cameraPos, lookTarget);
+
+        // Lock the camera so the player can't fly away during bombardment
+        _camera.SetProcessUnhandledInput(false);
+
+        GD.Print($"[Combat] Camera switched to top-down overview at {cameraPos}");
+    }
+
+    private void ShowDominanceBanner()
+    {
+        // Create a CanvasLayer banner saying "BACKUP HAS ARRIVED!"
+        _dominanceBannerLayer = new CanvasLayer();
+        _dominanceBannerLayer.Name = "DominanceBanner";
+        _dominanceBannerLayer.Layer = 90;
+        AddChild(_dominanceBannerLayer);
+
+        // Semi-transparent dark strip across center of screen
+        ColorRect strip = new ColorRect();
+        strip.Name = "BannerStrip";
+        strip.Color = new Color(0f, 0f, 0f, 0.7f);
+        strip.SetAnchorsPreset(Control.LayoutPreset.CenterTop);
+        strip.AnchorLeft = 0f;
+        strip.AnchorRight = 1f;
+        strip.AnchorTop = 0.3f;
+        strip.AnchorBottom = 0.5f;
+        strip.OffsetLeft = 0;
+        strip.OffsetRight = 0;
+        strip.OffsetTop = 0;
+        strip.OffsetBottom = 0;
+        strip.MouseFilter = Control.MouseFilterEnum.Ignore;
+        _dominanceBannerLayer.AddChild(strip);
+
+        // Main text
+        Label bannerLabel = new Label();
+        bannerLabel.Name = "BannerText";
+        bannerLabel.Text = "BACKUP HAS ARRIVED!";
+        bannerLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        bannerLabel.VerticalAlignment = VerticalAlignment.Center;
+        bannerLabel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        bannerLabel.AnchorTop = 0.3f;
+        bannerLabel.AnchorBottom = 0.45f;
+        bannerLabel.OffsetLeft = 0;
+        bannerLabel.OffsetRight = 0;
+        bannerLabel.OffsetTop = 0;
+        bannerLabel.OffsetBottom = 0;
+        bannerLabel.MouseFilter = Control.MouseFilterEnum.Ignore;
+
+        Font? pixelFont = GD.Load<Font>("res://assets/fonts/PressStart2P-Regular.ttf");
+        if (pixelFont != null)
+            bannerLabel.AddThemeFontOverride("font", pixelFont);
+        bannerLabel.AddThemeFontSizeOverride("font_size", 32);
+        bannerLabel.AddThemeColorOverride("font_color", new Color("ffcc00"));
+        _dominanceBannerLayer.AddChild(bannerLabel);
+
+        // Subtitle
+        Label subLabel = new Label();
+        subLabel.Name = "BannerSub";
+        subLabel.Text = "Raining fire on the enemy...";
+        subLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        subLabel.VerticalAlignment = VerticalAlignment.Top;
+        subLabel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        subLabel.AnchorTop = 0.45f;
+        subLabel.AnchorBottom = 0.5f;
+        subLabel.OffsetLeft = 0;
+        subLabel.OffsetRight = 0;
+        subLabel.OffsetTop = 0;
+        subLabel.OffsetBottom = 0;
+        subLabel.MouseFilter = Control.MouseFilterEnum.Ignore;
+        if (pixelFont != null)
+            subLabel.AddThemeFontOverride("font", pixelFont);
+        subLabel.AddThemeFontSizeOverride("font_size", 14);
+        subLabel.AddThemeColorOverride("font_color", new Color("e8e4df"));
+        _dominanceBannerLayer.AddChild(subLabel);
+
+        // Fade out the banner after 3 seconds
+        Tween bannerTween = CreateTween();
+        bannerTween.TweenInterval(2.5f);
+        bannerTween.TweenProperty(_dominanceBannerLayer, "layer", 90, 0f); // no-op to anchor the chain
+        bannerTween.TweenCallback(Callable.From(() =>
+        {
+            if (_dominanceBannerLayer != null && IsInstanceValid(_dominanceBannerLayer))
+            {
+                // Fade children
+                Tween fadeTween = CreateTween();
+                fadeTween.TweenProperty(strip, "modulate:a", 0f, 0.5f);
+                fadeTween.Parallel().TweenProperty(bannerLabel, "modulate:a", 0f, 0.5f);
+                fadeTween.Parallel().TweenProperty(subLabel, "modulate:a", 0f, 0.5f);
+                fadeTween.TweenCallback(Callable.From(() =>
+                {
+                    if (_dominanceBannerLayer != null && IsInstanceValid(_dominanceBannerLayer))
+                    {
+                        _dominanceBannerLayer.QueueFree();
+                        _dominanceBannerLayer = null;
+                    }
+                }));
+            }
+        }));
+    }
+
+    /// <summary>
     /// Positions the FreeFlyCamera behind the specified player's build zone,
     /// looking toward the arena center. Used during combat phase as the default
     /// free-fly starting position for each turn.
@@ -3705,8 +5075,8 @@ public partial class GameManager : Node
         }
         awayFromCenter = awayFromCenter.Normalized();
 
-        float cameraHeight = 10f;
-        float cameraBack = 14f;
+        float cameraHeight = 40f;
+        float cameraBack = 49f;
         Vector3 cameraPos = pivot + new Vector3(0f, cameraHeight, 0f) + awayFromCenter * cameraBack;
 
         _camera.TransitionToLookTarget(cameraPos, pivot);
@@ -3718,6 +5088,25 @@ public partial class GameManager : Node
     /// </summary>
     private void OnCombatCameraCinematicFinished()
     {
+        // If the kill cam just finished and the game is over, transition now
+        if (_pendingGameOver)
+        {
+            _pendingGameOver = false;
+            Engine.TimeScale = 1.0;
+            SetPhase(GamePhase.GameOver);
+            foreach ((PlayerSlot slot, PlayerData _) in _players)
+            {
+                _progressionManager?.AwardMatchCompleted(_pendingWinner.HasValue && _pendingWinner.Value == slot);
+            }
+            if (_pendingWinner.HasValue && _pendingWinner.Value == PlayerSlot.Player1
+                && _players.TryGetValue(PlayerSlot.Player1, out PlayerData? localPlayer))
+            {
+                _progressionManager?.CommitMatchEarnings(localPlayer.Stats.MatchEarnings);
+            }
+            _pendingWinner = null;
+            return;
+        }
+
         if (CurrentPhase == GamePhase.Combat || CurrentPhase == GamePhase.GameOver)
         {
             // After a cinematic moment, respect the spectator top-down preference
@@ -3730,7 +5119,14 @@ public partial class GameManager : Node
             }
             else
             {
+                // Return to free-fly camera. If it's the human player's turn,
+                // position behind their zone so they don't end up at some random
+                // post-impact location after their projectile cinematic ends.
                 SwitchToFreeFlyCamera();
+                if (_turnManager?.CurrentPlayer is PlayerSlot humanPlayer && !IsBot(humanPlayer))
+                {
+                    PositionFreeFlyBehindZone(humanPlayer);
+                }
             }
         }
     }
@@ -3891,6 +5287,9 @@ public partial class GameManager : Node
             buildUI.ToolSelected += OnBuildToolSelected;
             buildUI.MaterialSelected += OnBuildMaterialSelected;
             buildUI.WeaponTypeSelected += OnWeaponTypeSelected;
+            buildUI.WeaponSellRequested += OnWeaponSellRequested;
+            buildUI.SandboxSaveRequested += (name) => SaveSandboxBuild(name);
+            buildUI.SandboxLoadRequested += (name) => LoadSandboxBuild(name);
             buildUI.PowerupBuyRequested += OnPowerupBuyRequested;
             buildUI.PowerupSellRequested += OnPowerupSellRequested;
             buildUI.TroopBuyRequested += OnTroopBuyRequested;
@@ -4445,6 +5844,72 @@ public partial class GameManager : Node
             // Emit budget changed so UI updates the budget display
             EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(_activeBuilder, player.Budget, stats.Cost));
         }
+    }
+
+    private void OnWeaponSellRequested(WeaponType type)
+    {
+        if (CurrentPhase != GamePhase.Building)
+        {
+            return;
+        }
+
+        if (!_players.TryGetValue(_activeBuilder, out PlayerData? player))
+        {
+            return;
+        }
+
+        if (!_weapons.TryGetValue(_activeBuilder, out List<WeaponBase>? weaponList) || weaponList.Count == 0)
+        {
+            GD.Print($"[Build] {_activeBuilder}: No weapons to sell.");
+            return;
+        }
+
+        // Find the last placed weapon of the requested type
+        WeaponBase? target = null;
+        for (int i = weaponList.Count - 1; i >= 0; i--)
+        {
+            WeaponBase w = weaponList[i];
+            if (w == null || !GodotObject.IsInstanceValid(w) || w.IsDestroyed)
+            {
+                continue;
+            }
+
+            WeaponType wType = w switch
+            {
+                Cannon => WeaponType.Cannon,
+                Mortar => WeaponType.Mortar,
+                Railgun => WeaponType.Railgun,
+                MissileLauncher => WeaponType.MissileLauncher,
+                Drill => WeaponType.Drill,
+                _ => WeaponType.Cannon,
+            };
+
+            if (wType == type)
+            {
+                target = w;
+                weaponList.RemoveAt(i);
+                break;
+            }
+        }
+
+        if (target == null)
+        {
+            GD.Print($"[Build] {_activeBuilder}: No {GetWeaponDisplayName(type)} to sell.");
+            return;
+        }
+
+        // Refund the cost
+        int refund = GetWeaponCost(type);
+        player.Refund(refund);
+        player.WeaponIds.Remove(target.WeaponId);
+
+        GD.Print($"[Build] {_activeBuilder}: Sold {GetWeaponDisplayName(type)} for ${refund} refund. Budget: ${player.Budget}.");
+
+        // Remove the weapon from the scene
+        target.QueueFree();
+
+        // Emit budget changed so UI updates
+        EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(_activeBuilder, player.Budget, refund));
     }
 
     private void OnPowerupActivateRequested(PowerupType type)

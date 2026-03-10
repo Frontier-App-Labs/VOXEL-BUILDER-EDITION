@@ -10,6 +10,7 @@ public partial class VoxelChunk : Node3D
     private static ShaderMaterial? _cachedOpaqueShaderMaterial;
     private static StandardMaterial3D? _cachedTransparentMaterial;
 
+
     private static ShaderMaterial OpaqueShaderMaterial
     {
         get

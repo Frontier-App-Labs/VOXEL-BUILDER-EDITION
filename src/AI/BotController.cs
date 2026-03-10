@@ -42,7 +42,9 @@ public partial class BotController : Node
     /// </summary>
     public IEnumerable<PlannedBuildAction> PlanBuild(BuildZone zone)
     {
-        return _buildPlanner.CreatePlan(Difficulty, zone);
+        int budget = GetBudgetForDifficulty(Difficulty);
+        BotBuildPlan plan = _buildPlanner.CreateFullPlan(Difficulty, zone, budget);
+        return plan.Actions;
     }
 
     /// <summary>
@@ -67,7 +69,8 @@ public partial class BotController : Node
     public BotBuildPlan RunBuildPhase(VoxelWorld world, BuildZone zone, PlayerData player)
     {
         _rng = new Random(System.Environment.TickCount ^ PlayerSlot.GetHashCode());
-        BotBuildPlan plan = _buildPlanner.CreateFullPlan(Difficulty, zone, player.Budget);
+        int budget = GetBudgetForDifficulty(Difficulty);
+        BotBuildPlan plan = _buildPlanner.CreateFullPlan(Difficulty, zone, budget);
 
         // Execute all build actions by stamping voxels directly into the world
         foreach (PlannedBuildAction action in plan.Actions)
@@ -224,6 +227,21 @@ public partial class BotController : Node
     }
 
     // ─────────────────────────────────────────────────
+    //  BUDGET HELPERS
+    // ─────────────────────────────────────────────────
+
+    private static int GetBudgetForDifficulty(BotDifficulty difficulty)
+    {
+        return difficulty switch
+        {
+            BotDifficulty.Easy => GameConfig.BotBudgetEasy,
+            BotDifficulty.Medium => GameConfig.BotBudgetMedium,
+            BotDifficulty.Hard => GameConfig.BotBudgetHard,
+            _ => GameConfig.BotBudgetMedium,
+        };
+    }
+
+    // ─────────────────────────────────────────────────
     //  BUILD EXECUTION
     // ─────────────────────────────────────────────────
 
@@ -280,9 +298,21 @@ public partial class BotController : Node
             {
                 for (int x = min.X; x <= max.X; x++)
                 {
-                    bool isShell = x == min.X || x == max.X ||
-                                   y == min.Y || y == max.Y ||
-                                   z == min.Z || z == max.Z;
+                    // For single-layer hollow (min.Y == max.Y), only X/Z
+                    // edges are shell — otherwise y == min.Y is always true
+                    // and every cell would be "shell", filling the interior.
+                    bool isShell;
+                    if (min.Y == max.Y)
+                    {
+                        isShell = x == min.X || x == max.X ||
+                                  z == min.Z || z == max.Z;
+                    }
+                    else
+                    {
+                        isShell = x == min.X || x == max.X ||
+                                  y == min.Y || y == max.Y ||
+                                  z == min.Z || z == max.Z;
+                    }
 
                     if (!hollow || isShell)
                     {

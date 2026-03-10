@@ -49,7 +49,6 @@ public partial class CombatUI : Control
 
     // --- Events ---
     public event Action<int>? WeaponSelected;
-    public event Action<int>? WeaponConfirmed;
     public event Action? FireRequested;
     public event Action<PowerupType>? PowerupActivateRequested;
     public event Action? DeployRequested;
@@ -90,15 +89,10 @@ public partial class CombatUI : Control
     private readonly Dictionary<PlayerSlot, VBoxContainer> _playerEntries = new Dictionary<PlayerSlot, VBoxContainer>();
     private int _selectedWeaponIndex = -1; // -1 means no weapon selected
     private int _selectedGroupIndex = -1; // which weapon group is currently selected
-    private bool _weaponConfirmed; // true once the player confirms their weapon choice
     private readonly List<PanelContainer> _weaponButtons = new List<PanelContainer>();
     private HBoxContainer? _weaponRow;
     private readonly List<(string WeaponId, string Name, string Icon)> _activeWeapons = new();
 
-    // --- Confirm weapon button ---
-    private PanelContainer? _confirmWeaponPanel;
-    private Button? _confirmWeaponBtn;
-    private Label? _confirmWeaponLabel;
     private readonly List<PanelContainer> _powerupSlots = new List<PanelContainer>();
     private readonly List<Label> _powerupCountLabels = new List<Label>();
     private VBoxContainer? _powerupContainer;
@@ -130,7 +124,6 @@ public partial class CombatUI : Control
 
         BuildTopBar();
         BuildWeaponBar();
-        BuildConfirmWeaponButton();
         BuildPowerupPanel();
         BuildDeployPanel();
         // Power meter and fire button removed — click-to-target auto-calculates trajectory
@@ -486,126 +479,6 @@ public partial class CombatUI : Control
 
         // Initial placeholder — will be rebuilt by SetAvailableWeapons once combat starts
         RebuildWeaponButtons();
-    }
-
-    /// <summary>
-    /// Builds the "CONFIRM [ENTER]" button that appears to the right of the weapon bar
-    /// when the player has selected a weapon but not yet confirmed. Clicking it (or
-    /// pressing Enter/Space) locks in the weapon and transitions to targeting mode.
-    /// </summary>
-    private void BuildConfirmWeaponButton()
-    {
-        _confirmWeaponPanel = CreateStyledPanel(new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.25f), 0);
-        _confirmWeaponPanel.SetAnchorsPreset(LayoutPreset.CenterBottom);
-        _confirmWeaponPanel.OffsetLeft = 220;
-        _confirmWeaponPanel.OffsetRight = 380;
-        _confirmWeaponPanel.OffsetTop = -70;
-        _confirmWeaponPanel.OffsetBottom = -20;
-        _confirmWeaponPanel.CustomMinimumSize = new Vector2(160, 50);
-        _confirmWeaponPanel.MouseFilter = MouseFilterEnum.Stop;
-        _confirmWeaponPanel.Visible = false;
-        AddChild(_confirmWeaponPanel);
-
-        _confirmWeaponBtn = new Button();
-        _confirmWeaponBtn.Text = "CONFIRM  [ENTER]";
-        _confirmWeaponBtn.Flat = true;
-        _confirmWeaponBtn.AddThemeFontOverride("font", PixelFont);
-        _confirmWeaponBtn.AddThemeFontSizeOverride("font_size", 11);
-        _confirmWeaponBtn.AddThemeColorOverride("font_color", AccentGreen);
-        _confirmWeaponBtn.AddThemeColorOverride("font_hover_color", TextPrimary);
-        _confirmWeaponBtn.MouseFilter = MouseFilterEnum.Stop;
-        _confirmWeaponBtn.Pressed += OnConfirmWeaponPressed;
-        _confirmWeaponPanel.AddChild(_confirmWeaponBtn);
-        _confirmWeaponBtn.SetAnchorsPreset(LayoutPreset.FullRect);
-        _confirmWeaponBtn.OffsetLeft = 0;
-        _confirmWeaponBtn.OffsetRight = 0;
-        _confirmWeaponBtn.OffsetTop = 0;
-        _confirmWeaponBtn.OffsetBottom = 0;
-
-        // Hover effect
-        _confirmWeaponBtn.MouseEntered += () =>
-        {
-            if (_confirmWeaponPanel == null) return;
-            StyleBoxFlat hover = CreateFlatStyle(new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.4f), 0);
-            hover.BorderWidthTop = 2;
-            hover.BorderWidthBottom = 2;
-            hover.BorderWidthLeft = 2;
-            hover.BorderWidthRight = 2;
-            hover.BorderColor = AccentGreen;
-            _confirmWeaponPanel.AddThemeStyleboxOverride("panel", hover);
-        };
-        _confirmWeaponBtn.MouseExited += () =>
-        {
-            _confirmWeaponPanel?.AddThemeStyleboxOverride("panel",
-                CreateFlatStyle(new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.25f), 0));
-        };
-
-        // Label beneath the button showing the weapon name
-        _confirmWeaponLabel = new Label();
-        _confirmWeaponLabel.Text = "";
-        _confirmWeaponLabel.HorizontalAlignment = HorizontalAlignment.Center;
-        _confirmWeaponLabel.AddThemeFontOverride("font", PixelFont);
-        _confirmWeaponLabel.AddThemeFontSizeOverride("font_size", 8);
-        _confirmWeaponLabel.AddThemeColorOverride("font_color", TextSecondary);
-        _confirmWeaponLabel.SetAnchorsPreset(LayoutPreset.CenterBottom);
-        _confirmWeaponLabel.OffsetLeft = 220;
-        _confirmWeaponLabel.OffsetRight = 380;
-        _confirmWeaponLabel.OffsetTop = -16;
-        _confirmWeaponLabel.OffsetBottom = -2;
-        _confirmWeaponLabel.MouseFilter = MouseFilterEnum.Ignore;
-        _confirmWeaponLabel.Visible = false;
-        AddChild(_confirmWeaponLabel);
-    }
-
-    private void OnConfirmWeaponPressed()
-    {
-        ConfirmWeaponSelection();
-    }
-
-    /// <summary>
-    /// Programmatically confirms the current weapon selection, transitioning to
-    /// targeting mode. Called from the confirm button, Enter key, or Space bar.
-    /// </summary>
-    public void ConfirmWeaponSelection()
-    {
-        if (_selectedWeaponIndex < 0 || _weaponConfirmed) return;
-
-        _weaponConfirmed = true;
-
-        // Hide the confirm button
-        if (_confirmWeaponPanel != null) _confirmWeaponPanel.Visible = false;
-        if (_confirmWeaponLabel != null) _confirmWeaponLabel.Visible = false;
-
-        // Emit the confirmed event with the flat weapon index
-        WeaponConfirmed?.Invoke(_selectedWeaponIndex);
-
-        GameManager? gm = GetTree().Root.GetNodeOrNull<GameManager>("Main");
-        gm?.OnWeaponSelectedFromUI(_selectedWeaponIndex);
-    }
-
-    /// <summary>
-    /// Shows the confirm button with the name of the selected weapon.
-    /// </summary>
-    private void ShowConfirmButton(string weaponName)
-    {
-        if (_confirmWeaponPanel != null)
-        {
-            _confirmWeaponPanel.Visible = true;
-        }
-        if (_confirmWeaponLabel != null)
-        {
-            _confirmWeaponLabel.Text = weaponName;
-            _confirmWeaponLabel.Visible = true;
-        }
-    }
-
-    /// <summary>
-    /// Hides the confirm button (on turn change, phase change, cancel, or after confirmation).
-    /// </summary>
-    private void HideConfirmButton()
-    {
-        if (_confirmWeaponPanel != null) _confirmWeaponPanel.Visible = false;
-        if (_confirmWeaponLabel != null) _confirmWeaponLabel.Visible = false;
     }
 
     // ========== POWERUP PANEL (bottom left, beside weapon bar) ==========
@@ -1331,8 +1204,6 @@ public partial class CombatUI : Control
 
         _selectedWeaponIndex = -1; // No weapon selected until player clicks one
         _selectedGroupIndex = -1;
-        _weaponConfirmed = false;
-        HideConfirmButton();
         RebuildWeaponButtons();
 
         // Do NOT show the "SELECT WEAPON" prompt here.  OnTurnChanged is the
@@ -1475,18 +1346,17 @@ public partial class CombatUI : Control
     }
 
     /// <summary>
-    /// Selects a weapon group's current instance and shows the confirm button.
-    /// If the same group is already selected (and not yet confirmed), clicking
-    /// again cycles to the next instance within that group.
-    /// The camera does NOT move until the player confirms.
+    /// Selects a weapon group's current instance and enters targeting mode.
+    /// If the same group is already selected, clicking again cycles to the
+    /// next instance within that group.
     /// </summary>
     private void SelectWeaponGroup(int groupIndex)
     {
         if (groupIndex < 0 || groupIndex >= _weaponGroups.Count) return;
 
-        // If clicking the same group that's already selected (but not confirmed),
+        // If clicking the same group that's already selected,
         // cycle to the next instance within the group
-        if (groupIndex == _selectedGroupIndex && !_weaponConfirmed)
+        if (groupIndex == _selectedGroupIndex)
         {
             WeaponGroup grp = _weaponGroups[groupIndex];
             if (grp.FlatIndices.Count > 1)
@@ -1498,7 +1368,6 @@ public partial class CombatUI : Control
         }
 
         _selectedGroupIndex = groupIndex;
-        _weaponConfirmed = false;
 
         WeaponGroup group = _weaponGroups[groupIndex];
         int flatIndex = group.FlatIndices[group.SelectedInstance];
@@ -1511,32 +1380,16 @@ public partial class CombatUI : Control
         UpdateWeaponButtonHighlights();
 
         // Emit WeaponSelected so GameManager highlights the weapon in 3D
-        // (but does NOT transition to targeting yet)
         WeaponSelected?.Invoke(flatIndex);
 
-        // Notify GameManager to highlight the weapon (preview only, no camera move)
+        // Notify GameManager to select the weapon and enter targeting mode
         GameManager? gm = GetTree().Root.GetNodeOrNull<GameManager>("Main");
         gm?.OnWeaponSelectedFromUI(flatIndex);
-
-        // Build the label text for the confirm button
-        string confirmLabel;
-        if (group.FlatIndices.Count > 1)
-        {
-            confirmLabel = $"{group.Name} {group.SelectedInstance + 1}/{group.FlatIndices.Count}";
-        }
-        else
-        {
-            confirmLabel = group.Name;
-        }
-
-        // Show the confirm button so the player can lock in their choice
-        ShowConfirmButton(confirmLabel);
     }
 
     /// <summary>
     /// Cycles to the next instance within a weapon group (e.g., next cannon).
-    /// Right-click on a weapon tile to cycle. Resets confirmation state so the
-    /// player must re-confirm after cycling.
+    /// Right-click on a weapon tile to cycle.
     /// </summary>
     private void CycleWeaponInstance(int groupIndex)
     {
@@ -1548,7 +1401,6 @@ public partial class CombatUI : Control
         group.SelectedInstance = (group.SelectedInstance + 1) % group.FlatIndices.Count;
         _weaponGroups[groupIndex] = group;
 
-        _weaponConfirmed = false;
         _selectedGroupIndex = groupIndex;
 
         int flatIndex = group.FlatIndices[group.SelectedInstance];
@@ -1560,9 +1412,6 @@ public partial class CombatUI : Control
 
         GameManager? gm = GetTree().Root.GetNodeOrNull<GameManager>("Main");
         gm?.OnWeaponSelectedFromUI(flatIndex);
-
-        string confirmLabel = $"{group.Name} {group.SelectedInstance + 1}/{group.FlatIndices.Count}";
-        ShowConfirmButton(confirmLabel);
 
         // Rebuild to update the "1/3" label
         RebuildWeaponButtons();
@@ -1656,8 +1505,6 @@ public partial class CombatUI : Control
         // Reset weapon selection for the new turn — no weapon pre-selected
         _selectedWeaponIndex = -1;
         _selectedGroupIndex = -1;
-        _weaponConfirmed = false;
-        HideConfirmButton();
         if (isLocalTurn)
         {
             ShowSelectWeaponPrompt();
@@ -1674,8 +1521,6 @@ public partial class CombatUI : Control
         if (payload.CurrentPhase != GamePhase.Combat)
         {
             HideSelectWeaponPrompt();
-            HideConfirmButton();
-            _weaponConfirmed = false;
             _selectedGroupIndex = -1;
         }
     }

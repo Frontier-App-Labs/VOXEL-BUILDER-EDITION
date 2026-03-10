@@ -128,8 +128,8 @@ public static class CommanderModelGenerator
         Color uniform = teamColor;
         Color uniformDark = teamColor.Darkened(0.25f);
         Color uniformLight = teamColor.Lightened(0.15f);
-        Color skin = new Color(0.92f, 0.76f, 0.60f);
-        Color skinShadow = new Color(0.80f, 0.64f, 0.48f);
+        Color skin = new Color(0.78f, 0.62f, 0.48f);
+        Color skinShadow = new Color(0.65f, 0.50f, 0.38f);
         Color boots = new Color(0.20f, 0.14f, 0.10f);
         Color belt = new Color(0.35f, 0.25f, 0.12f);
         Color buckle = new Color(0.95f, 0.80f, 0.18f);

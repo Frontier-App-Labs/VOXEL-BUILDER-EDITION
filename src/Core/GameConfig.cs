@@ -1,4 +1,6 @@
 ﻿using Godot;
+using System.Collections.Generic;
+using VoxelSiege.Voxel;
 
 namespace VoxelSiege.Core;
 
@@ -7,6 +9,28 @@ namespace VoxelSiege.Core;
 /// </summary>
 public static class GameConfig
 {
+    /// <summary>
+    /// Currency earned per block destroyed, keyed by material type.
+    /// </summary>
+    public static readonly Dictionary<VoxelMaterialType, int> MaterialEarnValues = new Dictionary<VoxelMaterialType, int>
+    {
+        [VoxelMaterialType.Dirt] = 1,
+        [VoxelMaterialType.Sand] = 1,
+        [VoxelMaterialType.Wood] = 2,
+        [VoxelMaterialType.Stone] = 3,
+        [VoxelMaterialType.Brick] = 5,
+        [VoxelMaterialType.Concrete] = 8,
+        [VoxelMaterialType.Metal] = 12,
+        [VoxelMaterialType.Ice] = 3,
+        [VoxelMaterialType.Glass] = 4,
+        [VoxelMaterialType.ArmorPlate] = 15,
+        [VoxelMaterialType.ReinforcedSteel] = 20,
+        [VoxelMaterialType.Obsidian] = 18,
+        [VoxelMaterialType.Foundation] = 2,
+        [VoxelMaterialType.Bark] = 1,
+        [VoxelMaterialType.Leaves] = 1,
+    };
+
     public const int ChunkSize = 16;
     public const int ChunkPadding = 1;
     public const int SmallArena = 64;
@@ -25,22 +49,30 @@ public static class GameConfig
 
     public const float DefaultBuildTime = 300f;
     public const int DefaultBudget = 10000;
+    public const int BotBudgetEasy = 8000;
+    public const int BotBudgetMedium = 18000;
+    public const int BotBudgetHard = 35000;
     public const int MaxBlueprintSlots = 20;
+    public const int SandboxBudget = 10000;
+    public const int SandboxSlotCost = 50000;
     public const int MaxUndoActions = 100;
     public const int MaxObsidianBlocks = 20;
 
     public const float DefaultTurnTime = 60f;
-    public const int MaxDebrisObjects = 500;
-    public const int MaxVisualDebris = 1000;
+    public const int MaxDebrisObjects = 10000;
+    public const int MaxVisualDebris = 10000;
     public const int MaxGpuParticlesGlobal = 500;
     public const float DebrisDespawnTime = 8f;
-    public const int MaxRuinObjects = 2000;
+    public const int MaxRuinObjects = 10000;
     public const float SlowMoTimeScale = 0.3f;
     public const float SlowMoDuration = 2f;
-    public const float FireSpreadInterval = 1f;
+    public const float FireSpreadInterval = 0.6f;        // seconds between spread checks (real-time)
+    public const float FireDamageTickInterval = 0.15f;    // seconds between damage ticks (real-time)
     public const float FireDamagePerSecond = 5f;
     public const float FireIgniteChance = 0.3f;
     public const float FireDuration = 10f;
+    public const int FireSpreadRadius = 3;                // microvoxels – fire jumps gaps to reach flammable material
+    public const float FireJumpChance = 0.15f;            // lower chance for non-adjacent spread (gap jumping)
     public const int MaxWeaponSelectionsPerTurn = 4;
 
     // Troop system
@@ -50,7 +82,7 @@ public static class GameConfig
     public const int MaxDoorsPerPlayer = 4;
     public const int TroopLifespanTicks = 6;        // ticks before a deployed troop dies automatically
 
-    public const int CommanderHP = 100;
+    public const int CommanderHP = 33;
     public const int MinBlocksAroundCommander = 6;
     public const int MinWeaponCommanderGap = 2;
     public const float MaxWeaponPlacementRange = 60f; // build units from zone center – allows terrain placement
@@ -71,7 +103,7 @@ public static class GameConfig
     public const int MinPlayers = 2;
     public const int ProjectileInterpolationRate = 60;
 
-    public const int MaxChunkMeshesPerFrame = 8;
+    public const int MaxChunkMeshesPerFrame = 16;
     public const float ChunkLODDistance = 200f;
     public const float ChunkCollisionRefreshDelay = 0.02f;
 

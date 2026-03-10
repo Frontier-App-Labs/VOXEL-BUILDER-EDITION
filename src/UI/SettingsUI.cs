@@ -24,7 +24,7 @@ public sealed class GameSettingsData
     // --- Audio ---
     public float MasterVolume { get; set; } = 0.8f;
     public float MusicVolume { get; set; } = 0.6f;
-    public float SfxVolume { get; set; } = 0.8f;
+    public float SfxVolume { get; set; } = 0.5f;
     public float AmbienceVolume { get; set; } = 0.5f;
     public float WeaponsSfxVolume { get; set; } = 0.8f;
     public float UiSfxVolume { get; set; } = 0.8f;

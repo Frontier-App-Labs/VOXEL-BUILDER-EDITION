@@ -1,8 +1,8 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 using VoxelSiege.Combat;
 using VoxelSiege.Core;
-
 namespace VoxelSiege.Camera;
 
 /// <summary>
@@ -44,7 +44,7 @@ public partial class CombatCamera : Camera3D
     public float KillCamDuration { get; set; } = 2.5f;
 
     [Export]
-    public float KillCamOrbitSpeed { get; set; } = 1.8f;
+    public float KillCamOrbitSpeed { get; set; } = 0.6f;
 
     [Export]
     public float KillCamOrbitRadius { get; set; } = 6f;
@@ -301,9 +301,9 @@ public partial class CombatCamera : Camera3D
         _impactTimer = 0f;
         _targetFov = ImpactFov;
 
-        // Brief slow-mo for dramatic effect
+        // Save the current time scale so ProcessImpact can restore it on exit,
+        // but do NOT override it — only bombardment sets half-speed via GameManager.
         _preImpactTimeScale = (float)Engine.TimeScale;
-        Engine.TimeScale = 0.5;
 
         // Freeze the camera at its current position (the last follow position)
         // so there is no jarring pivot/swing when the projectile explodes.
@@ -312,8 +312,11 @@ public partial class CombatCamera : Camera3D
         _targetLookAt = impactPoint;
     }
 
-    /// <summary>Dramatic slow-motion orbit around a dying commander.</summary>
-    public void KillCam(Node3D commander)
+    /// <summary>
+    /// Dramatic slow-motion orbit around a dying commander.
+    /// Makes player-built blocks transparent so the death is visible through walls.
+    /// </summary>
+    public void KillCam(Vector3 deathPosition)
     {
         if (!_isActive)
         {
@@ -321,7 +324,7 @@ public partial class CombatCamera : Camera3D
         }
 
         CurrentMode = Mode.KillCam;
-        _killCamCenter = commander.GlobalPosition;
+        _killCamCenter = deathPosition;
         _killCamTimer = 0f;
         _killCamYaw = 0f;
         _targetFov = KillCamFov;
@@ -409,9 +412,9 @@ public partial class CombatCamera : Camera3D
     }
 
     /// <summary>
-    /// Dramatic side-view camera for railgun hitscan beam. Snaps to a position perpendicular
-    /// to the beam path so the full beam is visible, holds briefly, then transitions to
-    /// Impact mode at the endpoint.
+    /// Dramatic top-down camera for railgun hitscan beam. Positions the camera
+    /// above the railgun looking down at the impact point, holds briefly, then
+    /// transitions to Impact mode at the endpoint.
     /// </summary>
     public void RailgunBeamCam(Vector3 start, Vector3 end)
     {
@@ -436,36 +439,26 @@ public partial class CombatCamera : Camera3D
         _preRailBeamTimeScale = (float)Engine.TimeScale;
         Engine.TimeScale = 0.4;
 
-        // Compute a side-view camera position perpendicular to the beam
-        Vector3 beamDir = (end - start).Normalized();
-        Vector3 beamMidpoint = (start + end) * 0.5f;
-        float beamLength = start.DistanceTo(end);
+        // Position the camera just behind and slightly above the railgun,
+        // looking toward the impact point — like a POV from behind the barrel.
+        Vector3 fireDir = (end - start).Normalized();
+        // Pull back 3 units behind the weapon along the fire direction
+        Vector3 cameraPos = start - fireDir * 3f + Vector3.Up * 1.5f;
 
-        // Get a perpendicular vector (cross with Up, fall back to Right if beam is vertical)
-        Vector3 side = beamDir.Cross(Vector3.Up).Normalized();
-        if (side.LengthSquared() < 0.001f)
-        {
-            side = beamDir.Cross(Vector3.Right).Normalized();
-        }
-
-        // Position camera to the side, far enough to see the whole beam.
-        // Distance scales with beam length so longer beams are still fully visible.
-        float sideDistance = Mathf.Max(beamLength * 0.6f, 5f);
-        float elevationOffset = Mathf.Max(beamLength * 0.15f, 1.5f);
-        Vector3 cameraPos = beamMidpoint + side * sideDistance + Vector3.Up * elevationOffset;
+        Vector3 lookTarget = end;
 
         _targetPosition = cameraPos;
-        _targetLookAt = beamMidpoint;
+        _targetLookAt = lookTarget;
 
         // Snap the camera immediately to avoid a long lerp from a distant position
         GlobalPosition = cameraPos;
-        _currentLookAt = beamMidpoint;
-        if (GlobalPosition.DistanceSquaredTo(beamMidpoint) > 0.01f)
+        _currentLookAt = lookTarget;
+        if (GlobalPosition.DistanceSquaredTo(lookTarget) > 0.01f)
         {
-            LookAt(beamMidpoint, Vector3.Up);
+            LookAt(lookTarget, Vector3.Up);
         }
 
-        // Slightly wide FOV to capture the full beam path
+        // Slightly wide FOV for the top-down beam view
         _targetFov = ImpactFov;
         Fov = ImpactFov;
     }
@@ -1058,9 +1051,8 @@ public partial class CombatCamera : Camera3D
     {
         _railBeamTimer += dt;
 
-        // During the hold phase, keep looking at the beam midpoint
-        Vector3 beamMidpoint = (_railBeamStart + _railBeamEnd) * 0.5f;
-        _targetLookAt = beamMidpoint;
+        // During the hold phase, keep looking down at the beam impact point
+        _targetLookAt = _railBeamEnd;
 
         if (_railBeamTimer >= _railBeamHoldTime)
         {
@@ -1225,4 +1217,5 @@ public partial class CombatCamera : Camera3D
             Engine.TimeScale = 1f;
         }
     }
+
 }

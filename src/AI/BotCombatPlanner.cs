@@ -656,7 +656,8 @@ public sealed class BotCombatPlanner
         BotDifficulty difficulty,
         Random rng,
         Dictionary<PlayerSlot, int>? threatScores = null,
-        Vector3? botZoneCenter = null)
+        Vector3? botZoneCenter = null,
+        HashSet<PlayerSlot>? armedEnemies = null)
     {
         if (enemies.Count == 1)
         {
@@ -765,6 +766,36 @@ public sealed class BotCombatPlanner
 
             // Ensure weight is positive for the weighted random pick
             weights[i] = Math.Max(weight, 0.01f);
+        }
+
+        // --- Weapon priority: strongly prefer enemies that still have weapons ---
+        // An enemy with no weapons can't fight back, so there's no point wasting
+        // shots on them while armed threats remain. Only target weaponless enemies
+        // if nobody has weapons (e.g. finishing off the last commander).
+        if (armedEnemies != null && armedEnemies.Count > 0)
+        {
+            bool anyEnemyArmed = false;
+            for (int i = 0; i < enemies.Count; i++)
+            {
+                if (armedEnemies.Contains(enemies[i].Slot))
+                {
+                    anyEnemyArmed = true;
+                    break;
+                }
+            }
+
+            if (anyEnemyArmed)
+            {
+                for (int i = 0; i < enemies.Count; i++)
+                {
+                    if (!armedEnemies.Contains(enemies[i].Slot))
+                    {
+                        // Heavily deprioritize weaponless enemies (but don't zero them
+                        // out — tiny residual chance keeps behaviour non-degenerate)
+                        weights[i] *= 0.05f;
+                    }
+                }
+            }
         }
 
         // --- Weighted random selection ---
@@ -1000,10 +1031,10 @@ public sealed class BotCombatPlanner
         // This prevents all bots from laser-focusing the same target.
         float skipChance = difficulty switch
         {
-            BotDifficulty.Easy   => 0.50f, // Easy bots miss obvious targets half the time
-            BotDifficulty.Medium => 0.20f, // Medium bots occasionally miss
-            BotDifficulty.Hard   => 0.05f, // Hard bots almost never miss an opportunity
-            _                    => 0.30f,
+            BotDifficulty.Easy   => 0.35f, // Easy bots sometimes miss obvious targets
+            BotDifficulty.Medium => 0.10f, // Medium bots rarely miss
+            BotDifficulty.Hard   => 0.02f, // Hard bots almost never miss an opportunity
+            _                    => 0.25f,
         };
 
         // ────────────────────────────────────────────────────────────

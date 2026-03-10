@@ -17,9 +17,25 @@ public partial class VoxelGiSetup : Node3D
     // Arena half-extents in metres (arena is 128 microvoxels * 0.5m = 64m across, ~68f with margin)
     private static readonly Vector3 ArenaExtents = new Vector3(68f, 20f, 68f);
 
+    private bool _initialized;
+
     public override void _Ready()
     {
-        GD.Print("[VoxelGiSetup] _Ready called, setting up lighting and sky...");
+        ForceInitialize();
+    }
+
+    /// <summary>
+    /// Runs the full setup (sun, sky, GI nodes) if not already initialized.
+    /// Called from _Ready() normally, but also called explicitly by GameManager
+    /// to guarantee initialization during deferred loading chains where _Ready()
+    /// may not fire on the same frame as AddChild().
+    /// </summary>
+    public void ForceInitialize()
+    {
+        if (_initialized) return;
+        _initialized = true;
+
+        GD.Print("[VoxelGiSetup] Initializing lighting and sky...");
         SetupSunLight();
         SetupWorldEnvironment();
         SetupVoxelGi();
@@ -34,55 +50,49 @@ public partial class VoxelGiSetup : Node3D
     {
         if (_worldEnv == null || !GodotObject.IsInstanceValid(_worldEnv))
         {
-            GD.PushError("[VoxelGiSetup] DEFERRED CHECK FAILED: WorldEnvironment is null or freed!");
+            GD.PushError("[VoxelGiSetup] DEFERRED: WorldEnvironment is null or freed!");
             return;
         }
 
         Godot.Environment? env = _worldEnv.Environment;
         if (env == null)
         {
-            GD.PushError("[VoxelGiSetup] DEFERRED CHECK FAILED: Environment resource is null!");
+            GD.PushError("[VoxelGiSetup] DEFERRED: Environment resource is null!");
             return;
         }
 
         if (env.BackgroundMode != Godot.Environment.BGMode.Sky)
         {
-            GD.PushError($"[VoxelGiSetup] DEFERRED CHECK FAILED: BackgroundMode is {env.BackgroundMode}, expected Sky!");
+            GD.PushError($"[VoxelGiSetup] DEFERRED: BackgroundMode is {env.BackgroundMode}, expected Sky! Fixing...");
             env.BackgroundMode = Godot.Environment.BGMode.Sky;
         }
 
-        if (env.Sky == null)
+        // If sky or sky material is missing, recreate with ProceduralSkyMaterial
+        if (env.Sky == null || env.Sky.SkyMaterial == null)
         {
-            GD.PushError("[VoxelGiSetup] DEFERRED CHECK FAILED: Sky resource is null! Re-creating...");
-            Sky fallback = new Sky();
-            ProceduralSkyMaterial mat = new ProceduralSkyMaterial();
-            mat.SkyTopColor = new Color(0.18f, 0.30f, 0.55f);
-            mat.SkyHorizonColor = new Color(0.58f, 0.72f, 0.82f);
-            mat.GroundBottomColor = new Color(0.30f, 0.25f, 0.20f);
-            mat.GroundHorizonColor = new Color(0.55f, 0.55f, 0.50f);
-            fallback.SkyMaterial = mat;
-            env.Sky = fallback;
-        }
-        else if (env.Sky.SkyMaterial == null)
-        {
-            GD.PushError("[VoxelGiSetup] DEFERRED CHECK FAILED: SkyMaterial is null! Re-creating...");
-            ProceduralSkyMaterial mat = new ProceduralSkyMaterial();
-            mat.SkyTopColor = new Color(0.18f, 0.30f, 0.55f);
-            mat.SkyHorizonColor = new Color(0.58f, 0.72f, 0.82f);
-            mat.GroundBottomColor = new Color(0.30f, 0.25f, 0.20f);
-            mat.GroundHorizonColor = new Color(0.55f, 0.55f, 0.50f);
-            env.Sky.SkyMaterial = mat;
+            GD.PushError("[VoxelGiSetup] DEFERRED: Sky/SkyMaterial is null! Recreating...");
+            ProceduralSkyMaterial fallback = new ProceduralSkyMaterial();
+            fallback.SkyTopColor = new Color(0.35f, 0.55f, 0.95f);
+            fallback.SkyHorizonColor = new Color(0.65f, 0.75f, 0.90f);
+            fallback.SkyCurve = 0.1f;
+            fallback.SkyEnergyMultiplier = 1.0f;
+            fallback.GroundBottomColor = new Color(0.15f, 0.12f, 0.10f);
+            fallback.GroundHorizonColor = new Color(0.45f, 0.40f, 0.35f);
+            fallback.SunAngleMax = 30.0f;
+            fallback.SunCurve = 0.15f;
+            fallback.UseDebanding = true;
+
+            if (env.Sky == null) env.Sky = new Sky();
+            env.Sky.SkyMaterial = fallback;
         }
 
-        // Check if this WorldEnvironment is actually in the scene tree
-        if (!_worldEnv.IsInsideTree())
+        if (_worldEnv.IsInsideTree())
         {
-            GD.PushError("[VoxelGiSetup] DEFERRED CHECK FAILED: WorldEnvironment is NOT in the scene tree!");
+            GD.Print($"[VoxelGiSetup] Deferred OK. Sky: {env.Sky?.SkyMaterial?.GetType().Name}");
         }
         else
         {
-            GD.Print($"[VoxelGiSetup] Deferred validation PASSED. Sky is {env.Sky.SkyMaterial?.GetType().Name}, " +
-                     $"BackgroundMode={env.BackgroundMode}, WorldEnv in tree at path: {_worldEnv.GetPath()}");
+            GD.PushError("[VoxelGiSetup] DEFERRED: WorldEnvironment is NOT in the scene tree!");
         }
     }
 
@@ -129,47 +139,63 @@ public partial class VoxelGiSetup : Node3D
 
     private void SetupWorldEnvironment()
     {
+        // Remove ALL existing WorldEnvironment nodes in the entire scene tree
+        // to prevent duplicates. Godot 4 only supports one active WorldEnvironment;
+        // if multiple exist, behavior is undefined (often results in a grey sky).
+        var existingNodes = GetTree().Root.FindChildren("*", "WorldEnvironment");
+        foreach (var node in existingNodes)
+        {
+            if (node is WorldEnvironment we)
+            {
+                GD.Print($"[VoxelGiSetup] Removing existing WorldEnvironment: {we.GetPath()}");
+                we.GetParent()?.RemoveChild(we);
+                we.QueueFree();
+            }
+        }
+
         _worldEnv = new WorldEnvironment();
         _worldEnv.Name = "WorldEnvironment";
 
+        // Always create the environment fresh to avoid stale cached resources
+        // that might reference shaders which fail to compile at runtime.
+        Godot.Environment env = CreateEnvironment();
+
+        _worldEnv.Environment = env;
+        AddChild(_worldEnv);
+
+        GD.Print($"[VoxelGiSetup] WorldEnvironment added. " +
+                 $"BackgroundMode: {env.BackgroundMode}, " +
+                 $"Sky: {env.Sky?.SkyMaterial?.GetType().Name ?? "NULL"}");
+    }
+
+    /// <summary>
+    /// Builds the full Environment resource from scratch (sky + post-processing).
+    /// Called once, then saved to disk for fast reuse on subsequent launches.
+    /// </summary>
+    private Godot.Environment CreateEnvironment()
+    {
         Godot.Environment env = new Godot.Environment();
 
-        // --- Sky: use ProceduralSkyMaterial first (built-in, guaranteed to work) ---
-        // Then attempt to upgrade to the pixel sky shader if it loads successfully.
+        // --- Sky: use ProceduralSkyMaterial directly ---
+        // NOTE: The pixel_sky.gdshader is skipped intentionally. It can load and
+        // pass all null/empty checks yet still fail to compile on the GPU at
+        // runtime, producing a silent black sky with no error. ProceduralSkyMaterial
+        // is a built-in Godot material that always works reliably.
         Sky sky = new Sky();
-        sky.RadianceSize = Sky.RadianceSizeEnum.Size128;
+        sky.RadianceSize = Sky.RadianceSizeEnum.Size256;
 
-        // Start with ProceduralSkyMaterial -- this ALWAYS works in Godot 4
         ProceduralSkyMaterial proceduralSky = new ProceduralSkyMaterial();
-        proceduralSky.SkyTopColor = new Color(0.18f, 0.30f, 0.55f);
-        proceduralSky.SkyHorizonColor = new Color(0.58f, 0.72f, 0.82f);
-        proceduralSky.GroundBottomColor = new Color(0.30f, 0.25f, 0.20f);
-        proceduralSky.GroundHorizonColor = new Color(0.55f, 0.55f, 0.50f);
+        proceduralSky.SkyTopColor = new Color(0.35f, 0.55f, 0.95f);
+        proceduralSky.SkyHorizonColor = new Color(0.65f, 0.75f, 0.90f);
+        proceduralSky.SkyCurve = 0.1f;
+        proceduralSky.SkyEnergyMultiplier = 1.0f;
+        proceduralSky.GroundBottomColor = new Color(0.15f, 0.12f, 0.10f);
+        proceduralSky.GroundHorizonColor = new Color(0.45f, 0.40f, 0.35f);
         proceduralSky.SunAngleMax = 30.0f;
         proceduralSky.SunCurve = 0.15f;
+        proceduralSky.UseDebanding = true;
         sky.SkyMaterial = proceduralSky;
-        GD.Print("[VoxelGiSetup] ProceduralSkyMaterial created as baseline sky.");
-
-        // Attempt to upgrade to the pixel sky shader for the retro look
-        try
-        {
-            Sky pixelSky = PixelSkyGenerator.CreatePixelSkyResource();
-            if (pixelSky?.SkyMaterial is ShaderMaterial shaderMat && shaderMat.Shader != null)
-            {
-                sky.SkyMaterial = shaderMat;
-                GD.Print("[VoxelGiSetup] Upgraded to pixel sky shader successfully.");
-            }
-            else
-            {
-                GD.Print("[VoxelGiSetup] Pixel sky shader not available, keeping ProceduralSkyMaterial.");
-            }
-        }
-        catch (System.Exception ex)
-        {
-            GD.PushWarning($"[VoxelGiSetup] Pixel sky shader failed: {ex.Message}. Using ProceduralSkyMaterial.");
-        }
-
-        GD.Print($"[VoxelGiSetup] Final sky material type: {sky.SkyMaterial?.GetType().Name ?? "NULL"}");
+        GD.Print("[VoxelGiSetup] Sky created: using ProceduralSkyMaterial (bright blue).");
 
         env.Sky = sky;
         env.BackgroundMode = Godot.Environment.BGMode.Sky;
@@ -178,23 +204,23 @@ public partial class VoxelGiSetup : Node3D
         env.AmbientLightEnergy = 0.35f;
         env.ReflectedLightSource = Godot.Environment.ReflectionSource.Sky;
 
-        // --- Tonemap: ACES ---
+        // Tonemap
         env.TonemapMode = Godot.Environment.ToneMapper.Aces;
         env.TonemapWhite = 6.0f;
 
-        // --- SSAO (reduced intensity: partially redundant with VoxelGI bounce lighting) ---
+        // SSAO
         env.SsaoEnabled = true;
         env.SsaoRadius = 2.0f;
         env.SsaoIntensity = 1.0f;
 
-        // --- SSR (screen-space reflections for metal/glass voxels, reduced steps) ---
+        // SSR
         env.SsrEnabled = true;
         env.SsrMaxSteps = 32;
         env.SsrFadeIn = 0.15f;
         env.SsrFadeOut = 2.0f;
         env.SsrDepthTolerance = 0.2f;
 
-        // --- Glow (bloom on bright particles/explosions) ---
+        // Glow
         env.GlowEnabled = true;
         env.GlowIntensity = 0.5f;
         env.GlowStrength = 1.0f;
@@ -202,24 +228,15 @@ public partial class VoxelGiSetup : Node3D
         env.GlowBlendMode = Godot.Environment.GlowBlendModeEnum.Additive;
         env.GlowHdrThreshold = 1.2f;
 
-        // --- Fog (subtle atmospheric depth) ---
+        // Fog
         env.FogEnabled = true;
         env.FogLightColor = new Color(0.7f, 0.75f, 0.85f);
         env.FogLightEnergy = 0.3f;
         env.FogDensity = 0.002f;
 
-        // --- Volumetric fog OFF (too expensive) ---
         env.VolumetricFogEnabled = false;
 
-        _worldEnv.Environment = env;
-        AddChild(_worldEnv);
-
-        // Final validation: confirm everything is wired up correctly
-        GD.Print($"[VoxelGiSetup] WorldEnvironment added to scene tree. " +
-                 $"Environment valid: {_worldEnv.Environment != null}, " +
-                 $"BackgroundMode: {env.BackgroundMode}, " +
-                 $"Sky valid: {env.Sky != null}, " +
-                 $"SkyMaterial valid: {env.Sky?.SkyMaterial != null}");
+        return env;
     }
 
     // ─────────────────────────────────────────────────
