@@ -176,26 +176,11 @@ public partial class VoxelGiSetup : Node3D
     {
         Godot.Environment env = new Godot.Environment();
 
-        // --- Sky: use ProceduralSkyMaterial directly ---
-        // NOTE: The pixel_sky.gdshader is skipped intentionally. It can load and
-        // pass all null/empty checks yet still fail to compile on the GPU at
-        // runtime, producing a silent black sky with no error. ProceduralSkyMaterial
-        // is a built-in Godot material that always works reliably.
-        Sky sky = new Sky();
-        sky.RadianceSize = Sky.RadianceSizeEnum.Size256;
-
-        ProceduralSkyMaterial proceduralSky = new ProceduralSkyMaterial();
-        proceduralSky.SkyTopColor = new Color(0.35f, 0.55f, 0.95f);
-        proceduralSky.SkyHorizonColor = new Color(0.65f, 0.75f, 0.90f);
-        proceduralSky.SkyCurve = 0.1f;
-        proceduralSky.SkyEnergyMultiplier = 1.0f;
-        proceduralSky.GroundBottomColor = new Color(0.15f, 0.12f, 0.10f);
-        proceduralSky.GroundHorizonColor = new Color(0.45f, 0.40f, 0.35f);
-        proceduralSky.SunAngleMax = 30.0f;
-        proceduralSky.SunCurve = 0.15f;
-        proceduralSky.UseDebanding = true;
-        sky.SkyMaterial = proceduralSky;
-        GD.Print("[VoxelGiSetup] Sky created: using ProceduralSkyMaterial (bright blue).");
+        // --- Sky: use panorama pixel sky for visual richness ---
+        // The pixel_sky.gdshader can fail silently on GPU compile, so we use the
+        // pixelated panorama images which always work and match the voxel aesthetic.
+        Sky sky = FX.PixelSkyGenerator.CreatePixelPanoramaSky();
+        GD.Print($"[VoxelGiSetup] Sky created: {sky.SkyMaterial?.GetType().Name ?? "NULL"}");
 
         env.Sky = sky;
         env.BackgroundMode = Godot.Environment.BGMode.Sky;

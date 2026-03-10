@@ -234,13 +234,13 @@ public static class CommanderModelGenerator
             }
         }
 
-        // --- Eyes: 2 voxels tall per eye (white above, dark pupil below) ---
-        // Upper eye whites (row 9)
-        v[2, 9, 1] = eyeWhite;
-        v[3, 9, 1] = eyeWhite;
-        // Lower pupil/iris (row 8) — visible on front face
-        v[2, 8, 1] = eyePupil;
-        v[3, 8, 1] = eyePupil;
+        // --- Eyes: 2 voxels tall per eye (white below, dark pupil above) ---
+        // Lower eye whites (row 8)
+        v[2, 8, 1] = eyeWhite;
+        v[3, 8, 1] = eyeWhite;
+        // Upper pupil/iris (row 9) — pupils sit on top of whites
+        v[2, 9, 1] = eyePupil;
+        v[3, 9, 1] = eyePupil;
 
         // Mouth: tiny line on row 7
         v[2, 7, 1] = new Color(0.75f, 0.50f, 0.40f);
@@ -251,12 +251,34 @@ public static class CommanderModelGenerator
         v[4, 7, 1] = new Color(0.95f, 0.70f, 0.62f);
 
         // =============================================
+        // HAIR (row 9-10): visible around sides/back under helmet
+        // =============================================
+        Color hair = new Color(0.18f, 0.12f, 0.08f); // dark brown
+        // Hair on sides of head (row 9, left and right edges)
+        for (int z = 2; z < 5; z++)
+        {
+            v[1, 9, z] = hair;
+            v[4, 9, z] = hair;
+        }
+        // Hair on back of head (rows 9-10)
+        for (int x = 2; x < 4; x++)
+        {
+            v[x, 9, 4] = hair;
+            v[x, 10, 4] = hair; // peeks out below helmet back
+        }
+        // Hair on top corners (row 10, visible around helmet edges)
+        v[1, 10, 1] = hair;
+        v[4, 10, 1] = hair;
+        v[1, 10, 4] = hair;
+        v[4, 10, 4] = hair;
+
+        // =============================================
         // HELMET (rows 10-11): military helmet with badge
         // =============================================
         // Helmet base - covers top of head
         FillBlock(v, 1, 10, 1, 5, 11, 5, helmet);
 
-        // Helmet dome (row 11)
+        // Helmet dome (row 11) — slightly inset for rounded look
         FillBlock(v, 1, 11, 1, 5, 12, 5, helmet);
 
         // Helmet rim - darker band around bottom edge

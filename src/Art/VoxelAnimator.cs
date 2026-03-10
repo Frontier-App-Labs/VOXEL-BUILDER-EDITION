@@ -115,8 +115,8 @@ public partial class VoxelAnimator : Node
         // Subtle arm sway
         SetRotation(_leftShoulder, new Vector3(0, 0, Mathf.Sin(t * 1.0f) * Deg(3)));
         SetRotation(_rightShoulder, new Vector3(0, 0, -Mathf.Sin(t * 1.0f) * Deg(3)));
-        SetRotation(_leftElbow, new Vector3(-Deg(10), 0, 0));
-        SetRotation(_rightElbow, new Vector3(-Deg(10), 0, 0));
+        SetRotation(_leftElbow, new Vector3(Deg(10), 0, 0));
+        SetRotation(_rightElbow, new Vector3(Deg(10), 0, 0));
 
         // Head look (slow random-ish via sin with irrational frequency)
         SetRotation(_neck, new Vector3(0, Mathf.Sin(t * 0.37f) * Deg(25), 0));
@@ -164,8 +164,8 @@ public partial class VoxelAnimator : Node
         // Elbow bend during swing
         float leftElbowBend = Deg(15) + Mathf.Max(0, Mathf.Sin(cycle)) * Deg(25);
         float rightElbowBend = Deg(15) + Mathf.Max(0, -Mathf.Sin(cycle)) * Deg(25);
-        SetRotation(_leftElbow, new Vector3(-leftElbowBend, 0, 0));
-        SetRotation(_rightElbow, new Vector3(-rightElbowBend, 0, 0));
+        SetRotation(_leftElbow, new Vector3(leftElbowBend, 0, 0));
+        SetRotation(_rightElbow, new Vector3(rightElbowBend, 0, 0));
 
         // Head stays mostly forward with slight bounce
         SetRotation(_neck, new Vector3(Mathf.Sin(cycle * 2) * Deg(3), 0, 0));
@@ -188,7 +188,7 @@ public partial class VoxelAnimator : Node
             // Wind up
             float p = t / 0.25f;
             shoulderX = Mathf.Lerp(0, Deg(-60), p);
-            elbowX = Mathf.Lerp(Deg(-10), Deg(-30), p);
+            elbowX = Mathf.Lerp(Deg(10), Deg(30), p);
             spineX = Mathf.Lerp(0, Deg(5), p);
         }
         else if (t < 0.5f)
@@ -196,7 +196,7 @@ public partial class VoxelAnimator : Node
             // Thrust
             float p = (t - 0.25f) / 0.25f;
             shoulderX = Mathf.Lerp(Deg(-60), Deg(-90), p);
-            elbowX = Mathf.Lerp(Deg(-30), Deg(-5), p);
+            elbowX = Mathf.Lerp(Deg(30), Deg(5), p);
             spineX = Mathf.Lerp(Deg(5), Deg(-8), p);
         }
         else
@@ -204,7 +204,7 @@ public partial class VoxelAnimator : Node
             // Recoil and return
             float p = (t - 0.5f) / 0.5f;
             shoulderX = Mathf.Lerp(Deg(-90), 0, p * p);
-            elbowX = Mathf.Lerp(Deg(-5), Deg(-10), p);
+            elbowX = Mathf.Lerp(Deg(5), Deg(10), p);
             spineX = Mathf.Lerp(Deg(-8), 0, p);
         }
 
@@ -214,7 +214,7 @@ public partial class VoxelAnimator : Node
 
         // Left arm stays down
         SetRotation(_leftShoulder, new Vector3(0, 0, Deg(5)));
-        SetRotation(_leftElbow, new Vector3(Deg(-15), 0, 0));
+        SetRotation(_leftElbow, new Vector3(Deg(15), 0, 0));
 
         // Return to idle after completion
         if (t >= 1f) SetState(AnimState.Idle);
@@ -234,8 +234,8 @@ public partial class VoxelAnimator : Node
         SetRotation(_neck, new Vector3(Deg(-20) * decay, 0, 0));
         SetRotation(_leftShoulder, new Vector3(0, 0, Deg(15) * decay));
         SetRotation(_rightShoulder, new Vector3(0, 0, Deg(-15) * decay));
-        SetRotation(_leftElbow, new Vector3(Deg(-30) * decay, 0, 0));
-        SetRotation(_rightElbow, new Vector3(Deg(-30) * decay, 0, 0));
+        SetRotation(_leftElbow, new Vector3(Deg(30) * decay, 0, 0));
+        SetRotation(_rightElbow, new Vector3(Deg(30) * decay, 0, 0));
 
         if (t >= 1f) SetState(AnimState.Idle);
     }
@@ -253,8 +253,8 @@ public partial class VoxelAnimator : Node
         SetRotation(_neck, new Vector3(0, Mathf.Sin(t * 2.3f) * Deg(40), Mathf.Sin(t * 5.7f) * Deg(5)));
         SetRotation(_leftShoulder, new Vector3(Mathf.Sin(t * 3.5f) * Deg(15), 0, Deg(-10)));
         SetRotation(_rightShoulder, new Vector3(-Mathf.Sin(t * 3.5f) * Deg(15), 0, Deg(10)));
-        SetRotation(_leftElbow, new Vector3(-Deg(30) + Mathf.Sin(t * 5f) * Deg(15), 0, 0));
-        SetRotation(_rightElbow, new Vector3(-Deg(30) - Mathf.Sin(t * 5f) * Deg(15), 0, 0));
+        SetRotation(_leftElbow, new Vector3(Deg(30) + Mathf.Sin(t * 5f) * Deg(15), 0, 0));
+        SetRotation(_rightElbow, new Vector3(Deg(30) - Mathf.Sin(t * 5f) * Deg(15), 0, 0));
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -276,8 +276,8 @@ public partial class VoxelAnimator : Node
         float rightPump = Mathf.Max(0, -Mathf.Sin(t * 6f));
         SetRotation(_leftShoulder, new Vector3(0, 0, -Deg(90) * leftPump));
         SetRotation(_rightShoulder, new Vector3(0, 0, Deg(90) * rightPump));
-        SetRotation(_leftElbow, new Vector3(-Deg(20), 0, 0));
-        SetRotation(_rightElbow, new Vector3(-Deg(20), 0, 0));
+        SetRotation(_leftElbow, new Vector3(Deg(20), 0, 0));
+        SetRotation(_rightElbow, new Vector3(Deg(20), 0, 0));
     }
 
     // ═══════════════════════════════════════════════════════════════
