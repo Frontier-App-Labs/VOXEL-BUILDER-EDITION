@@ -2,6 +2,7 @@ using Godot;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using VoxelSiege.Army;
 using VoxelSiege.Core;
 using VoxelSiege.Voxel;
 using VoxelValue = VoxelSiege.Voxel.Voxel;
@@ -561,6 +562,13 @@ public partial class BuildSystem : Node
                 }
 
                 yield break;
+            case BuildToolMode.Door:
+                foreach (Vector3I micro in ExpandDoorBuildUnit(buildUnit))
+                {
+                    yield return micro;
+                }
+
+                yield break;
             default:
                 foreach (Vector3I micro in ExpandUniformBuildUnit(buildUnit))
                 {
@@ -583,6 +591,18 @@ public partial class BuildSystem : Node
                     yield return microBase + new Vector3I(x, y, z);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Expands a build unit into a thin door-shaped column: 1 wide, 1 deep, DoorHeight tall.
+    /// </summary>
+    private static IEnumerable<Vector3I> ExpandDoorBuildUnit(Vector3I buildUnit)
+    {
+        Vector3I microBase = buildUnit * GameConfig.MicrovoxelsPerBuildUnit;
+        for (int dy = 0; dy < DoorRegistry.DoorHeight; dy++)
+        {
+            yield return microBase + new Vector3I(0, dy, 0);
         }
     }
 

@@ -2020,14 +2020,11 @@ public partial class GameManager : Node
             // Convert to build unit
             _buildCursorBuildUnit = MathHelpers.MicrovoxelToBuild(targetMicrovoxel);
 
-            // Validate placement within build zone (weapons are allowed on
-            // any solid surface within range, not just the build zone)
+            // Validate placement within build zone
             if (_placementMode == PlacementMode.Weapon)
             {
-                // Weapon placement: allow anywhere within range of the build zone center
-                Vector3I zoneCenter = zone.OriginBuildUnits + zone.SizeBuildUnits / 2;
-                float dist = _buildCursorBuildUnit.DistanceTo(zoneCenter);
-                _buildCursorValid = dist <= GameConfig.MaxWeaponPlacementRange
+                // Weapon placement: must be inside build zone + structural checks
+                _buildCursorValid = zone.ContainsBuildUnit(_buildCursorBuildUnit)
                     && WeaponPlacer.ValidatePlacement(_voxelWorld, _buildCursorBuildUnit, GetTree());
             }
             else
@@ -2536,6 +2533,7 @@ public partial class GameManager : Node
             player.CommanderHealth = GameConfig.CommanderHP;
         }
 
+        AudioDirector.Instance?.PlaySFX("ui_confirm");
         GD.Print($"[Build] Commander placed for {_activeBuilder} at {_buildCursorBuildUnit}.");
         // Stay in Commander mode so clicking again moves the commander
     }
@@ -2552,14 +2550,11 @@ public partial class GameManager : Node
             return;
         }
 
-        // Weapons can be placed on any solid surface within range (including
-        // natural terrain like grass, dirt, stone), not just inside the build zone.
-        Vector3I zoneCenter = zone.OriginBuildUnits + zone.SizeBuildUnits / 2;
-        float distFromZone = _buildCursorBuildUnit.DistanceTo(zoneCenter);
-        if (distFromZone > GameConfig.MaxWeaponPlacementRange)
+        // Weapons must be placed inside the player's build zone.
+        if (!zone.ContainsBuildUnit(_buildCursorBuildUnit))
         {
-            GD.Print("[Build] Weapon placement is too far from your base.");
-            ShowBuildWarning("Too far from your base!");
+            GD.Print("[Build] Weapon must be placed inside your build zone.");
+            ShowBuildWarning("Must place weapon inside your build zone!");
             return;
         }
 
@@ -2603,6 +2598,7 @@ public partial class GameManager : Node
         player.TrySpend(weaponCost);
         EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(player.Slot, player.Budget, -weaponCost));
 
+        AudioDirector.Instance?.PlaySFX("ui_confirm");
         GD.Print($"[Build] {_selectedWeaponType} placed for {_activeBuilder} at {_buildCursorBuildUnit} (cost: ${weaponCost}).");
         // Stay in weapon placement mode so the user can place multiple weapons in a row.
         // Right-click or selecting a build tool returns to block mode.
@@ -3659,18 +3655,31 @@ public partial class GameManager : Node
         Vector3 rayOrigin = _combatCamera.ProjectRayOrigin(mousePos);
         Vector3 rayDir = _combatCamera.ProjectRayNormal(mousePos);
 
-        if (_voxelWorld.RaycastVoxel(rayOrigin, rayDir, MaxRaycastDistance, out Vector3I hitPos, out Vector3I _))
+        // --- Aim assist: snap to enemy commander if the click ray passes near one ---
+        Vector3? commanderSnapTarget = TrySnapToCommander(rayOrigin, rayDir, currentPlayer);
+
+        // Determine the world-space target: commander snap takes priority over voxel hit
+        Vector3? targetWorld = null;
+
+        if (commanderSnapTarget.HasValue)
+        {
+            targetWorld = commanderSnapTarget.Value;
+        }
+        else if (_voxelWorld.RaycastVoxel(rayOrigin, rayDir, MaxRaycastDistance, out Vector3I hitPos, out Vector3I _))
         {
             // Convert microvoxel position to world-space center of the clicked voxel.
             // MicrovoxelToWorld returns the corner; offset by half a microvoxel so
             // the ballistic solution targets the voxel center, eliminating the
             // systematic ~0.25m bias that made projectiles land off-target.
-            Vector3 targetWorld = MathHelpers.MicrovoxelToWorld(hitPos)
+            targetWorld = MathHelpers.MicrovoxelToWorld(hitPos)
                 + new Vector3(
                     GameConfig.MicrovoxelMeters * 0.5f,
                     GameConfig.MicrovoxelMeters * 0.5f,
                     GameConfig.MicrovoxelMeters * 0.5f);
+        }
 
+        if (targetWorld.HasValue)
+        {
             // Get the weapon for ballistic calculations
             if (!_weapons.TryGetValue(currentPlayer, out List<WeaponBase>? weaponList) || weaponList.Count == 0)
             {
@@ -3685,21 +3694,110 @@ public partial class GameManager : Node
             }
 
             // Set the target on the aiming system (auto-calculates ballistic trajectory)
-            bool inRange = _aimingSystem.SetTargetPoint(weapon.GlobalPosition, targetWorld, weapon.ProjectileSpeed, weapon.WeaponId);
+            bool inRange = _aimingSystem.SetTargetPoint(weapon.GlobalPosition, targetWorld.Value, weapon.ProjectileSpeed, weapon.WeaponId);
             _hasTarget = true;
 
             // Rotate the weapon to face the target (yaw only, stays upright)
-            RotateWeaponToward(weapon, targetWorld);
+            RotateWeaponToward(weapon, targetWorld.Value);
 
-            if (inRange)
+            if (commanderSnapTarget.HasValue)
             {
-                GD.Print($"[Combat] Target set at {targetWorld}. Click again or press SPACE/FIRE to shoot.");
+                GD.Print($"[Combat] AIM ASSIST: Snapped to enemy commander at {targetWorld.Value}. Click again to fire.");
+            }
+            else if (inRange)
+            {
+                GD.Print($"[Combat] Target set at {targetWorld.Value}. Click again or press SPACE/FIRE to shoot.");
             }
             else
             {
-                GD.Print($"[Combat] Target at {targetWorld} is OUT OF RANGE. Aiming for maximum distance.");
+                GD.Print($"[Combat] Target at {targetWorld.Value} is OUT OF RANGE. Aiming for maximum distance.");
             }
         }
+    }
+
+    /// <summary>
+    /// Aim assist: checks if the camera ray passes near any enemy commander.
+    /// If so, and there is clear line-of-sight from the current weapon to the
+    /// commander (no solid voxels blocking), returns the commander's chest
+    /// position as a snap target. Otherwise returns null.
+    /// </summary>
+    /// <param name="rayOrigin">Camera ray origin (screen click projected into world).</param>
+    /// <param name="rayDir">Camera ray direction (normalized).</param>
+    /// <param name="currentPlayer">The player who is aiming (to exclude own commander).</param>
+    /// <returns>Snap target position, or null if no commander is close enough.</returns>
+    private Vector3? TrySnapToCommander(Vector3 rayOrigin, Vector3 rayDir, PlayerSlot currentPlayer)
+    {
+        // Generous world-space threshold: ray must pass within this distance
+        // of the commander's center-mass to trigger the snap. 1.5m is generous
+        // enough to feel helpful without being jarring.
+        const float snapRadius = 1.5f;
+
+        // Chest offset above GlobalPosition (which is at the hips).
+        // The spine/torso center is roughly 0.2m above the hips for the 0.08m
+        // voxel-size commander model.
+        const float chestOffsetY = 0.2f;
+
+        CommanderActor? bestCommander = null;
+        float bestDistSq = float.MaxValue;
+
+        foreach (var kvp in _commanders)
+        {
+            // Skip own commander and dead commanders
+            if (kvp.Key == currentPlayer) continue;
+            CommanderActor commander = kvp.Value;
+            if (!GodotObject.IsInstanceValid(commander) || commander.IsDead) continue;
+
+            Vector3 chestPos = commander.GlobalPosition + Vector3.Up * chestOffsetY;
+
+            // Point-to-line distance from commander chest to the camera ray
+            Vector3 toChest = chestPos - rayOrigin;
+            float projection = toChest.Dot(rayDir);
+
+            // Commander must be in front of the camera (positive projection)
+            if (projection < 0f) continue;
+
+            Vector3 closestPointOnRay = rayOrigin + rayDir * projection;
+            float distSq = chestPos.DistanceSquaredTo(closestPointOnRay);
+
+            if (distSq < snapRadius * snapRadius && distSq < bestDistSq)
+            {
+                bestCommander = commander;
+                bestDistSq = distSq;
+            }
+        }
+
+        if (bestCommander == null || _voxelWorld == null) return null;
+
+        Vector3 snapTarget = bestCommander.GlobalPosition + Vector3.Up * chestOffsetY;
+
+        // LOS check: get the current weapon position and verify no solid voxels
+        // block the path from the weapon to the commander.
+        if (!_weapons.TryGetValue(currentPlayer, out List<WeaponBase>? weaponList) || weaponList.Count == 0)
+        {
+            return null;
+        }
+
+        int safeIndex = _selectedWeaponIndex % weaponList.Count;
+        WeaponBase? weapon = (safeIndex >= 0 && safeIndex < weaponList.Count) ? weaponList[safeIndex] : null;
+        if (weapon == null || !GodotObject.IsInstanceValid(weapon)) return null;
+
+        Vector3 weaponPos = weapon.GlobalPosition;
+        Vector3 losDir = (snapTarget - weaponPos).Normalized();
+        float losDist = weaponPos.DistanceTo(snapTarget);
+
+        // If the voxel raycast hits something before reaching the commander,
+        // LOS is blocked — don't snap.
+        if (_voxelWorld.RaycastVoxel(weaponPos, losDir, losDist, out Vector3I _, out Vector3I _2))
+        {
+            // A solid voxel was hit before the commander — check if it's closer
+            // than the commander. The raycast always returns the first hit, so
+            // if it returns true at all, something is in the way.
+            GD.Print($"[Combat] Aim assist: LOS to commander blocked by voxel.");
+            return null;
+        }
+
+        GD.Print($"[Combat] Aim assist: clear LOS to enemy commander at {snapTarget}");
+        return snapTarget;
     }
 
     /// <summary>
@@ -4728,7 +4826,8 @@ public partial class GameManager : Node
                 GetTree(),
                 difficulty,
                 rng,
-                enemyCommander);
+                enemyCommander,
+                botCtrl?.GetHitHistory());
 
         Vector3 targetPos = prioritizedResult.Position;
         GD.Print($"[Bot] {botSlot} targeting {enemy.Slot} — priority={prioritizedResult.Priority}, reason=\"{prioritizedResult.Description}\"");

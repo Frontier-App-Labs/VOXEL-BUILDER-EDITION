@@ -30,6 +30,10 @@ public sealed class BotCombatPlanner
     /// </summary>
     private readonly Dictionary<PlayerSlot, int> _damageReceivedFrom = new Dictionary<PlayerSlot, int>();
 
+    // ── Tit-for-tat retaliation tracking ──
+    /// <summary>Who attacked us most recently (set each time we take damage).</summary>
+    private PlayerSlot? _lastAttacker;
+
     // ─────────────────────────────────────────────────
     //  PUBLIC API
     // ─────────────────────────────────────────────────
@@ -154,6 +158,7 @@ public sealed class BotCombatPlanner
     public void RecordDamageReceived(PlayerSlot attackerSlot, int damage)
     {
         _damageReceivedFrom[attackerSlot] = _damageReceivedFrom.GetValueOrDefault(attackerSlot) + damage;
+        _lastAttacker = attackerSlot;
     }
 
     /// <summary>
@@ -165,6 +170,12 @@ public sealed class BotCombatPlanner
     }
 
     /// <summary>
+    /// Exposes the hit history so the static FindPrioritizedTarget can use it
+    /// for breach-widening decisions.
+    /// </summary>
+    public Dictionary<PlayerSlot, List<Vector3I>> HitHistory => _hitHistory;
+
+    /// <summary>
     /// Resets combat history for a new match.
     /// </summary>
     public void ResetHistory()
@@ -173,6 +184,20 @@ public sealed class BotCombatPlanner
         _hitCounts.Clear();
         _damageReceivedFrom.Clear();
         _lastTargetSlot = null;
+        _lastAttacker = null;
+    }
+
+    /// <summary>
+    /// Returns the last attacker if one exists and is still alive, or null.
+    /// The caller decides how to use this — it's a 50/50 weight boost, not
+    /// a hard override. This keeps retaliation feeling natural rather than
+    /// creating rigid back-and-forth patterns.
+    /// </summary>
+    public PlayerSlot? GetLastAttacker(HashSet<PlayerSlot> aliveEnemies)
+    {
+        if (_lastAttacker == null || !aliveEnemies.Contains(_lastAttacker.Value))
+            return null;
+        return _lastAttacker;
     }
 
     // ─────────────────────────────────────────────────
@@ -1023,7 +1048,8 @@ public sealed class BotCombatPlanner
         SceneTree sceneTree,
         BotDifficulty difficulty,
         Random rng,
-        CommanderActor? enemyCommander = null)
+        CommanderActor? enemyCommander = null,
+        Dictionary<PlayerSlot, List<Vector3I>>? hitHistory = null)
     {
         // ── Randomness knobs per difficulty ──────────────────────────
         // "skipChance" is the probability that the bot ignores a valid
@@ -1088,86 +1114,24 @@ public sealed class BotCombatPlanner
         }
 
         // ────────────────────────────────────────────────────────────
-        //  PRIORITY 2 — Enemy weapons
+        //  PRIORITY 2 — Weapons OR Structure (50/50 coin flip)
+        //  Instead of a rigid hierarchy, the bot randomly decides
+        //  whether to go after an enemy weapon or blast structure
+        //  to search for the commander. This keeps behavior dynamic
+        //  and avoids predictable patterns.
         // ────────────────────────────────────────────────────────────
-        if (rng.NextDouble() > skipChance)
+        bool tryWeaponsFirst = rng.NextDouble() < 0.5;
+
+        // Helper: attempt to find a weapon target
+        PrioritizedTarget? weaponTarget = FindWeaponTarget(world, weapon, enemySlot, sceneTree, rng);
+
+        if (tryWeaponsFirst && weaponTarget.HasValue && rng.NextDouble() > skipChance)
         {
-            List<WeaponBase> enemyWeapons = new List<WeaponBase>();
-            foreach (Node node in sceneTree.GetNodesInGroup("Weapons"))
-            {
-                if (node is WeaponBase wb
-                    && GodotObject.IsInstanceValid(wb)
-                    && !wb.IsDestroyed
-                    && wb.OwnerSlot == enemySlot)
-                {
-                    enemyWeapons.Add(wb);
-                }
-            }
-
-            if (enemyWeapons.Count > 0)
-            {
-                // Score each weapon: prefer weapons that are closer, more dangerous,
-                // and within line of sight.
-                WeaponBase? bestTarget = null;
-                float bestScore = float.MinValue;
-
-                foreach (WeaponBase ew in enemyWeapons)
-                {
-                    // Use the visual center of the enemy weapon (base + 1 build unit up)
-                    Vector3 enemyWeaponCenter = ew.GlobalPosition
-                        + new Vector3(0f, GameConfig.BuildUnitMeters, 0f);
-
-                    // LOS from overhead (same perspective as the player sees from above)
-                    Vector3 overheadPos = enemyWeaponCenter + new Vector3(0f, 40f, 0f);
-                    Vector3 toWeapon = enemyWeaponCenter - overheadPos;
-                    float dist = toWeapon.Length();
-                    if (dist < 0.1f) continue;
-
-                    float score = 0f;
-
-                    // LOS bonus: strongly prefer targets visible from overhead
-                    Vector3 dir = toWeapon / dist;
-                    bool hasLOS = !world.RaycastVoxel(overheadPos, dir, dist, out _, out _);
-                    bool isLobWeapon = weapon.WeaponId == "mortar" || weapon.WeaponId == "missile";
-
-                    if (!hasLOS && !isLobWeapon)
-                    {
-                        continue; // Can't hit this weapon — skip it
-                    }
-
-                    score += hasLOS ? 5f : 2f;
-
-                    // Distance penalty: closer is better (normalize by max weapon range)
-                    score -= dist * 0.05f;
-
-                    // Threat bonus: higher-damage weapons are more important to destroy
-                    score += ew.BaseDamage * 0.1f;
-
-                    // Small random factor for variety
-                    score += (float)rng.NextDouble() * 2f;
-
-                    if (score > bestScore)
-                    {
-                        bestScore = score;
-                        bestTarget = ew;
-                    }
-                }
-
-                if (bestTarget != null)
-                {
-                    // Aim at the base of the weapon — aiming at center tends to
-                    // overshoot slightly, and hitting the base is more reliable.
-                    Vector3 weaponBase = bestTarget.GlobalPosition;
-                    return new PrioritizedTarget(
-                        weaponBase,
-                        TargetPriority.Weapon,
-                        $"targeting enemy {bestTarget.WeaponId}");
-                }
-            }
+            return weaponTarget.Value;
         }
 
         // ────────────────────────────────────────────────────────────
-        //  PRIORITY 3 — Structural supports / large masses
+        //  Structure targeting (structural supports / excavation)
         // ────────────────────────────────────────────────────────────
         // Scan the enemy zone for solid voxels and analyze their distribution
         // to find structural weak points (low supports) or dense clusters.
@@ -1264,8 +1228,12 @@ public sealed class BotCombatPlanner
                 }
             }
 
-            // --- 3b: Large mass cluster ---
-            // Find the densest cluster of voxels — maximizes splash damage
+            // --- 3b: Situational structure targeting ---
+            // A real player adapts their approach based on:
+            //   - What weapon they're firing (lob weapons go over, direct weapons punch through)
+            //   - Where existing damage is (widen breaches, don't start fresh holes)
+            //   - Where the commander likely is (low, center, behind thick armor)
+            //   - Where the biggest cluster is (maximize splash payoff)
             if (rng.NextDouble() > skipChance)
             {
                 // Divide the zone into a 3x3x3 grid of sectors, count voxels in each
@@ -1288,9 +1256,26 @@ public sealed class BotCombatPlanner
                     sectorSums[sx, sy, sz] += w;
                 }
 
-                // Find the sector with the most voxels
-                int bestCount = 0;
+                // Weapon personality: different weapons favor different approaches
+                bool isLobWeapon = weapon.WeaponId == "mortar" || weapon.WeaponId == "missile";
+                bool isPierceWeapon = weapon.WeaponId == "railgun" || weapon.WeaponId == "drill";
+                bool isSplashWeapon = weapon.BlastRadiusMicrovoxels >= 5f; // mortar, missile, drill
+
+                // Check for existing breaches — if we've already damaged an area,
+                // widen it instead of starting a new hole
+                List<Vector3I>? prevHits = null;
+                bool hasBreachHistory = hitHistory != null
+                    && hitHistory.TryGetValue(enemySlot, out prevHits) && prevHits != null && prevHits.Count > 0;
+                Vector3 breachCenter = hasBreachHistory ? CalculateDamageCluster(prevHits!) : Vector3.Zero;
+
+                // Direction from weapon to zone center (for facing-side bonus)
+                Vector3 zoneCenter = MathHelpers.MicrovoxelToWorld(origin + size / 2);
+                Vector3 toWeaponDir = (weapon.GlobalPosition - zoneCenter).Normalized();
+
+                float bestScore = float.MinValue;
                 int bsx = 0, bsy = 0, bsz = 0;
+                int bestCount = 0;
+
                 for (int sx = 0; sx < sectorsPerAxis; sx++)
                 {
                     for (int sy = 0; sy < sectorsPerAxis; sy++)
@@ -1298,11 +1283,78 @@ public sealed class BotCombatPlanner
                         for (int sz = 0; sz < sectorsPerAxis; sz++)
                         {
                             int count = sectorCounts[sx, sy, sz];
-                            // Add a small random factor so bots don't always pick the same sector
-                            int adjustedCount = count + rng.Next(3);
-                            if (adjustedCount > bestCount)
+                            if (count == 0) continue;
+
+                            float score = 0f;
+
+                            // ── Density payoff: splash weapons love dense clusters ──
+                            score += count * (isSplashWeapon ? 1.5f : 0.8f);
+
+                            // ── Weapon-appropriate approach ──
+                            if (isLobWeapon)
                             {
-                                bestCount = adjustedCount;
+                                // Mortars/missiles come from above — target roof and upper areas
+                                score += sy * 3f;
+                            }
+                            else if (isPierceWeapon)
+                            {
+                                // Railgun/drill punch through walls horizontally —
+                                // target mid-height on the weapon-facing side
+                                float facingBonus = 0f;
+                                Vector3I sectorCenter = new Vector3I(
+                                    origin.X + (int)(size.X * (sx + 0.5f) / sectorsPerAxis),
+                                    origin.Y + (int)(size.Y * (sy + 0.5f) / sectorsPerAxis),
+                                    origin.Z + (int)(size.Z * (sz + 0.5f) / sectorsPerAxis));
+                                Vector3 sectorWorld = MathHelpers.MicrovoxelToWorld(sectorCenter);
+                                Vector3 fromCenter = (sectorWorld - zoneCenter).Normalized();
+                                facingBonus = fromCenter.Dot(toWeaponDir) * 5f;
+                                score += facingBonus;
+                                // Mid-height is best for horizontal penetration
+                                score += sy == 1 ? 3f : 0f;
+                            }
+                            else
+                            {
+                                // Cannon: versatile — prefer weapon-facing side, mid-to-low
+                                Vector3I sectorCenter = new Vector3I(
+                                    origin.X + (int)(size.X * (sx + 0.5f) / sectorsPerAxis),
+                                    origin.Y + (int)(size.Y * (sy + 0.5f) / sectorsPerAxis),
+                                    origin.Z + (int)(size.Z * (sz + 0.5f) / sectorsPerAxis));
+                                Vector3 sectorWorld = MathHelpers.MicrovoxelToWorld(sectorCenter);
+                                Vector3 fromCenter = (sectorWorld - zoneCenter).Normalized();
+                                score += fromCenter.Dot(toWeaponDir) * 3f;
+                                // Low shots can collapse structure above
+                                score += (2 - sy) * 1.5f;
+                            }
+
+                            // ── Breach widening: if we've hit nearby before, keep digging ──
+                            if (hasBreachHistory)
+                            {
+                                Vector3I sectorCenter = new Vector3I(
+                                    origin.X + (int)(size.X * (sx + 0.5f) / sectorsPerAxis),
+                                    origin.Y + (int)(size.Y * (sy + 0.5f) / sectorsPerAxis),
+                                    origin.Z + (int)(size.Z * (sz + 0.5f) / sectorsPerAxis));
+                                Vector3 sectorWorld = MathHelpers.MicrovoxelToWorld(sectorCenter);
+                                float distToBreach = sectorWorld.DistanceTo(breachCenter);
+                                // Closer to existing breach = bonus (widen it, don't start fresh)
+                                score += Math.Max(0f, 8f - distToBreach * 0.5f);
+                            }
+
+                            // ── Commander hunting: bias toward center-low ──
+                            // Commander is most likely placed low and center
+                            float centerDistX = Math.Abs(sx - 1f);
+                            float centerDistZ = Math.Abs(sz - 1f);
+                            score -= (centerDistX + centerDistZ) * 1.5f;
+                            // Low-center is prime commander territory
+                            if (sy == 0 && centerDistX < 0.5f && centerDistZ < 0.5f)
+                                score += 3f;
+
+                            // ── Randomness: keeps things unpredictable ──
+                            score += (float)rng.NextDouble() * 3f;
+
+                            if (score > bestScore)
+                            {
+                                bestScore = score;
+                                bestCount = count;
                                 bsx = sx;
                                 bsy = sy;
                                 bsz = sz;
@@ -1315,15 +1367,28 @@ public sealed class BotCombatPlanner
                 {
                     int realCount = sectorCounts[bsx, bsy, bsz];
                     Vector3 centroid = sectorSums[bsx, bsy, bsz] / realCount;
+
+                    // Describe what the bot is doing for logging
+                    string approach = isLobWeapon ? "lobbing into" : isPierceWeapon ? "punching through" : "blasting";
+                    string region = bsy >= 2 ? "roof" : bsy >= 1 ? "mid-section" : "base";
+                    string reason = hasBreachHistory ? " (widening breach)" : "";
                     return new PrioritizedTarget(
                         centroid,
                         TargetPriority.LargeMass,
-                        $"targeting dense voxel cluster ({realCount} voxels in sector)");
+                        $"{approach} {region}{reason} ({realCount} voxels)");
                 }
             }
 
             // ────────────────────────────────────────────────────────
-            //  PRIORITY 4 — Random / fallback
+            //  If we didn't try weapons first, try them now as fallback
+            // ────────────────────────────────────────────────────────
+            if (!tryWeaponsFirst && weaponTarget.HasValue && rng.NextDouble() > skipChance)
+            {
+                return weaponTarget.Value;
+            }
+
+            // ────────────────────────────────────────────────────────
+            //  FALLBACK — Random solid voxel
             // ────────────────────────────────────────────────────────
             {
                 Vector3I randomTarget = solidPositions[rng.Next(solidPositions.Count)];
@@ -1333,5 +1398,74 @@ public sealed class BotCombatPlanner
                     "random solid voxel (fallback)");
             }
         }
+    }
+
+    /// <summary>
+    /// Finds the best enemy weapon to target, or null if none are visible/reachable.
+    /// Extracted from the priority chain so it can be called at different points
+    /// depending on the 50/50 coin flip.
+    /// </summary>
+    private static PrioritizedTarget? FindWeaponTarget(
+        VoxelWorld world,
+        WeaponBase firingWeapon,
+        PlayerSlot enemySlot,
+        SceneTree sceneTree,
+        Random rng)
+    {
+        List<WeaponBase> enemyWeapons = new List<WeaponBase>();
+        foreach (Node node in sceneTree.GetNodesInGroup("Weapons"))
+        {
+            if (node is WeaponBase wb
+                && GodotObject.IsInstanceValid(wb)
+                && !wb.IsDestroyed
+                && wb.OwnerSlot == enemySlot)
+            {
+                enemyWeapons.Add(wb);
+            }
+        }
+
+        if (enemyWeapons.Count == 0)
+            return null;
+
+        WeaponBase? bestTarget = null;
+        float bestScore = float.MinValue;
+
+        foreach (WeaponBase ew in enemyWeapons)
+        {
+            Vector3 enemyWeaponCenter = ew.GlobalPosition
+                + new Vector3(0f, GameConfig.BuildUnitMeters, 0f);
+
+            // LOS from overhead (same perspective as the player hovering around)
+            Vector3 overheadPos = enemyWeaponCenter + new Vector3(0f, 40f, 0f);
+            Vector3 toWeapon = enemyWeaponCenter - overheadPos;
+            float dist = toWeapon.Length();
+            if (dist < 0.1f) continue;
+
+            Vector3 dir = toWeapon / dist;
+            bool hasLOS = !world.RaycastVoxel(overheadPos, dir, dist, out _, out _);
+            bool isLobWeapon = firingWeapon.WeaponId == "mortar" || firingWeapon.WeaponId == "missile";
+
+            if (!hasLOS && !isLobWeapon)
+                continue;
+
+            float score = hasLOS ? 5f : 2f;
+            score -= dist * 0.05f;
+            score += ew.BaseDamage * 0.1f;
+            score += (float)rng.NextDouble() * 2f;
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestTarget = ew;
+            }
+        }
+
+        if (bestTarget == null)
+            return null;
+
+        return new PrioritizedTarget(
+            bestTarget.GlobalPosition,
+            TargetPriority.Weapon,
+            $"targeting enemy {bestTarget.WeaponId}");
     }
 }

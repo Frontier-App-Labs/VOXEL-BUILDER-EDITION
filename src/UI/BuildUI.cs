@@ -410,9 +410,9 @@ public partial class BuildUI : Control
             matClickArea.Flat = true;
             matClickArea.MouseFilter = MouseFilterEnum.Stop;
             matClickArea.Modulate = new Color(1, 1, 1, 0);
-            matClickArea.Pressed += () => SelectMaterial(capturedIndex);
+            matClickArea.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); SelectMaterial(capturedIndex); };
             VoxelMaterialType capturedMat = mat;
-            matClickArea.MouseEntered += () => ShowMaterialTooltip(capturedMat);
+            matClickArea.MouseEntered += () => { AudioDirector.Instance?.PlaySFX("ui_hover"); ShowMaterialTooltip(capturedMat); };
             matClickArea.MouseExited += HideBuildTooltip;
             matBtn.AddChild(matClickArea);
             matClickArea.SetAnchorsPreset(LayoutPreset.FullRect);
@@ -531,7 +531,7 @@ public partial class BuildUI : Control
             toolClickArea.Flat = true;
             toolClickArea.MouseFilter = MouseFilterEnum.Stop;
             toolClickArea.Modulate = new Color(1, 1, 1, 0);
-            toolClickArea.Pressed += () => SelectTool(capturedIndex);
+            toolClickArea.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); SelectTool(capturedIndex); };
             toolBtn.AddChild(toolClickArea);
             toolClickArea.SetAnchorsPreset(LayoutPreset.FullRect);
             toolClickArea.OffsetLeft = 0;
@@ -623,8 +623,8 @@ public partial class BuildUI : Control
             bpClickArea.Flat = true;
             bpClickArea.MouseFilter = MouseFilterEnum.Stop;
             bpClickArea.Modulate = new Color(1, 1, 1, 0);
-            bpClickArea.Pressed += () => SelectBlueprint(capturedBpIndex);
-            bpClickArea.MouseEntered += () => ShowBlueprintTooltip(capturedBpIndex);
+            bpClickArea.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); SelectBlueprint(capturedBpIndex); };
+            bpClickArea.MouseEntered += () => { AudioDirector.Instance?.PlaySFX("ui_hover"); ShowBlueprintTooltip(capturedBpIndex); };
             bpClickArea.MouseExited += HideBuildTooltip;
             bpBtn.AddChild(bpClickArea);
             bpClickArea.SetAnchorsPreset(LayoutPreset.FullRect);
@@ -716,17 +716,18 @@ public partial class BuildUI : Control
             weapClickArea.Flat = true;
             weapClickArea.MouseFilter = MouseFilterEnum.Stop;
             weapClickArea.Modulate = new Color(1, 1, 1, 0);
-            weapClickArea.Pressed += () => SelectWeaponType(capturedIndex);
+            weapClickArea.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); SelectWeaponType(capturedIndex); };
             weapClickArea.GuiInput += (InputEvent @event) =>
             {
                 if (@event is InputEventMouseButton mb && mb.ButtonIndex == MouseButton.Right && mb.Pressed)
                 {
+                    AudioDirector.Instance?.PlaySFX("ui_click");
                     WeaponSellRequested?.Invoke(WeaponOptions[capturedIndex].Type);
                     weapClickArea.AcceptEvent();
                 }
             };
             int capturedWeapIdx = i;
-            weapClickArea.MouseEntered += () => ShowWeaponTooltip(capturedWeapIdx);
+            weapClickArea.MouseEntered += () => { AudioDirector.Instance?.PlaySFX("ui_hover"); ShowWeaponTooltip(capturedWeapIdx); };
             weapClickArea.MouseExited += HideBuildTooltip;
             weapBtn.AddChild(weapClickArea);
             weapClickArea.SetAnchorsPreset(LayoutPreset.FullRect);
@@ -828,16 +829,17 @@ public partial class BuildUI : Control
             pwrClickArea.Flat = true;
             pwrClickArea.MouseFilter = MouseFilterEnum.Stop;
             pwrClickArea.Modulate = new Color(1, 1, 1, 0);
-            pwrClickArea.Pressed += () => OnPowerupBuyClicked(capturedType);
+            pwrClickArea.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); OnPowerupBuyClicked(capturedType); };
             pwrClickArea.GuiInput += (InputEvent @event) =>
             {
                 if (@event is InputEventMouseButton mb && mb.ButtonIndex == MouseButton.Right && mb.Pressed)
                 {
+                    AudioDirector.Instance?.PlaySFX("ui_click");
                     OnPowerupSellClicked(capturedType);
                     pwrClickArea.AcceptEvent();
                 }
             };
-            pwrClickArea.MouseEntered += () => ShowPowerupTooltip(capturedType);
+            pwrClickArea.MouseEntered += () => { AudioDirector.Instance?.PlaySFX("ui_hover"); ShowPowerupTooltip(capturedType); };
             pwrClickArea.MouseExited += HideBuildTooltip;
             pwrBtn.AddChild(pwrClickArea);
             pwrClickArea.SetAnchorsPreset(LayoutPreset.FullRect);
@@ -940,16 +942,17 @@ public partial class BuildUI : Control
             troopClickArea.Flat = true;
             troopClickArea.MouseFilter = MouseFilterEnum.Stop;
             troopClickArea.Modulate = new Color(1, 1, 1, 0);
-            troopClickArea.Pressed += () => OnTroopBuyClicked(capturedTroopType);
+            troopClickArea.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); OnTroopBuyClicked(capturedTroopType); };
             troopClickArea.GuiInput += (InputEvent @event) =>
             {
                 if (@event is InputEventMouseButton mb && mb.ButtonIndex == MouseButton.Right && mb.Pressed)
                 {
+                    AudioDirector.Instance?.PlaySFX("ui_click");
                     OnTroopSellClicked(capturedTroopType);
                     troopClickArea.AcceptEvent();
                 }
             };
-            troopClickArea.MouseEntered += () => ShowTroopTooltip(capturedTroopType);
+            troopClickArea.MouseEntered += () => { AudioDirector.Instance?.PlaySFX("ui_hover"); ShowTroopTooltip(capturedTroopType); };
             troopClickArea.MouseExited += HideBuildTooltip;
             troopBtn.AddChild(troopClickArea);
             troopClickArea.SetAnchorsPreset(LayoutPreset.FullRect);
@@ -993,7 +996,7 @@ public partial class BuildUI : Control
         cmdBtn.AddThemeColorOverride("font_color", AccentGold);
         cmdBtn.AddThemeColorOverride("font_hover_color", BgDark);
         cmdBtn.MouseFilter = MouseFilterEnum.Stop;
-        cmdBtn.Pressed += () => PlaceCommanderRequested?.Invoke();
+        cmdBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); PlaceCommanderRequested?.Invoke(); };
 
         StyleBoxFlat cmdNormal = new StyleBoxFlat();
         cmdNormal.BgColor = new Color(AccentGold.R, AccentGold.G, AccentGold.B, 0.15f);
@@ -1079,7 +1082,7 @@ public partial class BuildUI : Control
         _readyBtn.AddThemeStyleboxOverride("pressed", readyPressed);
 
         _readyBtn.Text = "READY";
-        _readyBtn.Pressed += () => ReadyPressed?.Invoke();
+        _readyBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_confirm"); ReadyPressed?.Invoke(); };
         readyMargin.AddChild(_readyBtn);
     }
 
@@ -1259,7 +1262,7 @@ public partial class BuildUI : Control
         {
             int idx = i;
             Button symBtn = CreateSmallButton(symModes[i], i == 0 ? AccentGreen : TextSecondary);
-            symBtn.Pressed += () => SymmetryChanged?.Invoke(symValues[idx]);
+            symBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); SymmetryChanged?.Invoke(symValues[idx]); };
             bottomContent.AddChild(symBtn);
         }
 
@@ -1271,11 +1274,11 @@ public partial class BuildUI : Control
 
         // Undo / Redo
         Button undoBtn = CreateSmallButton("\u21b6 UNDO", TextSecondary);
-        undoBtn.Pressed += () => UndoRequested?.Invoke();
+        undoBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); UndoRequested?.Invoke(); };
         bottomContent.AddChild(undoBtn);
 
         Button redoBtn = CreateSmallButton("REDO \u21b7", TextSecondary);
-        redoBtn.Pressed += () => RedoRequested?.Invoke();
+        redoBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); RedoRequested?.Invoke(); };
         bottomContent.AddChild(redoBtn);
     }
 
@@ -1758,7 +1761,7 @@ public partial class BuildUI : Control
         saveBtn.AddThemeFontOverride("font", PixelFont);
         saveBtn.AddThemeFontSizeOverride("font_size", 10);
         saveBtn.CustomMinimumSize = new Vector2(0, 32);
-        saveBtn.Pressed += OnSandboxSavePressed;
+        saveBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); OnSandboxSavePressed(); };
         btnMargin.AddChild(saveBtn);
 
         // Separator
@@ -1849,6 +1852,7 @@ public partial class BuildUI : Control
             clickArea.Modulate = new Color(1, 1, 1, 0);
             clickArea.Pressed += () =>
             {
+                AudioDirector.Instance?.PlaySFX("ui_click");
                 SandboxLoadRequested?.Invoke(capturedName);
                 if (_sandboxNameInput != null) _sandboxNameInput.Text = capturedName;
             };

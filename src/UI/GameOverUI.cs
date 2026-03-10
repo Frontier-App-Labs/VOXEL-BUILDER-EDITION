@@ -468,7 +468,7 @@ public partial class GameOverUI : Control
         btn.AddThemeColorOverride("font_pressed_color", accentColor);
         btn.Alignment = HorizontalAlignment.Center;
         btn.MouseFilter = MouseFilterEnum.Stop;
-        btn.Pressed += handler;
+        btn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); handler(); };
         btnPanel.AddChild(btn);
         btn.SetAnchorsPreset(LayoutPreset.FullRect);
         btn.OffsetLeft = 0;
@@ -481,6 +481,7 @@ public partial class GameOverUI : Control
         PanelContainer capturedPanel = btnPanel;
         btn.MouseEntered += () =>
         {
+            AudioDirector.Instance?.PlaySFX("ui_hover");
             StyleBoxFlat hover = new StyleBoxFlat();
             hover.BgColor = ButtonHover;
             hover.CornerRadiusTopLeft = 0;

@@ -195,6 +195,12 @@ public partial class BotController : Node
     /// Returns a dictionary of threat scores (damage received from each enemy).
     /// Used by GameManager for the static target-selection path.
     /// </summary>
+    /// <summary>
+    /// Exposes the combat planner's hit history for FindPrioritizedTarget's
+    /// breach-widening logic.
+    /// </summary>
+    public Dictionary<PlayerSlot, List<Vector3I>> GetHitHistory() => _combatPlanner.HitHistory;
+
     public Dictionary<PlayerSlot, int> GetThreatScores(
         List<(PlayerSlot Slot, PlayerData Data)> enemies)
     {
@@ -221,7 +227,26 @@ public partial class BotController : Node
             threatScores[e.Slot] = _combatPlanner.GetThreatFrom(e.Slot);
         }
 
-        // Use the shared weighted random selection system
+        // Tit-for-tat: 50% chance the last attacker gets a weight boost.
+        // This biases the decision but doesn't override it — the bot might
+        // still pick a different target if the math favors it. Keeps things
+        // feeling calculated rather than rigidly reactive.
+        HashSet<PlayerSlot> aliveSet = new HashSet<PlayerSlot>();
+        foreach (var e in enemies) aliveSet.Add(e.Slot);
+
+        PlayerSlot? lastAttacker = _combatPlanner.GetLastAttacker(aliveSet);
+        if (lastAttacker.HasValue && _rng.NextDouble() < 0.5)
+        {
+            // Boost the attacker's threat score so they're more likely to be picked
+            // but not guaranteed. This is additive — if another enemy has higher
+            // threat from dealing more total damage, they might still win out.
+            int currentThreat = threatScores.GetValueOrDefault(lastAttacker.Value);
+            int maxThreat = 1;
+            foreach (var t in threatScores.Values)
+                if (t > maxThreat) maxThreat = t;
+            threatScores[lastAttacker.Value] = currentThreat + maxThreat;
+        }
+
         return BotCombatPlanner.SelectTargetStatic(
             enemies, Difficulty, _rng, threatScores, botZoneCenter: null);
     }

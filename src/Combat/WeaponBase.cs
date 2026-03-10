@@ -180,17 +180,32 @@ public abstract partial class WeaponBase : Node3D
 
         if (dropDistance > 0)
         {
-            // Anchor to new position — drop down
+            // Animate the fall — use a Tween for smooth gravity drop
             float dropMeters = dropDistance * GameConfig.MicrovoxelMeters;
             Vector3 newPos = GlobalPosition - new Vector3(0, dropMeters, 0);
-            GD.Print($"[Weapon] {WeaponId} owned by {OwnerSlot} lost support — dropping {dropDistance} blocks to new anchor.");
-            GlobalPosition = newPos;
+            GD.Print($"[Weapon] {WeaponId} owned by {OwnerSlot} lost support — falling {dropDistance} blocks.");
+
+            // Duration scales with drop distance (feels like gravity)
+            float fallDuration = Mathf.Sqrt(dropMeters * 0.15f);
+            fallDuration = Mathf.Clamp(fallDuration, 0.2f, 1.0f);
+
+            Tween tween = CreateTween();
+            // Ease-in for accelerating fall (like real gravity)
+            tween.TweenProperty(this, "global_position", newPos, fallDuration)
+                .SetEase(Tween.EaseType.In)
+                .SetTrans(Tween.TransitionType.Quad);
         }
         else
         {
             // No solid ground anywhere below — weapon falls to destruction
-            GD.Print($"[Weapon] {WeaponId} owned by {OwnerSlot} lost all support — destroyed!");
-            ApplyDamage(MaxHitPoints);
+            // Animate it falling off-screen then destroy
+            GD.Print($"[Weapon] {WeaponId} owned by {OwnerSlot} lost all support — falling to destruction!");
+            Vector3 fallTarget = GlobalPosition - new Vector3(0, 30f, 0);
+            Tween tween = CreateTween();
+            tween.TweenProperty(this, "global_position", fallTarget, 1.5f)
+                .SetEase(Tween.EaseType.In)
+                .SetTrans(Tween.TransitionType.Quad);
+            tween.TweenCallback(Callable.From(() => ApplyDamage(MaxHitPoints)));
         }
     }
 

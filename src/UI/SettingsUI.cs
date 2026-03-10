@@ -184,7 +184,7 @@ public partial class SettingsUI : Control
         closeBtn.AddThemeColorOverride("font_color", TextSecondary);
         closeBtn.AddThemeColorOverride("font_hover_color", AccentRed);
         closeBtn.MouseFilter = MouseFilterEnum.Stop;
-        closeBtn.Pressed += OnCancelPressed;
+        closeBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); OnCancelPressed(); };
         headerRow.AddChild(closeBtn);
 
         // Tab bar
@@ -501,7 +501,7 @@ public partial class SettingsUI : Control
         tabBtn.AddThemeColorOverride("font_color", index == 0 ? AccentGreen : TextSecondary);
         tabBtn.AddThemeColorOverride("font_hover_color", TextPrimary);
         tabBtn.MouseFilter = MouseFilterEnum.Stop;
-        tabBtn.Pressed += () => SwitchTab(index);
+        tabBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); SwitchTab(index); };
         tabPanel.AddChild(tabBtn);
         tabBtn.SetAnchorsPreset(LayoutPreset.FullRect);
         tabBtn.OffsetLeft = 0;
@@ -606,7 +606,7 @@ public partial class SettingsUI : Control
         btn.AddThemeColorOverride("font_color", accentColor);
         btn.AddThemeColorOverride("font_hover_color", TextPrimary);
         btn.MouseFilter = MouseFilterEnum.Stop;
-        btn.Pressed += handler;
+        btn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); handler(); };
         btnPanel.AddChild(btn);
         btn.SetAnchorsPreset(LayoutPreset.FullRect);
         btn.OffsetLeft = 0;

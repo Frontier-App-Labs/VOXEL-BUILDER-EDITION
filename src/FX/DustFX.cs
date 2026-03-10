@@ -112,7 +112,7 @@ public partial class DustFX : Node3D
             sphereMat.VertexColorUseAsAlbedo = true; // Required for ColorRamp to tint particles
             sphereMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
             sphereMat.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
-            sphereMat.NoDepthTest = true;
+            sphereMat.NoDepthTest = false;
             sphereMat.ProximityFadeEnabled = true;
             sphereMat.ProximityFadeDistance = 0.2f;
             _cachedSphere.Material = sphereMat;

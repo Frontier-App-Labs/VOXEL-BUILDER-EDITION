@@ -10,7 +10,7 @@ namespace VoxelSiege.Army;
 public sealed class DoorPlacement
 {
     public PlayerSlot Owner { get; init; }
-    public Vector3I BaseMicrovoxel { get; init; }  // bottom of the 1x3 opening
+    public Vector3I BaseMicrovoxel { get; init; }  // bottom of the 1xDoorHeight opening
     public List<Vector3I> OpeningVoxels { get; init; } = new(); // the 1x3 column of carved air
 
     /// <summary>
@@ -31,11 +31,11 @@ public class DoorRegistry
 {
     private readonly Dictionary<PlayerSlot, List<DoorPlacement>> _doors = new();
     public const int MaxDoorsPerPlayer = 4;
-    public const int DoorHeight = 3; // microvoxels tall
+    public const int DoorHeight = 4; // microvoxels tall (2 build units)
 
     /// <summary>
     /// Attempts to place a door at the given base microvoxel position on the build zone perimeter.
-    /// Carves a 1-wide x 3-tall opening through solid voxels.
+    /// Carves a 1-wide x DoorHeight-tall opening through solid voxels.
     /// </summary>
     /// <param name="world">The voxel world to carve into.</param>
     /// <param name="baseMicrovoxel">Bottom microvoxel of the 1x3 opening.</param>

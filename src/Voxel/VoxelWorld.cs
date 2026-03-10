@@ -21,6 +21,12 @@ public partial class VoxelWorld : Node3D
     private readonly Stack<List<Vector3I>> _listPool = new Stack<List<Vector3I>>();
     private readonly Stack<HashSet<Vector3I>> _hashSetPool = new Stack<HashSet<Vector3I>>();
 
+    // Fix: Deferred edge chunk remesh queue to prevent floating texture faces.
+    // When explosions destroy voxels, edge chunks must remesh AFTER affected chunks
+    // to avoid snapshotting stale boundary data. Edge chunks are queued here and
+    // drained into the main dirty queue on the next frame.
+    private readonly Queue<Vector3I> _deferredEdgeRemesh = new Queue<Vector3I>();
+
     // Fix #1: Guard against re-entrant _Process dirty chunk processing
     private bool _processingDirtyChunks;
 
@@ -81,6 +87,16 @@ public partial class VoxelWorld : Node3D
         if (!_processingDirtyChunks)
         {
             _processingDirtyChunks = true;
+
+            // Drain deferred edge chunks into the main dirty queue BEFORE processing.
+            // These were queued last frame by ApplyBulkChanges/FillBoxBulk so that
+            // affected chunks get a full frame head-start on remeshing, preventing
+            // edge chunks from snapshotting stale boundary voxel data.
+            while (_deferredEdgeRemesh.Count > 0)
+            {
+                QueueRemesh(_deferredEdgeRemesh.Dequeue());
+            }
+
             int remeshBudget = GameConfig.MaxChunkMeshesPerFrame;
             while (remeshBudget-- > 0 && _dirtyChunkQueue.Count > 0)
             {
@@ -204,12 +220,13 @@ public partial class VoxelWorld : Node3D
             QueueRemesh(chunkCoords);
         }
 
-        // Queue remeshes for edge-neighboring chunks not already in the affected set
+        // Defer edge-neighbor remeshes by one frame so affected chunks finish
+        // updating first, preventing floating texture faces at chunk boundaries.
         foreach (Vector3I neighborCoords in edgeChunks)
         {
             if (!affectedChunks.ContainsKey(neighborCoords))
             {
-                QueueRemesh(neighborCoords);
+                _deferredEdgeRemesh.Enqueue(neighborCoords);
             }
         }
     }
@@ -269,12 +286,13 @@ public partial class VoxelWorld : Node3D
             QueueRemesh(chunkCoords);
         }
 
-        // Queue remeshes for edge-neighboring chunks not already in the affected set
+        // Defer edge-neighbor remeshes by one frame so affected chunks finish
+        // updating first, preventing floating texture faces at chunk boundaries.
         foreach (Vector3I neighborCoords in edgeChunks)
         {
             if (!affectedChunks.ContainsKey(neighborCoords))
             {
-                QueueRemesh(neighborCoords);
+                _deferredEdgeRemesh.Enqueue(neighborCoords);
             }
         }
     }
@@ -447,6 +465,7 @@ public partial class VoxelWorld : Node3D
         _chunks.Clear();
         _dirtyChunkQueue.Clear();
         _dirtyChunkSet.Clear();
+        _deferredEdgeRemesh.Clear();
 
         if (regeneratePrototypeArena)
         {
@@ -583,13 +602,17 @@ public partial class VoxelWorld : Node3D
         int dz0 = localPosition.Z == 0 ? -1 : 0;
         int dz1 = localPosition.Z == cs ? 1 : 0;
 
-        // Queue all neighbor chunks this voxel touches (faces + edges + corners)
+        // Defer neighbor chunk remeshes by one frame so the owning chunk finishes
+        // updating first. This prevents floating texture faces at chunk boundaries
+        // when SetVoxel is called in a loop (e.g. BuildSystem.ApplyBuildAction or
+        // DestroyVoxelsInRadius). Without deferral, the neighbor chunk can snapshot
+        // stale boundary data before all voxel writes in the batch complete.
         for (int dx = dx0; dx <= dx1; dx++)
         for (int dy = dy0; dy <= dy1; dy++)
         for (int dz = dz0; dz <= dz1; dz++)
         {
             if (dx == 0 && dy == 0 && dz == 0) continue; // skip self
-            QueueRemesh(chunkCoords + new Vector3I(dx, dy, dz));
+            _deferredEdgeRemesh.Enqueue(chunkCoords + new Vector3I(dx, dy, dz));
         }
     }
 }

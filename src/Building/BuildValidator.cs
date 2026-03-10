@@ -155,12 +155,8 @@ public sealed class BuildValidator
 
     public bool ValidateWeaponPlacement(VoxelWorld world, BuildZone zone, Vector3I weaponBuildUnit)
     {
-        // Weapons can be placed on any solid surface within range of the
-        // build zone, including natural terrain (grass, dirt, stone).
-        // Use a range check instead of strict zone containment.
-        Vector3I zoneCenter = zone.OriginBuildUnits + zone.SizeBuildUnits / 2;
-        float dist = weaponBuildUnit.DistanceTo(zoneCenter);
-        if (dist > GameConfig.MaxWeaponPlacementRange)
+        // Weapons must be placed inside the player's build zone, just like blocks.
+        if (!zone.ContainsBuildUnit(weaponBuildUnit))
         {
             return false;
         }

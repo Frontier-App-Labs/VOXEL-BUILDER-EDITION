@@ -1381,7 +1381,7 @@ public static class WeaponFX
             boxMat.VertexColorUseAsAlbedo = true;
             boxMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
             boxMat.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
-            boxMat.NoDepthTest = true;
+            boxMat.NoDepthTest = false;
             _cachedSparkBox.Material = boxMat;
         }
         return _cachedSparkBox;
@@ -1402,7 +1402,7 @@ public static class WeaponFX
             mat.VertexColorUseAsAlbedo = true;
             mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
             mat.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
-            mat.NoDepthTest = true;
+            mat.NoDepthTest = false;
             mat.EmissionEnabled = true;
             mat.Emission = new Color(0.3f, 0.8f, 1f);
             mat.EmissionEnergyMultiplier = 2f;
@@ -1424,7 +1424,7 @@ public static class WeaponFX
         mat.VertexColorUseAsAlbedo = true; // Required for ColorRamp to tint particles
         mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
         mat.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
-        mat.NoDepthTest = true;
+        mat.NoDepthTest = false;
         sphere.Material = mat;
         return sphere;
     }

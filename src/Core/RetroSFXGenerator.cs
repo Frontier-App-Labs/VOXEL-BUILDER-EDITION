@@ -82,6 +82,13 @@ public partial class RetroSFXGenerator : Node
         // Backup bombardment alert
         audio.RegisterSFX("backup_alert", GenerateBackupAlert());
 
+        // UI sounds
+        audio.RegisterSFX("ui_click", GenerateUIClick());
+        audio.RegisterSFX("ui_hover", GenerateUIHover());
+        audio.RegisterSFX("ui_confirm", GenerateUIConfirm());
+        audio.RegisterSFX("ui_cancel", GenerateUICancel());
+        audio.RegisterSFX("ui_error", GenerateUIError());
+
         GD.Print("[RetroSFX] All retro SFX generated and registered.");
     }
 
@@ -95,7 +102,7 @@ public partial class RetroSFXGenerator : Node
             float t = i / (float)SampleRate;
             float env = MathF.Max(0f, 1f - t * 15f);
             float freq = 180f - t * 800f;
-            float val = MathF.Sign(MathF.Sin(2f * MathF.PI * freq * t)) * env * 0.5f;
+            float val = MathF.Sign(MathF.Sin(2f * MathF.PI * freq * t)) * env * 0.75f;
             WriteSample(data, i, val);
         }
         return CreateWav(data);
@@ -372,6 +379,94 @@ public partial class RetroSFXGenerator : Node
             float bass = MathF.Sin(2f * MathF.PI * 80f * t) * 0.2f * env;
             float val = (tone + bass) * env;
             WriteSample(data, i, Clamp(val));
+        }
+        return CreateWav(data);
+    }
+
+    // ─── UI click: crisp NES-style menu select blip ───
+    private AudioStreamWav GenerateUIClick()
+    {
+        int samples = (int)(SampleRate * 0.04f);
+        byte[] data = new byte[samples * 2];
+        for (int i = 0; i < samples; i++)
+        {
+            float t = i / (float)SampleRate;
+            float env = MathF.Max(0f, 1f - t * 30f);
+            // Square wave at 800Hz for that classic NES snap
+            float val = MathF.Sign(MathF.Sin(2f * MathF.PI * 800f * t)) * env * 0.22f;
+            WriteSample(data, i, val);
+        }
+        return CreateWav(data);
+    }
+
+    // ─── UI hover: subtle soft tick for button hover ───
+    private AudioStreamWav GenerateUIHover()
+    {
+        int samples = (int)(SampleRate * 0.02f);
+        byte[] data = new byte[samples * 2];
+        for (int i = 0; i < samples; i++)
+        {
+            float t = i / (float)SampleRate;
+            float env = MathF.Max(0f, 1f - t * 60f);
+            // Triangle wave at 1200Hz — softer than square, barely noticeable
+            float phase = (t * 1200f) % 1f;
+            float tri = MathF.Abs(phase * 4f - 2f) - 1f;
+            float val = tri * env * 0.08f;
+            WriteSample(data, i, val);
+        }
+        return CreateWav(data);
+    }
+
+    // ─── UI confirm: ascending two-note blip (C5→E5) ───
+    private AudioStreamWav GenerateUIConfirm()
+    {
+        int samples = (int)(SampleRate * 0.08f);
+        byte[] data = new byte[samples * 2];
+        float noteDuration = 0.04f;
+        for (int i = 0; i < samples; i++)
+        {
+            float t = i / (float)SampleRate;
+            // First note C5 (523Hz), second note E5 (659Hz)
+            float freq = t < noteDuration ? 523f : 659f;
+            float noteT = t < noteDuration ? t : t - noteDuration;
+            float env = MathF.Max(0f, 1f - noteT * 30f);
+            float val = MathF.Sign(MathF.Sin(2f * MathF.PI * freq * t)) * env * 0.22f;
+            WriteSample(data, i, val);
+        }
+        return CreateWav(data);
+    }
+
+    // ─── UI cancel: short descending tone (600→300Hz) ───
+    private AudioStreamWav GenerateUICancel()
+    {
+        int samples = (int)(SampleRate * 0.06f);
+        byte[] data = new byte[samples * 2];
+        for (int i = 0; i < samples; i++)
+        {
+            float t = i / (float)SampleRate;
+            float env = MathF.Max(0f, 1f - t * 20f);
+            // Descending frequency sweep from 600Hz to 300Hz
+            float freq = 600f - t * 5000f;
+            freq = MathF.Max(freq, 300f);
+            float val = MathF.Sign(MathF.Sin(2f * MathF.PI * freq * t)) * env * 0.19f;
+            WriteSample(data, i, val);
+        }
+        return CreateWav(data);
+    }
+
+    // ─── UI error: low buzzy "nope" with wobble ───
+    private AudioStreamWav GenerateUIError()
+    {
+        int samples = (int)(SampleRate * 0.06f);
+        byte[] data = new byte[samples * 2];
+        for (int i = 0; i < samples; i++)
+        {
+            float t = i / (float)SampleRate;
+            float env = MathF.Max(0f, 1f - t * 18f);
+            // Low buzz at 200Hz with 30Hz wobble for that gritty "invalid" feel
+            float freq = 200f + MathF.Sin(2f * MathF.PI * 30f * t) * 40f;
+            float val = MathF.Sign(MathF.Sin(2f * MathF.PI * freq * t)) * env * 0.19f;
+            WriteSample(data, i, val);
         }
         return CreateWav(data);
     }

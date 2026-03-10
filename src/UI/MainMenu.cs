@@ -849,10 +849,10 @@ public partial class MainMenu : Control
         btn.AddThemeColorOverride("font_pressed_color", accentColor);
         btn.Alignment = HorizontalAlignment.Center;
         btn.MouseFilter = MouseFilterEnum.Stop;
-        btn.Pressed += handler;
+        btn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); handler(); };
 
         // Hover styling via signals
-        btn.MouseEntered += () => OnButtonHover(btnPanel, accentColor, true);
+        btn.MouseEntered += () => { AudioDirector.Instance?.PlaySFX("ui_hover"); OnButtonHover(btnPanel, accentColor, true); };
         btn.MouseExited += () => OnButtonHover(btnPanel, accentColor, false);
 
         btnPanel.AddChild(btn);
@@ -983,7 +983,7 @@ public partial class MainMenu : Control
         joinBtn.AddThemeColorOverride("font_color", AccentGold);
         joinBtn.AddThemeColorOverride("font_hover_color", TextPrimary);
         joinBtn.MouseFilter = MouseFilterEnum.Stop;
-        joinBtn.Pressed += OnJoinWithCode;
+        joinBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); OnJoinWithCode(); };
         row.AddChild(joinBtn);
 
         // Start invisible for stagger animation (matches menu buttons)
@@ -1045,7 +1045,7 @@ public partial class MainMenu : Control
         minusBtn.AddThemeFontSizeOverride("font_size", 14);
         minusBtn.AddThemeColorOverride("font_color", TextPrimary);
         minusBtn.AddThemeColorOverride("font_hover_color", AccentGreen);
-        minusBtn.Pressed += () => ChangeBotCount(-1);
+        minusBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); ChangeBotCount(-1); };
         row.AddChild(minusBtn);
 
         _botCountLabel = new Label();
@@ -1065,7 +1065,7 @@ public partial class MainMenu : Control
         plusBtn.AddThemeFontSizeOverride("font_size", 14);
         plusBtn.AddThemeColorOverride("font_color", TextPrimary);
         plusBtn.AddThemeColorOverride("font_hover_color", AccentGreen);
-        plusBtn.Pressed += () => ChangeBotCount(1);
+        plusBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); ChangeBotCount(1); };
         row.AddChild(plusBtn);
 
         // Start invisible for stagger animation (matches menu buttons)

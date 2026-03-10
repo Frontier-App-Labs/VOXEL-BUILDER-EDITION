@@ -34,6 +34,12 @@ public partial class HelpScreen : Control
     public delegate void HelpClosedEventHandler();
 
     private Control? _contentContainer;
+    private MarginContainer? _scrollMargin;
+
+    /// <summary>Maximum width for the content column (paragraphs, tables, etc.).</summary>
+    private const float MaxContentWidth = 900f;
+    /// <summary>Minimum side margin inside the scroll area.</summary>
+    private const int MinSideMargin = 72;
 
     public override void _Ready()
     {
@@ -57,6 +63,21 @@ public partial class HelpScreen : Control
             float contentH = viewSize.Y * 0.9f;
             _contentContainer.Position = new Vector2((viewSize.X - contentW) * 0.5f, (viewSize.Y - contentH) * 0.5f);
             _contentContainer.Size = new Vector2(contentW, contentH);
+
+            // Dynamically widen side margins so the text column never exceeds MaxContentWidth.
+            // This keeps content centered and readable on ultrawide / large monitors.
+            if (_scrollMargin != null)
+            {
+                float availableW = contentW;
+                int sideMargin = MinSideMargin;
+                float innerW = availableW - sideMargin * 2;
+                if (innerW > MaxContentWidth)
+                {
+                    sideMargin = (int)((availableW - MaxContentWidth) * 0.5f);
+                }
+                _scrollMargin.AddThemeConstantOverride("margin_left", sideMargin);
+                _scrollMargin.AddThemeConstantOverride("margin_right", sideMargin);
+            }
         }
     }
 
@@ -131,20 +152,22 @@ public partial class HelpScreen : Control
         scroll.ProcessMode = ProcessModeEnum.Always;
         outerVBox.AddChild(scroll);
 
-        MarginContainer scrollMargin = new MarginContainer();
-        scrollMargin.AddThemeConstantOverride("margin_left", 32);
-        scrollMargin.AddThemeConstantOverride("margin_right", 32);
-        scrollMargin.AddThemeConstantOverride("margin_top", 16);
-        scrollMargin.AddThemeConstantOverride("margin_bottom", 24);
-        scrollMargin.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        scrollMargin.MouseFilter = MouseFilterEnum.Ignore;
-        scroll.AddChild(scrollMargin);
+        // Scroll margin container -- margins are set dynamically in _Process
+        // to center content with a max width of ~900px
+        _scrollMargin = new MarginContainer();
+        _scrollMargin.AddThemeConstantOverride("margin_left", 72);
+        _scrollMargin.AddThemeConstantOverride("margin_right", 72);
+        _scrollMargin.AddThemeConstantOverride("margin_top", 20);
+        _scrollMargin.AddThemeConstantOverride("margin_bottom", 28);
+        _scrollMargin.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _scrollMargin.MouseFilter = MouseFilterEnum.Ignore;
+        scroll.AddChild(_scrollMargin);
 
         VBoxContainer content = new VBoxContainer();
         content.AddThemeConstantOverride("separation", 8);
         content.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         content.MouseFilter = MouseFilterEnum.Ignore;
-        scrollMargin.AddChild(content);
+        _scrollMargin.AddChild(content);
 
         // --- Build all help sections ---
         BuildGameOverview(content);
@@ -368,9 +391,9 @@ public partial class HelpScreen : Control
             new[] { "Brick", "$25", "9", "Strong and affordable. Great for walls." },
             new[] { "Concrete", "$30", "13", "Very durable. Excellent for structural cores." },
             new[] { "Metal", "$35", "18", "High HP with 12% ricochet chance. Premium armor." },
-            new[] { "Armor Plate", "$55", "21", "Exterior-only. 15% ricochet chance. Top-tier shell." },
-            new[] { "Reinforced Steel", "$65", "26", "20% ricochet chance. Extremely tough." },
-            new[] { "Obsidian", "$80", "30", "Strongest material! 10% ricochet. Max 20 per player." },
+            new[] { "Armor Plate", "$55", "23", "Exterior-only. 8% ricochet chance. Top-tier shell." },
+            new[] { "Reinforced Steel", "$65", "22", "10% ricochet chance. Extremely tough." },
+            new[] { "Obsidian", "$80", "25", "Strongest material! 5% ricochet. Max 20 per player." },
             new[] { "Glass", "$12", "1", "Transparent. Very fragile, but lets you see through." },
             new[] { "Ice", "$12", "3", "Transparent. Cheap filler with decent HP." },
             new[] { "Bark", "$15", "5", "Decorative. Flammable." },
@@ -442,7 +465,7 @@ public partial class HelpScreen : Control
 
         AddSubHeader(parent, "WEAPON DURABILITY");
         AddParagraph(parent,
-            "Weapons have 480 HP and can be damaged or destroyed by enemy fire. " +
+            "Weapons have 200 HP and can be damaged or destroyed by enemy fire. " +
             "If the blocks beneath a weapon are destroyed, it loses structural " +
             "support and is instantly destroyed. Protect your weapons!");
     }
@@ -528,7 +551,7 @@ public partial class HelpScreen : Control
 
         AddSubHeader(parent, "BUILDING");
         AddBullet(parent, "Layer materials: cheap Dirt/Sand inside, Concrete/Metal shell outside");
-        AddBullet(parent, "Obsidian is the strongest (30 HP) but limited to 20 blocks -- use them around your commander");
+        AddBullet(parent, "Obsidian is the strongest (25 HP) but limited to 20 blocks -- use them around your commander");
         AddBullet(parent, "Sand absorbs blast radius -- use it as a shock absorber layer");
         AddBullet(parent, "Avoid Wood/Bark/Leaves near your commander -- they catch fire!");
         AddBullet(parent, "Use symmetry mode for efficient, balanced fortress construction");

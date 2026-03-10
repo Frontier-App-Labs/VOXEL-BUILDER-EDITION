@@ -643,6 +643,7 @@ public partial class CombatUI : Control
             clickArea.Modulate = new Color(1, 1, 1, 0);
             clickArea.Pressed += () =>
             {
+                AudioDirector.Instance?.PlaySFX("ui_click");
                 PowerupActivateRequested?.Invoke(capturedType);
                 // Flash feedback
                 slot.AddThemeStyleboxOverride("panel",
@@ -706,7 +707,7 @@ public partial class CombatUI : Control
         _deployBtn.AddThemeColorOverride("font_color", AccentGreen);
         _deployBtn.AddThemeColorOverride("font_hover_color", TextPrimary);
         _deployBtn.MouseFilter = MouseFilterEnum.Stop;
-        _deployBtn.Pressed += () => DeployRequested?.Invoke();
+        _deployBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); DeployRequested?.Invoke(); };
         deployCol.AddChild(_deployBtn);
 
         // Warning label (shown when troops exist but no doors placed)
@@ -894,7 +895,7 @@ public partial class CombatUI : Control
         fireBtn.AddThemeColorOverride("font_color", AccentRed);
         fireBtn.AddThemeColorOverride("font_hover_color", TextPrimary);
         fireBtn.MouseFilter = MouseFilterEnum.Stop;
-        fireBtn.Pressed += OnFirePressed;
+        fireBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_confirm"); OnFirePressed(); };
         firePanel.AddChild(fireBtn);
         fireBtn.SetAnchorsPreset(LayoutPreset.FullRect);
         fireBtn.OffsetLeft = 0;
@@ -905,6 +906,7 @@ public partial class CombatUI : Control
         // Hover effect
         fireBtn.MouseEntered += () =>
         {
+            AudioDirector.Instance?.PlaySFX("ui_hover");
             StyleBoxFlat hover = CreateFlatStyle(new Color(AccentRed.R, AccentRed.G, AccentRed.B, 0.4f), 0);
             hover.BorderWidthTop = 2;
             hover.BorderWidthBottom = 2;
@@ -1325,7 +1327,7 @@ public partial class CombatUI : Control
             weapClickArea.Flat = true;
             weapClickArea.MouseFilter = MouseFilterEnum.Stop;
             weapClickArea.Modulate = new Color(1, 1, 1, 0);
-            weapClickArea.Pressed += () => SelectWeaponGroup(capturedGroup);
+            weapClickArea.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); SelectWeaponGroup(capturedGroup); };
             weapBtn.AddChild(weapClickArea);
             weapClickArea.SetAnchorsPreset(LayoutPreset.FullRect);
             weapClickArea.OffsetLeft = 0;
@@ -1691,6 +1693,7 @@ public partial class CombatUI : Control
             clickArea.Modulate = new Color(1, 1, 1, 0);
             clickArea.Pressed += () =>
             {
+                AudioDirector.Instance?.PlaySFX("ui_confirm");
                 AirstrikeTargetSelected?.Invoke(capturedSlot);
                 HideAirstrikeTargetPicker();
             };
@@ -1705,6 +1708,7 @@ public partial class CombatUI : Control
             Color capturedColor = color;
             clickArea.MouseEntered += () =>
             {
+                AudioDirector.Instance?.PlaySFX("ui_hover");
                 if (GodotObject.IsInstanceValid(btnPanel))
                 {
                     btnPanel.AddThemeStyleboxOverride("panel",
@@ -1868,7 +1872,7 @@ public partial class CombatUI : Control
             leftBtn.AddThemeColorOverride("font_hover_color", AccentGold);
             leftBtn.CustomMinimumSize = new Vector2(28, 28);
             leftBtn.MouseFilter = MouseFilterEnum.Stop;
-            leftBtn.Pressed += () => TargetCycleRequested?.Invoke(-1);
+            leftBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); TargetCycleRequested?.Invoke(-1); };
             row.AddChild(leftBtn);
         }
 
@@ -1925,7 +1929,7 @@ public partial class CombatUI : Control
             rightBtn.AddThemeColorOverride("font_hover_color", AccentGold);
             rightBtn.CustomMinimumSize = new Vector2(28, 28);
             rightBtn.MouseFilter = MouseFilterEnum.Stop;
-            rightBtn.Pressed += () => TargetCycleRequested?.Invoke(1);
+            rightBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); TargetCycleRequested?.Invoke(1); };
             row.AddChild(rightBtn);
         }
 

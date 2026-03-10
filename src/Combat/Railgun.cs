@@ -145,7 +145,7 @@ public partial class Railgun : WeaponBase
 
             Vector3 closestPoint = start + direction * projection;
             float distance = commander.GlobalPosition.DistanceTo(closestPoint) / GameConfig.MicrovoxelMeters;
-            if (distance < 2f) // within 2 microvoxels of the beam
+            if (distance < 3.5f) // within 3.5 microvoxels of the beam (~1.75m)
             {
                 int commanderDamage = Mathf.Max(1, BaseDamage / 2);
                 // Exposed commanders take extra damage — they have no cover

@@ -343,7 +343,7 @@ public partial class LobbyUI : Control
         _readyButton.AddThemeColorOverride("font_color", AccentGreen);
         _readyButton.AddThemeColorOverride("font_hover_color", TextPrimary);
         _readyButton.MouseFilter = MouseFilterEnum.Stop;
-        _readyButton.Pressed += () => ReadyToggled?.Invoke();
+        _readyButton.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_confirm"); ReadyToggled?.Invoke(); };
         readyPanel.AddChild(_readyButton);
 
         // Start game button (host only) — voxel style
@@ -372,7 +372,7 @@ public partial class LobbyUI : Control
         _startButton.AddThemeColorOverride("font_color", AccentGold);
         _startButton.AddThemeColorOverride("font_hover_color", TextPrimary);
         _startButton.MouseFilter = MouseFilterEnum.Stop;
-        _startButton.Pressed += () => StartGameRequested?.Invoke();
+        _startButton.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_confirm"); StartGameRequested?.Invoke(); };
         startPanel.AddChild(_startButton);
 
         // Bottom spacer
@@ -771,7 +771,7 @@ public partial class LobbyUI : Control
         btn.AddThemeColorOverride("font_color", accentColor);
         btn.AddThemeColorOverride("font_hover_color", TextPrimary);
         btn.MouseFilter = MouseFilterEnum.Stop;
-        btn.Pressed += handler;
+        btn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); handler(); };
         btnPanel.AddChild(btn);
 
         return btnPanel;

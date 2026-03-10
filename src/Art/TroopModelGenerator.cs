@@ -275,14 +275,37 @@ public static class TroopModelGenerator
                 torso[x, 0, z] = BeltBrown;
 
         // ── ARMS (1x2x2 each) ──
-        Color?[,,] arm = new Color?[1, 2, 2];
-        arm[0, 1, 0] = uniform; arm[0, 1, 1] = uniform;
-        arm[0, 0, 0] = Skin; arm[0, 0, 1] = Skin;
+        Color?[,,] leftUpperArm = new Color?[1, 2, 2];
+        leftUpperArm[0, 1, 0] = uniform; leftUpperArm[0, 1, 1] = uniform;
+        leftUpperArm[0, 0, 0] = Skin; leftUpperArm[0, 0, 1] = Skin;
 
-        // ── FOREARM (1x2x2) ──
-        Color?[,,] forearm = new Color?[1, 2, 2];
-        forearm[0, 1, 0] = uniform; forearm[0, 1, 1] = uniform;
-        forearm[0, 0, 0] = Skin; forearm[0, 0, 1] = Skin;
+        Color?[,,] rightUpperArm = new Color?[1, 2, 2];
+        rightUpperArm[0, 1, 0] = uniform; rightUpperArm[0, 1, 1] = uniform;
+        rightUpperArm[0, 0, 0] = Skin; rightUpperArm[0, 0, 1] = Skin;
+
+        // ── LEFT FOREARM (1x2x2) — supports rifle from below ──
+        Color?[,,] leftForearm = new Color?[1, 2, 2];
+        leftForearm[0, 1, 0] = uniform; leftForearm[0, 1, 1] = uniform;
+        leftForearm[0, 0, 0] = Skin; leftForearm[0, 0, 1] = Skin;
+
+        // ── RIGHT FOREARM (2x3x3) — holding a pixel rifle ──
+        // The gun barrel extends forward (z=0), grip at hand level (y=0)
+        Color?[,,] rightForearm = new Color?[2, 3, 3];
+        // Forearm (uniform)
+        rightForearm[0, 2, 1] = uniform; rightForearm[0, 2, 2] = uniform;
+        rightForearm[0, 1, 1] = uniform; rightForearm[0, 1, 2] = uniform;
+        // Hand gripping the gun
+        rightForearm[0, 0, 1] = Skin;
+        // Gun stock (behind hand, z=2)
+        rightForearm[1, 1, 2] = DarkMetal;
+        rightForearm[1, 0, 2] = DarkMetal;
+        // Gun body/receiver (z=1, alongside hand)
+        rightForearm[1, 1, 1] = MetalGrey;
+        rightForearm[1, 0, 1] = DarkMetal; // trigger guard
+        // Gun barrel (front, z=0)
+        rightForearm[0, 0, 0] = MetalGrey; // barrel tip
+        rightForearm[1, 0, 0] = MetalGrey; // barrel
+        rightForearm[1, 1, 0] = DarkMetal; // barrel top
 
         // ── THIGH (2x2x2) ──
         Color?[,,] thigh = new Color?[2, 2, 2];
@@ -319,26 +342,26 @@ public static class TroopModelGenerator
             },
             LeftUpperArm = new BodyPartDefinition
             {
-                Name = "LeftUpperArm", Voxels = arm,
+                Name = "LeftUpperArm", Voxels = leftUpperArm,
                 PivotVoxelCoords = new Vector3(0.5f, 2, 1),
                 AttachOffset = new Vector3(-2, 2.5f, 0)
             },
             LeftForearm = new BodyPartDefinition
             {
-                Name = "LeftForearm", Voxels = forearm,
+                Name = "LeftForearm", Voxels = leftForearm,
                 PivotVoxelCoords = new Vector3(0.5f, 2, 1),
                 AttachOffset = new Vector3(0, -2, 0)
             },
             RightUpperArm = new BodyPartDefinition
             {
-                Name = "RightUpperArm", Voxels = arm,
+                Name = "RightUpperArm", Voxels = rightUpperArm,
                 PivotVoxelCoords = new Vector3(0.5f, 2, 1),
                 AttachOffset = new Vector3(2, 2.5f, 0)
             },
             RightForearm = new BodyPartDefinition
             {
-                Name = "RightForearm", Voxels = forearm,
-                PivotVoxelCoords = new Vector3(0.5f, 2, 1),
+                Name = "RightForearm", Voxels = rightForearm,
+                PivotVoxelCoords = new Vector3(1, 2, 1.5f),
                 AttachOffset = new Vector3(0, -2, 0)
             },
             LeftThigh = new BodyPartDefinition
@@ -428,12 +451,28 @@ public static class TroopModelGenerator
                 for (int z = 0; z < 2; z++)
                     upperArm[x, y, z] = uniform;
 
-        Color?[,,] forearm = new Color?[2, 2, 2];
+        // Left forearm with grenade in hand
+        Color?[,,] leftForearm = new Color?[2, 2, 3];
         for (int x = 0; x < 2; x++)
             for (int z = 0; z < 2; z++)
             {
-                forearm[x, 1, z] = uniform;
-                forearm[x, 0, z] = Skin;
+                leftForearm[x, 1, z] = uniform;
+                leftForearm[x, 0, z] = Skin;
+            }
+        // Grenade (olive green sphere at z=2, hand level)
+        Color grenadeOlive = new Color(0.30f, 0.35f, 0.15f);
+        leftForearm[0, 0, 2] = grenadeOlive;
+        leftForearm[1, 0, 2] = grenadeOlive;
+        leftForearm[0, 1, 2] = grenadeOlive;
+        leftForearm[1, 1, 2] = new Color(0.45f, 0.40f, 0.18f); // grenade top/pin
+
+        // Right forearm (normal)
+        Color?[,,] rightForearm = new Color?[2, 2, 2];
+        for (int x = 0; x < 2; x++)
+            for (int z = 0; z < 2; z++)
+            {
+                rightForearm[x, 1, z] = uniform;
+                rightForearm[x, 0, z] = Skin;
             }
 
         // ── LEGS (2x3x2 - stockier) ──
@@ -476,7 +515,7 @@ public static class TroopModelGenerator
             },
             LeftForearm = new BodyPartDefinition
             {
-                Name = "LeftForearm", Voxels = forearm,
+                Name = "LeftForearm", Voxels = leftForearm,
                 PivotVoxelCoords = new Vector3(1, 2, 1),
                 AttachOffset = new Vector3(0, -2, 0)
             },
@@ -488,7 +527,7 @@ public static class TroopModelGenerator
             },
             RightForearm = new BodyPartDefinition
             {
-                Name = "RightForearm", Voxels = forearm,
+                Name = "RightForearm", Voxels = rightForearm,
                 PivotVoxelCoords = new Vector3(1, 2, 1),
                 AttachOffset = new Vector3(0, -2, 0)
             },

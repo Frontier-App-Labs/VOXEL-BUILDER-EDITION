@@ -85,7 +85,6 @@ public static class GameConfig
     public const int CommanderHP = 15;
     public const int MinBlocksAroundCommander = 6;
     public const int MinWeaponCommanderGap = 2;
-    public const float MaxWeaponPlacementRange = 60f; // build units from zone center – allows terrain placement
 
     // Commander fall damage
     public const float CommanderGravity = 9.8f;

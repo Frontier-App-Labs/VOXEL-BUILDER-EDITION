@@ -354,12 +354,12 @@ public partial class PauseMenu : Control
         btn.AddThemeColorOverride("font_pressed_color", accentColor);
         btn.Alignment = HorizontalAlignment.Center;
         btn.MouseFilter = MouseFilterEnum.Stop;
-        btn.Pressed += handler;
+        btn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); handler(); };
 
         // Hover styling
         Color capturedAccent = accentColor;
         PanelContainer capturedPanel = btnPanel;
-        btn.MouseEntered += () => OnButtonHover(capturedPanel, capturedAccent, true);
+        btn.MouseEntered += () => { AudioDirector.Instance?.PlaySFX("ui_hover"); OnButtonHover(capturedPanel, capturedAccent, true); };
         btn.MouseExited += () => OnButtonHover(capturedPanel, capturedAccent, false);
 
         btnPanel.AddChild(btn);

@@ -54,11 +54,12 @@ public partial class DebrisFX : Node3D
     /// </summary>
     private enum DebrisShape
     {
-        Cube,       // Default: stone, brick, concrete, obsidian, foundation, leaves
+        Cube,       // Default: stone, brick, concrete, obsidian, foundation
         Shard,      // Glass, ice: flat transparent angular pieces
         Splinter,   // Wood, bark: elongated rectangular pieces
         MetalChunk, // Metal types: small dense cubes with high bounce
         Granular,   // Sand, dirt: tiny particles that settle quickly
+        Leaf,       // Leaves: small flat pieces that flutter down
     }
 
     private struct DebrisEntry
@@ -278,6 +279,7 @@ public partial class DebrisFX : Node3D
             VoxelMaterialType.Wood or VoxelMaterialType.Bark => DebrisShape.Splinter,
             VoxelMaterialType.Metal or VoxelMaterialType.ReinforcedSteel or VoxelMaterialType.ArmorPlate => DebrisShape.MetalChunk,
             VoxelMaterialType.Sand or VoxelMaterialType.Dirt => DebrisShape.Granular,
+            VoxelMaterialType.Leaves => DebrisShape.Leaf,
             _ => DebrisShape.Cube,
         };
     }
@@ -314,6 +316,12 @@ public partial class DebrisFX : Node3D
             // Sand/dirt granules: quarter to half voxel
             DebrisShape.Granular => Vector3.One * v * (float)GD.RandRange(0.25, 0.5),
 
+            // Leaves: small flat pieces, roughly dirt-granule sized but noticeably thin
+            DebrisShape.Leaf => new Vector3(
+                v * (float)GD.RandRange(0.3, 0.5),
+                v * (float)GD.RandRange(0.15, 0.25),
+                v * (float)GD.RandRange(0.3, 0.5)),
+
             // Default cubes (stone, brick, concrete, etc.): exact microvoxel size.
             // This ensures debris looks like actual broken voxel pieces.
             _ => Vector3.One * v,
@@ -332,6 +340,7 @@ public partial class DebrisFX : Node3D
             DebrisShape.Splinter => (1.0f, 6f, 1.3f, 0.3f),     // Tumbling wood pieces
             DebrisShape.MetalChunk => (0.6f, 4f, 2.0f, 1.0f),   // Heavy, less air time
             DebrisShape.Granular => (1.2f, 10f, 1.8f, 0.1f),    // Scattered fast
+            DebrisShape.Leaf => (1.2f, 12f, 0.35f, 0.05f),      // Light, fluttery, slow fall, wide scatter
             _ => (1.0f, 6f, 1.5f, 0.4f),                        // Default cubes
         };
     }
@@ -524,6 +533,7 @@ public partial class DebrisFX : Node3D
             {
                 DebrisShape.Granular => GameConfig.DebrisDespawnTime * 0.6f,
                 DebrisShape.Shard => GameConfig.DebrisDespawnTime * 0.8f,
+                DebrisShape.Leaf => GameConfig.DebrisDespawnTime * 0.7f,
                 _ => GameConfig.DebrisDespawnTime,
             };
 
@@ -676,6 +686,7 @@ public partial class DebrisFX : Node3D
                 DebrisShape.Shard => 9.8f * 1.2f,
                 DebrisShape.MetalChunk => 9.8f * 2.0f,
                 DebrisShape.Granular => 9.8f * 1.8f,
+                DebrisShape.Leaf => 9.8f * 0.25f,  // Flutter down very slowly
                 _ => 9.8f * 1.5f,
             };
 

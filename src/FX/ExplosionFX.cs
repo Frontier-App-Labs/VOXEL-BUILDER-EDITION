@@ -561,7 +561,7 @@ public partial class ExplosionFX : Node3D
         _shockwaveMat.AlbedoColor = new Color(1f, 0.85f, 0.5f, 0.6f);
         _shockwaveMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
         _shockwaveMat.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
-        _shockwaveMat.NoDepthTest = true;
+        _shockwaveMat.NoDepthTest = false;
         _shockwaveRing.SetSurfaceOverrideMaterial(0, _shockwaveMat);
 
         _shockwaveRing.Scale = Vector3.One * 0.01f;
@@ -745,7 +745,7 @@ public partial class ExplosionFX : Node3D
             mat.VertexColorUseAsAlbedo = true;
             mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
             mat.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
-            mat.NoDepthTest = true;
+            mat.NoDepthTest = false;
             _cachedSparksBox.Material = mat;
         }
         return _cachedSparksBox;
@@ -792,7 +792,7 @@ public partial class ExplosionFX : Node3D
         mat.VertexColorUseAsAlbedo = true; // Required for ParticleProcessMaterial ColorRamp to tint particles
         mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
         mat.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
-        mat.NoDepthTest = true; // Prevents z-fighting between overlapping particles
+        mat.NoDepthTest = false; // Depth test enabled so explosions are occluded by solid geometry
         mat.RenderPriority = isSmoke ? -1 : 0; // Smoke renders behind fireball particles
         if (isSmoke)
         {
