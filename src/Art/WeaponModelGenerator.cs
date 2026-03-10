@@ -8,6 +8,7 @@ namespace VoxelSiege.Art;
 public struct WeaponModelResult
 {
     public ArrayMesh Mesh;
+    public Godot.ImageTexture? PaletteTexture; // palette texture for uniform rendering
     public Vector3 ForwardDirection; // direction the weapon fires toward
     public Vector3 MuzzleOffset;     // local-space position of the muzzle/fire point
 }
@@ -535,6 +536,10 @@ public static class WeaponModelGenerator
 
     private static WeaponModelResult BuildResult(Color?[,,] voxels, int w, int h, int d, Vector3 forward, float voxelSize = DefaultVoxelSize)
     {
+        VoxelPalette palette = new();
+        palette.AddColors(voxels);
+        palette.Build();
+
         VoxelModelBuilder builder = new()
         {
             VoxelSize = voxelSize,
@@ -544,7 +549,8 @@ public static class WeaponModelGenerator
 
         return new WeaponModelResult
         {
-            Mesh = builder.BuildMesh(voxels),
+            Mesh = builder.BuildMesh(voxels, palette),
+            PaletteTexture = palette.Texture,
             ForwardDirection = forward,
             MuzzleOffset = new Vector3(0, h * 0.5f * voxelSize, -d * 0.5f * voxelSize),
         };

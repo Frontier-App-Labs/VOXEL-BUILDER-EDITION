@@ -84,7 +84,14 @@ public partial class CharacterViewer : Node3D
             WeaponModelResult result = WeaponModelGenerator.Generate(weaponIds[i], teamGreen);
             MeshInstance3D weaponMesh = new MeshInstance3D();
             weaponMesh.Mesh = result.Mesh;
-            weaponMesh.MaterialOverride = VoxelModelBuilder.CreateVoxelMaterial(0.15f, 0.6f);
+            StandardMaterial3D wMat = new();
+            wMat.AlbedoTexture = result.PaletteTexture;
+            wMat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest;
+            wMat.Metallic = 0.15f;
+            wMat.Roughness = 0.6f;
+            wMat.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+            wMat.ShadingMode = BaseMaterial3D.ShadingModeEnum.PerPixel;
+            weaponMesh.MaterialOverride = wMat;
             weaponMesh.Position = new Vector3(weaponStartX + i * WeaponSpacing, 0, 0);
             _weaponRow.AddChild(weaponMesh);
         }

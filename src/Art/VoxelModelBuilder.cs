@@ -20,22 +20,23 @@ public class VoxelModelBuilder
     };
 
     // Each face has 4 vertices (as offsets from voxel origin) and a normal.
-    // Indices 0,1,2 / 0,2,3 produce CCW winding when viewed from outside (Godot 4 front-face).
-    // This matches ChunkMesher's proven-correct winding order.
+    // Indices 0,1,2 / 0,2,3 with this vertex order produce correct front-face winding
+    // so that outward-facing surfaces register as FRONT_FACING=true in Godot 4.
+    // This ensures StandardMaterial3D (CullMode.Disabled) doesn't flip normals on visible faces.
     private static readonly Vector3[][] FaceVertices =
     {
         // +X face
-        new[] { new Vector3(1,0,0), new Vector3(1,1,0), new Vector3(1,1,1), new Vector3(1,0,1) },
+        new[] { new Vector3(1,0,0), new Vector3(1,0,1), new Vector3(1,1,1), new Vector3(1,1,0) },
         // -X face
-        new[] { new Vector3(0,0,1), new Vector3(0,1,1), new Vector3(0,1,0), new Vector3(0,0,0) },
+        new[] { new Vector3(0,0,1), new Vector3(0,0,0), new Vector3(0,1,0), new Vector3(0,1,1) },
         // +Y face
-        new[] { new Vector3(0,1,0), new Vector3(0,1,1), new Vector3(1,1,1), new Vector3(1,1,0) },
+        new[] { new Vector3(0,1,0), new Vector3(1,1,0), new Vector3(1,1,1), new Vector3(0,1,1) },
         // -Y face
-        new[] { new Vector3(0,0,1), new Vector3(0,0,0), new Vector3(1,0,0), new Vector3(1,0,1) },
+        new[] { new Vector3(0,0,1), new Vector3(1,0,1), new Vector3(1,0,0), new Vector3(0,0,0) },
         // +Z face
-        new[] { new Vector3(1,0,1), new Vector3(1,1,1), new Vector3(0,1,1), new Vector3(0,0,1) },
+        new[] { new Vector3(1,0,1), new Vector3(0,0,1), new Vector3(0,1,1), new Vector3(1,1,1) },
         // -Z face
-        new[] { new Vector3(0,0,0), new Vector3(0,1,0), new Vector3(1,1,0), new Vector3(1,0,0) },
+        new[] { new Vector3(0,0,0), new Vector3(1,0,0), new Vector3(1,1,0), new Vector3(0,1,0) },
     };
 
     private static readonly Vector3[] FaceNormals =
@@ -177,6 +178,99 @@ public class VoxelModelBuilder
     }
 
     /// <summary>
+    /// Build an ArrayMesh with UVs mapped into a VoxelPalette texture instead of vertex colors.
+    /// This makes procedural voxel models render identically to textured world blocks,
+    /// fixing dark upward faces and washed-out appearance under ACES tonemapping.
+    /// </summary>
+    public ArrayMesh BuildMesh(Color?[,,] voxels, VoxelPalette palette)
+    {
+        int sizeX = voxels.GetLength(0);
+        int sizeY = voxels.GetLength(1);
+        int sizeZ = voxels.GetLength(2);
+
+        List<Vector3> vertices = new();
+        List<Vector3> normals = new();
+        List<Vector2> uvs = new();
+        List<int> indices = new();
+
+        RandomNumberGenerator rng = new();
+        if (JitterAmount > 0f)
+        {
+            rng.Seed = 42;
+        }
+
+        for (int x = 0; x < sizeX; x++)
+        {
+            for (int y = 0; y < sizeY; y++)
+            {
+                for (int z = 0; z < sizeZ; z++)
+                {
+                    Color? voxelColor = voxels[x, y, z];
+                    if (voxelColor == null) continue;
+
+                    Vector3 basePos = new Vector3(x, y, z) * VoxelSize + OriginOffset;
+
+                    if (JitterAmount > 0f)
+                    {
+                        basePos += new Vector3(
+                            rng.RandfRange(-JitterAmount, JitterAmount),
+                            rng.RandfRange(-JitterAmount, JitterAmount),
+                            rng.RandfRange(-JitterAmount, JitterAmount)
+                        );
+                    }
+
+                    Vector2[] paletteUVs = palette.GetFaceUVs(voxelColor.Value);
+
+                    for (int face = 0; face < 6; face++)
+                    {
+                        Vector3I dir = FaceDirections[face];
+                        int nx = x + dir.X;
+                        int ny = y + dir.Y;
+                        int nz = z + dir.Z;
+
+                        if (nx >= 0 && nx < sizeX && ny >= 0 && ny < sizeY && nz >= 0 && nz < sizeZ
+                            && voxels[nx, ny, nz] != null)
+                        {
+                            continue;
+                        }
+
+                        int baseIndex = vertices.Count;
+                        Vector3 normal = FaceNormals[face];
+                        Vector3[] fv = FaceVertices[face];
+
+                        for (int v = 0; v < 4; v++)
+                        {
+                            vertices.Add(basePos + fv[v] * VoxelSize);
+                            normals.Add(normal);
+                            uvs.Add(paletteUVs[v]);
+                        }
+
+                        indices.Add(baseIndex);
+                        indices.Add(baseIndex + 1);
+                        indices.Add(baseIndex + 2);
+                        indices.Add(baseIndex);
+                        indices.Add(baseIndex + 2);
+                        indices.Add(baseIndex + 3);
+                    }
+                }
+            }
+        }
+
+        ArrayMesh mesh = new();
+        if (vertices.Count == 0) return mesh;
+
+        Godot.Collections.Array arrays = new();
+        arrays.Resize((int)Mesh.ArrayType.Max);
+        arrays[(int)Mesh.ArrayType.Vertex] = vertices.ToArray();
+        arrays[(int)Mesh.ArrayType.Normal] = normals.ToArray();
+        arrays[(int)Mesh.ArrayType.TexUV] = uvs.ToArray();
+        arrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
+
+        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        return mesh;
+    }
+
+    /// <summary>
     /// Build a mesh from a sub-region of a voxel array (for body part extraction).
     /// </summary>
     public ArrayMesh BuildMeshRegion(Color?[,,] voxels, Vector3I regionMin, Vector3I regionMax)
@@ -207,6 +301,34 @@ public class VoxelModelBuilder
         Vector3 savedOffset = OriginOffset;
         OriginOffset += new Vector3(regionMin.X, regionMin.Y, regionMin.Z) * VoxelSize;
         ArrayMesh mesh = BuildMesh(region);
+        OriginOffset = savedOffset;
+        return mesh;
+    }
+
+    /// <summary>
+    /// Build a palette-textured mesh from a sub-region of a voxel array.
+    /// </summary>
+    public ArrayMesh BuildMeshRegion(Color?[,,] voxels, Vector3I regionMin, Vector3I regionMax, VoxelPalette palette)
+    {
+        int rx = regionMax.X - regionMin.X;
+        int ry = regionMax.Y - regionMin.Y;
+        int rz = regionMax.Z - regionMin.Z;
+
+        Color?[,,] region = new Color?[rx, ry, rz];
+        for (int x = 0; x < rx; x++)
+            for (int y = 0; y < ry; y++)
+                for (int z = 0; z < rz; z++)
+                {
+                    int sx = regionMin.X + x;
+                    int sy = regionMin.Y + y;
+                    int sz = regionMin.Z + z;
+                    if (sx < voxels.GetLength(0) && sy < voxels.GetLength(1) && sz < voxels.GetLength(2))
+                        region[x, y, z] = voxels[sx, sy, sz];
+                }
+
+        Vector3 savedOffset = OriginOffset;
+        OriginOffset += new Vector3(regionMin.X, regionMin.Y, regionMin.Z) * VoxelSize;
+        ArrayMesh mesh = BuildMesh(region, palette);
         OriginOffset = savedOffset;
         return mesh;
     }

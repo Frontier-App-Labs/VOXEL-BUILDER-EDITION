@@ -396,7 +396,13 @@ public partial class AssetViewer : Control
         for (int i = 0; i < weaponIds.Length; i++)
         {
             var result = WeaponModelGenerator.Generate(weaponIds[i], teamColor);
-            var mat = VoxelModelBuilder.CreateVoxelMaterial(0.1f, 0.7f);
+            StandardMaterial3D mat = new();
+            mat.AlbedoTexture = result.PaletteTexture;
+            mat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest;
+            mat.Metallic = 0.1f;
+            mat.Roughness = 0.7f;
+            mat.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+            mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.PerPixel;
             var tile = CreateTile(weaponNames[i], weaponIds[i].ToUpper(), result.Mesh, mat);
             _tiles.Add(tile);
         }
@@ -587,7 +593,13 @@ public partial class AssetViewer : Control
         for (int i = 0; i < teamColors.Length; i++)
         {
             var parts = CommanderModelGenerator.Generate(teamColors[i]);
-            var mat = VoxelModelBuilder.CreateVoxelMaterial(0.0f, 0.8f);
+            StandardMaterial3D mat = new();
+            mat.AlbedoTexture = parts.PaletteTexture;
+            mat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest;
+            mat.Metallic = 0.0f;
+            mat.Roughness = 0.8f;
+            mat.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+            mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.PerPixel;
             var tile = CreateTile($"Commander ({teamNames[i]})", "8x16x8 voxels", parts.FullMesh, mat);
             _tiles.Add(tile);
         }

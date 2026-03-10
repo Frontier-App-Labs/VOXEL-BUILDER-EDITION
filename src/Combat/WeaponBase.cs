@@ -435,12 +435,16 @@ public abstract partial class WeaponBase : Node3D
         _weaponMesh = new MeshInstance3D();
         _weaponMesh.Name = "WeaponModel";
         _weaponMesh.Mesh = result.Mesh;
-        // Pure dielectric (metallic=0) so diffuse lighting is uniform across all faces.
-        // Previous metallic=0.15 stole 15% from diffuse into specular that reflected
-        // away from camera on top faces, making tops dark. Roughness=0.8 is matte like
-        // the voxel_triplanar shader's default. AlbedoColor boosts dark military colors.
-        StandardMaterial3D weaponMat = VoxelModelBuilder.CreateVoxelMaterial(0.0f, 0.8f);
-        weaponMat.AlbedoColor = new Color(1.5f, 1.5f, 1.5f);
+        // Palette texture material — same pipeline as world blocks.
+        // The palette texture has per-pixel noise that provides micro-contrast,
+        // preventing dark tops and washed-out colors under ACES tonemapping.
+        StandardMaterial3D weaponMat = new();
+        weaponMat.AlbedoTexture = result.PaletteTexture;
+        weaponMat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest;
+        weaponMat.Metallic = 0.0f;
+        weaponMat.Roughness = 0.8f;
+        weaponMat.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+        weaponMat.ShadingMode = BaseMaterial3D.ShadingModeEnum.PerPixel;
         _weaponMesh.MaterialOverride = weaponMat;
         AddChild(_weaponMesh);
 

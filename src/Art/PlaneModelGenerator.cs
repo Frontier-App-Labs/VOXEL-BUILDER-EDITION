@@ -141,6 +141,10 @@ public static class PlaneModelGenerator
         v[4, 2, 3] = white;
         v[7, 2, 3] = white;
 
+        VoxelPalette palette = new();
+        palette.AddColors(v);
+        palette.Build();
+
         VoxelModelBuilder builder = new()
         {
             VoxelSize = VoxelSize,
@@ -148,16 +152,29 @@ public static class PlaneModelGenerator
             OriginOffset = new Vector3(-w * 0.5f * VoxelSize, -h * 0.5f * VoxelSize, -d * 0.5f * VoxelSize),
         };
 
-        return builder.BuildMesh(v);
+        PaletteTexture = palette.Texture;
+        return builder.BuildMesh(v, palette);
     }
 
     /// <summary>
-    /// Create a StandardMaterial3D suitable for the plane mesh with vertex colors.
+    /// The palette texture from the most recent Generate() call.
+    /// </summary>
+    public static ImageTexture? PaletteTexture { get; private set; }
+
+    /// <summary>
+    /// Create a StandardMaterial3D for the plane mesh using the palette texture.
     /// Slightly metallic for that toy-plane sheen.
     /// </summary>
     public static StandardMaterial3D CreatePlaneMaterial()
     {
-        return VoxelModelBuilder.CreateVoxelMaterial(metallic: 0.15f, roughness: 0.65f);
+        StandardMaterial3D mat = new();
+        mat.AlbedoTexture = PaletteTexture;
+        mat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest;
+        mat.Metallic = 0.15f;
+        mat.Roughness = 0.65f;
+        mat.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+        mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.PerPixel;
+        return mat;
     }
 
     private static void FillBlock(Color?[,,] v, int x0, int y0, int z0, int x1, int y1, int z1, Color color)

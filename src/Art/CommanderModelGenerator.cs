@@ -33,6 +33,7 @@ public struct CommanderBodyParts
 
     public Color?[,,] FullVoxelData;
     public ArrayMesh FullMesh;
+    public ImageTexture? PaletteTexture;
 }
 
 /// <summary>
@@ -82,6 +83,10 @@ public static class CommanderModelGenerator
         Color?[,,] voxels = new Color?[Width, Height, Depth];
         PaintCommander(voxels, teamColor);
 
+        VoxelPalette palette = new();
+        palette.AddColors(voxels);
+        palette.Build();
+
         VoxelModelBuilder builder = new()
         {
             VoxelSize = VoxelSize,
@@ -92,14 +97,15 @@ public static class CommanderModelGenerator
         CommanderBodyParts parts = new()
         {
             FullVoxelData = voxels,
-            FullMesh = builder.BuildMesh(voxels),
+            FullMesh = builder.BuildMesh(voxels, palette),
+            PaletteTexture = palette.Texture,
 
-            HeadMesh = builder.BuildMeshRegion(voxels, HeadMin, HeadMax),
-            TorsoMesh = builder.BuildMeshRegion(voxels, TorsoMin, TorsoMax),
-            LeftArmMesh = builder.BuildMeshRegion(voxels, LeftArmMin, LeftArmMax),
-            RightArmMesh = builder.BuildMeshRegion(voxels, RightArmMin, RightArmMax),
-            LeftLegMesh = builder.BuildMeshRegion(voxels, LeftLegMin, LeftLegMax),
-            RightLegMesh = builder.BuildMeshRegion(voxels, RightLegMin, RightLegMax),
+            HeadMesh = builder.BuildMeshRegion(voxels, HeadMin, HeadMax, palette),
+            TorsoMesh = builder.BuildMeshRegion(voxels, TorsoMin, TorsoMax, palette),
+            LeftArmMesh = builder.BuildMeshRegion(voxels, LeftArmMin, LeftArmMax, palette),
+            RightArmMesh = builder.BuildMeshRegion(voxels, RightArmMin, RightArmMax, palette),
+            LeftLegMesh = builder.BuildMeshRegion(voxels, LeftLegMin, LeftLegMax, palette),
+            RightLegMesh = builder.BuildMeshRegion(voxels, RightLegMin, RightLegMax, palette),
 
             HeadRegion = MakeRegion(builder, HeadMin, HeadMax),
             TorsoRegion = MakeRegion(builder, TorsoMin, TorsoMax),
