@@ -48,7 +48,7 @@ public partial class TroopEntity : Node3D
         {
             TroopType.Infantry => TroopModelGenerator.GenerateInfantry(teamColor),
             TroopType.Demolisher => TroopModelGenerator.GenerateDemolisher(teamColor),
-            TroopType.Scout => TroopModelGenerator.GenerateScout(teamColor),
+            // Scout removed — only Infantry and Demolisher
             _ => TroopModelGenerator.GenerateInfantry(teamColor),
         };
 
@@ -151,7 +151,7 @@ public partial class TroopEntity : Node3D
             TroopAIState.Dead => VoxelAnimator.AnimState.Flinch,
             _ => VoxelAnimator.AnimState.Idle,
         };
-        float speed = Type == TroopType.Scout ? 1.6f : Type == TroopType.Demolisher ? 0.8f : 1f;
+        float speed = Type == TroopType.Demolisher ? 0.8f : 1f;
         _animator?.SetState(animState, speed);
     }
 

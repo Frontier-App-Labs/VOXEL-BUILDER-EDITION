@@ -29,6 +29,7 @@ public partial class PauseMenu : Control
     private static Font PixelFont => _pixelFont ??= GD.Load<Font>("res://assets/fonts/PressStart2P-Regular.ttf");
 
     private SettingsUI? _settingsUI;
+    private HelpScreen? _helpScreen;
     private Control? _menuPanel; // The button panel, hidden when settings is open
     private Control? _contentContainer; // Outer layout, brute-force centered in _Process
 
@@ -129,6 +130,7 @@ public partial class PauseMenu : Control
         // Buttons
         AddMenuButton(buttonColumn, "RESUME", AccentGreen, OnResumePressed);
         AddMenuButton(buttonColumn, "SETTINGS", TextSecondary, OnSettingsPressed);
+        AddMenuButton(buttonColumn, "HELP", new Color("3e96ff"), OnHelpPressed);
         AddMenuButton(buttonColumn, "QUIT TO MENU", AccentGold, OnQuitToMenuPressed);
         AddMenuButton(buttonColumn, "QUIT TO DESKTOP", AccentRed, OnQuitToDesktopPressed);
 
@@ -159,6 +161,14 @@ public partial class PauseMenu : Control
         if (@event is InputEventKey keyEvent && keyEvent.Pressed && !keyEvent.Echo
             && keyEvent.Keycode == Key.Escape)
         {
+            // If help screen is open, close it instead of toggling the pause menu
+            if (_helpScreen != null && _helpScreen.Visible)
+            {
+                CloseHelp();
+                GetViewport().SetInputAsHandled();
+                return;
+            }
+
             // If settings sub-panel is open, close it instead of toggling the pause menu
             if (_settingsUI != null && _settingsUI.Visible)
             {
@@ -208,6 +218,12 @@ public partial class PauseMenu : Control
 
     public void Close()
     {
+        // Close help screen if open
+        if (_helpScreen != null && _helpScreen.Visible)
+        {
+            CloseHelp();
+        }
+
         // Close settings sub-panel if open
         if (_settingsUI != null && _settingsUI.Visible)
         {
@@ -256,6 +272,35 @@ public partial class PauseMenu : Control
             _settingsUI.Visible = false;
         }
         // Restore button panel
+        if (_menuPanel != null) _menuPanel.Visible = true;
+    }
+
+    private void OnHelpPressed()
+    {
+        if (_helpScreen == null)
+        {
+            _helpScreen = new HelpScreen();
+            _helpScreen.Name = "PauseHelpScreen";
+            _helpScreen.ProcessMode = ProcessModeEnum.Always;
+            _helpScreen.HelpClosed += OnHelpClosed;
+            AddChild(_helpScreen);
+        }
+
+        if (_menuPanel != null) _menuPanel.Visible = false;
+        _helpScreen.Open();
+    }
+
+    private void OnHelpClosed()
+    {
+        CloseHelp();
+    }
+
+    private void CloseHelp()
+    {
+        if (_helpScreen != null)
+        {
+            _helpScreen.Visible = false;
+        }
         if (_menuPanel != null) _menuPanel.Visible = true;
     }
 

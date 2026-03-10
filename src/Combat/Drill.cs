@@ -8,25 +8,27 @@ using VoxelValue = VoxelSiege.Voxel.Voxel;
 namespace VoxelSiege.Combat;
 
 /// <summary>
-/// Tunneling drill weapon. Instead of exploding on contact, the drill
-/// projectile burrows into the target structure, destroying blocks in a
-/// line as it travels through solid voxels. Penetrates up to 6 blocks
-/// before detonating with a small blast at the end.
+/// Bunker Buster drill weapon — the anti-fortress tool. Bores a 3x3
+/// cross-section tunnel through structures, penetrating up to 10 blocks
+/// deep and punching through air gaps to hit the next wall. Detonates
+/// with a large interior blast (radius 5) when penetration is exhausted
+/// or lifetime expires. Foundation blocks stop it cold.
 /// Fire FX: activation sparks + grinding debris spray + vibration.
 /// </summary>
 public partial class Drill : WeaponBase
 {
     /// <summary>
     /// Maximum number of solid blocks the drill can bore through.
+    /// Bunker Buster: high penetration to punch through layered fortifications.
     /// </summary>
-    private const int MaxPenetrationBlocks = 6;
+    private const int MaxPenetrationBlocks = 10;
 
     public Drill()
     {
         WeaponId = "drill";
         Cost = 550;
         BaseDamage = 50;
-        BlastRadiusMicrovoxels = 2f;
+        BlastRadiusMicrovoxels = 5f;
         ProjectileSpeed = 14f;
         CooldownTurns = 0;
     }

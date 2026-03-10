@@ -117,24 +117,23 @@ public partial class ArmyManager : Node
         return true;
     }
 
-    // === Tick (called each turn change) ===
-    public void TickTroops(Node sceneRoot)
+    // === Tick (called on turn change — only ticks the current player's troops) ===
+    public void TickTroops(PlayerSlot currentPlayer, Node sceneRoot)
     {
         if (_voxelWorld == null) return;
 
-        foreach (var (player, troops) in _deployedTroops)
+        if (!_deployedTroops.TryGetValue(currentPlayer, out var troops)) return;
+
+        // Remove dead troops
+        troops.RemoveAll(t => !IsInstanceValid(t) || t.CurrentHP <= 0);
+
+        foreach (var troop in troops)
         {
-            // Remove dead troops
-            troops.RemoveAll(t => !IsInstanceValid(t) || t.CurrentHP <= 0);
+            // Decrement lifespan — skip AI tick if the troop just expired
+            if (troop.TickLifespan())
+                continue;
 
-            foreach (var troop in troops)
-            {
-                // Decrement lifespan — skip AI tick if the troop just expired
-                if (troop.TickLifespan())
-                    continue;
-
-                TroopAI.ExecuteTick(troop, _voxelWorld, _pathfinder, _doorRegistry, _buildZones, sceneRoot);
-            }
+            TroopAI.ExecuteTick(troop, _voxelWorld, _pathfinder, _doorRegistry, _buildZones, sceneRoot);
         }
     }
 

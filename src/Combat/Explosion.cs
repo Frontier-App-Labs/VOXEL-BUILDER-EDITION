@@ -176,6 +176,11 @@ public partial class Explosion : Node3D
             int commanderDamage = DamageCalculator.CalculateCommanderDamage(baseDamage, radiusMicrovoxels, commanderDistance);
             if (commanderDamage > 0)
             {
+                // Exposed commanders take extra damage — they have no cover
+                if (commander.IsExposed)
+                {
+                    commanderDamage = Mathf.RoundToInt(commanderDamage * GameConfig.CommanderExposedMultiplier);
+                }
                 commander.ApplyDamage(commanderDamage, instigator, worldPosition);
             }
 

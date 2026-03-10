@@ -41,6 +41,26 @@ public partial class BuildSystem : Node
     public bool HollowBoxMode { get; set; }
 
     /// <summary>
+    /// Returns symmetry-mirrored microvoxels for ghost preview display.
+    /// </summary>
+    public List<Vector3I> GetSymmetryMirroredMicrovoxels(BuildZone zone, Vector3I buildUnit)
+    {
+        var result = new List<Vector3I>();
+        if (SymmetryMode == BuildSymmetryMode.None) return result;
+
+        foreach (Vector3I mirrored in _symmetryTool.MirrorBuildUnit(zone, buildUnit))
+        {
+            if (!zone.ContainsBuildUnit(mirrored)) continue;
+            Vector3I microBase = mirrored * GameConfig.MicrovoxelsPerBuildUnit;
+            for (int z = 0; z < GameConfig.MicrovoxelsPerBuildUnit; z++)
+                for (int y = 0; y < GameConfig.MicrovoxelsPerBuildUnit; y++)
+                    for (int x = 0; x < GameConfig.MicrovoxelsPerBuildUnit; x++)
+                        result.Add(microBase + new Vector3I(x, y, z));
+        }
+        return result;
+    }
+
+    /// <summary>
     /// The currently active blueprint definition (when CurrentToolMode == Blueprint).
     /// Set by the UI/GameManager when the player selects a blueprint preset.
     /// </summary>

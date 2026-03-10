@@ -87,6 +87,7 @@ public partial class BuildUI : Control
     private readonly List<Label> _troopCountLabels = new List<Label>();
     private readonly List<PanelContainer> _blueprintButtons = new List<PanelContainer>();
     private int _selectedBlueprintIndex = -1;
+    private TooltipSystem? _tooltipSystem;
 
     public event Action<BuildToolMode>? ToolSelected;
     public event Action<VoxelMaterialType>? MaterialSelected;
@@ -410,6 +411,9 @@ public partial class BuildUI : Control
             matClickArea.MouseFilter = MouseFilterEnum.Stop;
             matClickArea.Modulate = new Color(1, 1, 1, 0);
             matClickArea.Pressed += () => SelectMaterial(capturedIndex);
+            VoxelMaterialType capturedMat = mat;
+            matClickArea.MouseEntered += () => ShowMaterialTooltip(capturedMat);
+            matClickArea.MouseExited += HideBuildTooltip;
             matBtn.AddChild(matClickArea);
             matClickArea.SetAnchorsPreset(LayoutPreset.FullRect);
             matClickArea.OffsetLeft = 0;
@@ -620,6 +624,8 @@ public partial class BuildUI : Control
             bpClickArea.MouseFilter = MouseFilterEnum.Stop;
             bpClickArea.Modulate = new Color(1, 1, 1, 0);
             bpClickArea.Pressed += () => SelectBlueprint(capturedBpIndex);
+            bpClickArea.MouseEntered += () => ShowBlueprintTooltip(capturedBpIndex);
+            bpClickArea.MouseExited += HideBuildTooltip;
             bpBtn.AddChild(bpClickArea);
             bpClickArea.SetAnchorsPreset(LayoutPreset.FullRect);
             bpClickArea.OffsetLeft = 0;
@@ -719,6 +725,9 @@ public partial class BuildUI : Control
                     weapClickArea.AcceptEvent();
                 }
             };
+            int capturedWeapIdx = i;
+            weapClickArea.MouseEntered += () => ShowWeaponTooltip(capturedWeapIdx);
+            weapClickArea.MouseExited += HideBuildTooltip;
             weapBtn.AddChild(weapClickArea);
             weapClickArea.SetAnchorsPreset(LayoutPreset.FullRect);
             weapClickArea.OffsetLeft = 0;
@@ -828,6 +837,8 @@ public partial class BuildUI : Control
                     pwrClickArea.AcceptEvent();
                 }
             };
+            pwrClickArea.MouseEntered += () => ShowPowerupTooltip(capturedType);
+            pwrClickArea.MouseExited += HideBuildTooltip;
             pwrBtn.AddChild(pwrClickArea);
             pwrClickArea.SetAnchorsPreset(LayoutPreset.FullRect);
             pwrClickArea.OffsetLeft = 0;
@@ -938,6 +949,8 @@ public partial class BuildUI : Control
                     troopClickArea.AcceptEvent();
                 }
             };
+            troopClickArea.MouseEntered += () => ShowTroopTooltip(capturedTroopType);
+            troopClickArea.MouseExited += HideBuildTooltip;
             troopBtn.AddChild(troopClickArea);
             troopClickArea.SetAnchorsPreset(LayoutPreset.FullRect);
             troopClickArea.OffsetLeft = 0;
@@ -1489,6 +1502,170 @@ public partial class BuildUI : Control
         style.BorderColor = borderColor;
         panel.AddThemeStyleboxOverride("panel", style);
         return panel;
+    }
+
+    // ========== Tooltip Helpers ==========
+
+    private TooltipSystem? GetTooltipSystem()
+    {
+        if (_tooltipSystem == null || !GodotObject.IsInstanceValid(_tooltipSystem))
+        {
+            _tooltipSystem = GetTree().Root.GetNodeOrNull<TooltipSystem>("Main/TooltipSystem");
+        }
+        return _tooltipSystem;
+    }
+
+    private void ShowMaterialTooltip(VoxelMaterialType mat)
+    {
+        TooltipSystem? ts = GetTooltipSystem();
+        if (ts == null) return;
+
+        VoxelMaterialDefinition def = VoxelMaterials.GetDefinition(mat);
+
+        // Build properties list
+        List<string> props = new List<string>();
+        if (def.IsFlammable) props.Add("Flammable");
+        if (def.IsTransparent) props.Add("Transparent");
+        if (def.UsesGravity) props.Add("Gravity-affected");
+        if (def.ExteriorOnly) props.Add("Exterior only");
+        if (def.RicochetChance > 0f) props.Add($"{(int)(def.RicochetChance * 100)}% ricochet chance");
+
+        // Brief material descriptions
+        string desc = mat switch
+        {
+            VoxelMaterialType.Dirt => "Cheap filler -- destroyed easily",
+            VoxelMaterialType.Wood => "Light and cheap, but catches fire",
+            VoxelMaterialType.Stone => "Solid mid-tier wall material",
+            VoxelMaterialType.Brick => "Sturdy masonry, good HP per cost",
+            VoxelMaterialType.Concrete => "Heavy-duty structural block",
+            VoxelMaterialType.Metal => "Tough plating that deflects shots",
+            VoxelMaterialType.ReinforcedSteel => "Premium armor with high ricochet",
+            VoxelMaterialType.Glass => "Transparent but fragile",
+            VoxelMaterialType.Obsidian => "Ultra-dense -- nearly missile-proof",
+            VoxelMaterialType.Sand => "Absorbs blast radius, falls with gravity",
+            VoxelMaterialType.Ice => "Translucent and slippery, low HP",
+            VoxelMaterialType.ArmorPlate => "Exterior-only shell plating",
+            VoxelMaterialType.Leaves => "Decorative camouflage, burns fast",
+            VoxelMaterialType.Bark => "Natural cover, flammable but tougher than leaves",
+            _ => string.Empty,
+        };
+
+        string propsLine = props.Count > 0 ? string.Join(", ", props) : "No special properties";
+        string body = $"Cost: ${def.Cost}  |  HP: {def.MaxHitPoints}  |  Weight: {def.Weight:F1}\n{propsLine}\n{desc}";
+
+        ts.ShowTooltip(mat.ToString(), body);
+    }
+
+    private void ShowWeaponTooltip(int weaponIndex)
+    {
+        TooltipSystem? ts = GetTooltipSystem();
+        if (ts == null || weaponIndex < 0 || weaponIndex >= WeaponOptions.Length) return;
+
+        var opt = WeaponOptions[weaponIndex];
+        string desc;
+        int damage;
+        string blastInfo;
+
+        switch (opt.Type)
+        {
+            case WeaponType.Cannon:
+                damage = 30;
+                blastInfo = "Blast: 4";
+                desc = "Standard ballistic cannon with moderate\narc and blast radius";
+                break;
+            case WeaponType.Mortar:
+                damage = 30;
+                blastInfo = "Blast: 6";
+                desc = "High-arc lobber -- arcs shots over walls\nwith a wide blast";
+                break;
+            case WeaponType.Drill:
+                damage = 50;
+                blastInfo = "Penetration: 10 blocks";
+                desc = "Bunker buster -- bores through walls and\ndetonates inside fortifications";
+                break;
+            case WeaponType.Railgun:
+                damage = 50;
+                blastInfo = "Penetration: 5 blocks";
+                desc = "Instant hitscan beam that pierces through\nmultiple blocks and hits commanders";
+                break;
+            case WeaponType.MissileLauncher:
+                damage = 50;
+                blastInfo = "Blast: 8";
+                desc = "Guided missile with homing and a massive\nexplosion radius";
+                break;
+            default:
+                damage = 0;
+                blastInfo = string.Empty;
+                desc = string.Empty;
+                break;
+        }
+
+        string body = $"Cost: ${opt.Cost}  |  Damage: {damage}  |  {blastInfo}\n{desc}\n\nLeft-click to place, right-click to sell";
+        ts.ShowTooltip(opt.Name, body);
+    }
+
+    private void ShowTroopTooltip(TroopType troopType)
+    {
+        TooltipSystem? ts = GetTooltipSystem();
+        if (ts == null) return;
+
+        TroopStats stats = TroopDefinitions.Get(troopType);
+
+        string desc = troopType switch
+        {
+            TroopType.Infantry => "Fast foot soldiers that rush the enemy\ncommander through doorways",
+            TroopType.Demolisher => "Heavy troops that smash through walls\nand deal double damage",
+            _ => string.Empty,
+        };
+
+        string wallInfo = stats.CanDamageWalls ? "Can break walls" : "Cannot break walls";
+        string body = $"Cost: ${stats.Cost}  |  HP: {stats.MaxHP}  |  Dmg: {stats.AttackDamage}/turn\nSpeed: {stats.MoveStepsPerTick} cells/tick  |  {wallInfo}\n{desc}\n\nLeft-click to buy, right-click to sell";
+        ts.ShowTooltip(stats.Name, body);
+    }
+
+    private void ShowBlueprintTooltip(int bpIndex)
+    {
+        TooltipSystem? ts = GetTooltipSystem();
+        if (ts == null) return;
+
+        BlueprintDefinition[] bps = BuildBlueprints.All;
+        if (bpIndex < 0 || bpIndex >= bps.Length) return;
+
+        BlueprintDefinition bp = bps[bpIndex];
+
+        // Estimate cost based on currently selected material
+        VoxelMaterialDefinition matDef = VoxelMaterials.GetDefinition(BuildMaterials[_selectedMaterialIndex]);
+        int totalCost = bp.BlockCount * matDef.Cost;
+
+        string desc = bp.Name switch
+        {
+            "Tower" => "Sturdy defensive tower with open top\nfor weapon placement",
+            "Room" => "Enclosed room with a front doorway\nfor troop access",
+            "Wall" => "Flat wall segment for quick perimeter\ndefense",
+            "Bunker" => "Thick-walled shelter with firing slits\non three sides",
+            "Ramp" => "Stepped ramp for reaching elevated\npositions",
+            "Sniper Nest" => "Elevated platform with railings for\nlong-range weapon placement",
+            _ => bp.Description,
+        };
+
+        string body = $"Blocks: {bp.BlockCount}  |  Size: {bp.Size.X}x{bp.Size.Y}x{bp.Size.Z}\nEst. cost: ${totalCost} (with {BuildMaterials[_selectedMaterialIndex]})\n{desc}";
+        ts.ShowTooltip(bp.Name, body);
+    }
+
+    private void ShowPowerupTooltip(PowerupType pType)
+    {
+        TooltipSystem? ts = GetTooltipSystem();
+        if (ts == null) return;
+
+        PowerupDefinition def = PowerupDefinitions.Get(pType);
+        string duration = def.DurationTurns > 0 ? $"Duration: {def.DurationTurns} turns" : "Instant";
+        string body = $"Cost: ${def.Cost}  |  {duration}\n{def.Description}\n\nLeft-click to buy, right-click to sell";
+        ts.ShowTooltip(def.Name, body);
+    }
+
+    private void HideBuildTooltip()
+    {
+        GetTooltipSystem()?.HideTooltip();
     }
 
     // ========== Events ==========

@@ -2074,6 +2074,8 @@ public partial class GameManager : Node
                     {
                         allMicrovoxels.Add(micro);
                     }
+                    // Add symmetry-mirrored blocks for ghost preview
+                    allMicrovoxels.AddRange(_buildSystem.GetSymmetryMirroredMicrovoxels(zone, buildUnit));
                 }
 
                 // Validate that all build units are within the zone
@@ -2117,7 +2119,24 @@ public partial class GameManager : Node
             }
             else
             {
-                _ghostPreview?.ShowSingleBlock(_buildCursorBuildUnit, _buildCursorValid, _buildSystem?.CurrentToolMode ?? BuildToolMode.Single);
+                // Show single block + symmetry-mirrored blocks
+                if (_buildSystem != null && _ghostPreview != null && _buildSystem.SymmetryMode != BuildSymmetryMode.None)
+                {
+                    List<Vector3I> allMicrovoxels = new List<Vector3I>();
+                    // Original block
+                    Vector3I microBase = _buildCursorBuildUnit * GameConfig.MicrovoxelsPerBuildUnit;
+                    for (int z = 0; z < GameConfig.MicrovoxelsPerBuildUnit; z++)
+                        for (int y = 0; y < GameConfig.MicrovoxelsPerBuildUnit; y++)
+                            for (int x = 0; x < GameConfig.MicrovoxelsPerBuildUnit; x++)
+                                allMicrovoxels.Add(microBase + new Vector3I(x, y, z));
+                    // Mirrored blocks
+                    allMicrovoxels.AddRange(_buildSystem.GetSymmetryMirroredMicrovoxels(zone, _buildCursorBuildUnit));
+                    _ghostPreview.SetPreview(allMicrovoxels, _buildCursorValid);
+                }
+                else
+                {
+                    _ghostPreview?.ShowSingleBlock(_buildCursorBuildUnit, _buildCursorValid, _buildSystem?.CurrentToolMode ?? BuildToolMode.Single);
+                }
             }
         }
         else
@@ -4289,8 +4308,8 @@ public partial class GameManager : Node
         // count in that player's turns, not every player's turns)
         _powerupExecutor?.TickAllPlayerEffects(_players, payload.CurrentPlayer);
 
-        // Tick army troops (movement, attacking, etc.)
-        _armyManager?.TickTroops(this);
+        // Tick army troops — only the current player's troops move/attack per turn
+        _armyManager?.TickTroops(payload.CurrentPlayer, this);
 
         // Update CombatUI powerup slots for the new current player
         if (_players.TryGetValue(payload.CurrentPlayer, out PlayerData? currentPlayerData))
@@ -5508,6 +5527,9 @@ public partial class GameManager : Node
             buildUI.TroopSellRequested += OnTroopSellRequested;
             buildUI.BlueprintSelected += OnBlueprintSelected;
             buildUI.ReadyPressed += OnReadyPressed;
+            buildUI.SymmetryChanged += (mode) => { if (_buildSystem != null) _buildSystem.SymmetryMode = mode; };
+            buildUI.UndoRequested += () => _buildSystem?.UndoLast(_activeBuilder);
+            buildUI.RedoRequested += () => _buildSystem?.RedoLast(_activeBuilder);
             GD.Print("[GameManager] BuildUI subscribed successfully.");
         }
         else

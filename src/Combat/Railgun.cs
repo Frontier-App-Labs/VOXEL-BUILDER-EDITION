@@ -148,6 +148,11 @@ public partial class Railgun : WeaponBase
             if (distance < 2f) // within 2 microvoxels of the beam
             {
                 int commanderDamage = Mathf.Max(1, BaseDamage / 2);
+                // Exposed commanders take extra damage — they have no cover
+                if (commander.IsExposed)
+                {
+                    commanderDamage = Mathf.RoundToInt(commanderDamage * GameConfig.CommanderExposedMultiplier);
+                }
                 commander.ApplyDamage(commanderDamage, OwnerSlot, closestPoint);
             }
         }

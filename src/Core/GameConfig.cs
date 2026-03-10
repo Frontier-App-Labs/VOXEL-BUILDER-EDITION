@@ -82,7 +82,7 @@ public static class GameConfig
     public const int MaxDoorsPerPlayer = 4;
     public const int TroopLifespanTicks = 6;        // ticks before a deployed troop dies automatically
 
-    public const int CommanderHP = 33;
+    public const int CommanderHP = 15;
     public const int MinBlocksAroundCommander = 6;
     public const int MinWeaponCommanderGap = 2;
     public const float MaxWeaponPlacementRange = 60f; // build units from zone center – allows terrain placement
@@ -95,6 +95,7 @@ public static class GameConfig
 
     // Commander critical direct hit
     public const float CommanderDirectHitMultiplier = 2.5f;  // damage multiplier for direct projectile/beam hits
+    public const float CommanderExposedMultiplier = 1.5f;     // damage multiplier when commander's IsExposed is true
     public const float CommanderCriticalShakeIntensity = 1.2f;
     public const float CommanderCriticalShakeDuration = 0.5f;
 

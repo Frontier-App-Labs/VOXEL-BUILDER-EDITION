@@ -95,10 +95,11 @@ public partial class ProjectileBase : Node3D
     }
 
     /// <summary>
-    /// Enables drill mode. Instead of exploding on first contact, the
-    /// projectile burrows through solid voxels, destroying them, up to
-    /// maxPenetration blocks deep. Detonates after exhausting penetration
-    /// or exiting the structure.
+    /// Enables drill (Bunker Buster) mode. Instead of exploding on first
+    /// contact, the projectile bores a 3x3 cross-section through solid
+    /// voxels. Keeps flying through air gaps to re-enter the next wall.
+    /// Detonates only after exhausting maxPenetration blocks or on lifetime
+    /// expiry. Foundation blocks stop the drill immediately.
     /// </summary>
     public void SetDrillMode(int maxPenetration)
     {
@@ -344,10 +345,13 @@ public partial class ProjectileBase : Node3D
     }
 
     /// <summary>
-    /// Drill collision: instead of stopping on first solid hit, destroy voxels
-    /// in the path and keep going until penetration is exhausted.
-    /// Uses DDA voxel traversal to visit every cell the path crosses (same fix
-    /// as CheckCollisionAlongPath — prevents skipping thin structures).
+    /// Drill collision: Bunker Buster behavior. Bores a 3x3 cross-section
+    /// (center voxel + 4 cardinal neighbors perpendicular to travel direction)
+    /// through solid voxels. Does NOT detonate on structure exit -- keeps flying
+    /// through air gaps to re-enter the next wall. Only detonates when max
+    /// penetration is reached or lifetime expires. Foundation blocks still stop
+    /// the drill cold.
+    /// Uses DDA voxel traversal to visit every cell the path crosses.
     /// </summary>
     private void ProcessDrillCollision(Vector3 start, Vector3 end)
     {
@@ -359,6 +363,44 @@ public partial class ProjectileBase : Node3D
         if (totalDist < 1e-6f)
             return;
         direction /= totalDist;
+
+        // Compute perpendicular axes for the 3x3 cross-section bore.
+        // These define the "up" and "right" directions relative to the drill's
+        // travel direction, used to destroy the 4 cardinal neighbors.
+        Vector3 forward = _velocity.Normalized();
+        Vector3 perpUp;
+        if (Mathf.Abs(forward.Dot(Vector3.Up)) > 0.9f)
+        {
+            // Drilling nearly vertical -- use Right as reference
+            perpUp = forward.Cross(Vector3.Right).Normalized();
+        }
+        else
+        {
+            perpUp = forward.Cross(Vector3.Up).Normalized();
+        }
+        Vector3 perpRight = forward.Cross(perpUp).Normalized();
+
+        // Convert perp axes to voxel-space offsets (round to nearest integer direction)
+        Vector3I offsetUp = new Vector3I(
+            Mathf.RoundToInt(perpUp.X / scale),
+            Mathf.RoundToInt(perpUp.Y / scale),
+            Mathf.RoundToInt(perpUp.Z / scale));
+        Vector3I offsetRight = new Vector3I(
+            Mathf.RoundToInt(perpRight.X / scale),
+            Mathf.RoundToInt(perpRight.Y / scale),
+            Mathf.RoundToInt(perpRight.Z / scale));
+
+        // Ensure offsets are unit-length (clamp components to -1..1)
+        // If cross product produced a zero offset, fall back to sensible defaults
+        offsetUp = ClampToUnit(offsetUp);
+        offsetRight = ClampToUnit(offsetRight);
+        if (offsetUp == Vector3I.Zero) offsetUp = new Vector3I(0, 1, 0);
+        if (offsetRight == Vector3I.Zero) offsetRight = new Vector3I(1, 0, 0);
+        // If both offsets ended up the same axis, pick an orthogonal one
+        if (offsetUp == offsetRight || offsetUp == -offsetRight)
+        {
+            offsetRight = new Vector3I(offsetUp.Z, offsetUp.X, offsetUp.Y);
+        }
 
         int x = Mathf.FloorToInt(origin.X);
         int y = Mathf.FloorToInt(origin.Y);
@@ -379,6 +421,16 @@ public partial class ProjectileBase : Node3D
         float t = 0f;
         int maxIterations = (int)(totalDist * 2) + 2;
 
+        // Cross-section offsets: center + 4 cardinal neighbors
+        Vector3I[] crossSection = new Vector3I[]
+        {
+            Vector3I.Zero,   // center
+            offsetUp,        // up
+            -offsetUp,       // down
+            offsetRight,     // right
+            -offsetRight,    // left
+        };
+
         for (int i = 0; i < maxIterations; i++)
         {
             Vector3I micro = new Vector3I(x, y, z);
@@ -387,27 +439,36 @@ public partial class ProjectileBase : Node3D
 
             if (voxel.IsSolid)
             {
+                // Check for Foundation in the center voxel -- stops drill cold
                 if (voxel.Material == VoxelMaterialType.Foundation)
                 {
-                    // Foundation stops the drill cold -- detonate here
                     Impact(samplePoint);
                     return;
                 }
 
                 if (!_drillInsideSolid)
                 {
-                    // Entering a new solid block
+                    // Entering a new solid block along the center line
                     _drillBlocksBored++;
                     _drillInsideSolid = true;
                     _drillHasBored = true;
                 }
 
-                // Spawn debris flying outward from the bored voxel
-                Color debrisColor = VoxelMaterials.GetPreviewColor(voxel.Material);
-                DebrisFX.SpawnDebris(GetTree().Root, samplePoint, debrisColor, samplePoint - _velocity.Normalized() * 0.5f, 2, voxel.Material);
+                // Bore the 3x3 cross-section: destroy center + 4 cardinal neighbors
+                foreach (Vector3I offset in crossSection)
+                {
+                    Vector3I borePos = micro + offset;
+                    VoxelValue boreVoxel = _world.GetVoxel(borePos);
+                    if (boreVoxel.IsSolid && boreVoxel.Material != VoxelMaterialType.Foundation)
+                    {
+                        // Spawn debris flying outward from the bored voxel
+                        Color debrisColor = VoxelMaterials.GetPreviewColor(boreVoxel.Material);
+                        DebrisFX.SpawnDebris(GetTree().Root, samplePoint, debrisColor, samplePoint - _velocity.Normalized() * 0.5f, 2, boreVoxel.Material);
 
-                // Destroy the voxel
-                _world.SetVoxel(micro, VoxelValue.Air, _owner);
+                        // Destroy the voxel
+                        _world.SetVoxel(borePos, VoxelValue.Air, _owner);
+                    }
+                }
 
                 // Play drill SFX for satisfying tunneling feedback
                 AudioDirector.Instance?.PlaySFX("drill_bore", samplePoint);
@@ -421,16 +482,10 @@ public partial class ProjectileBase : Node3D
             }
             else
             {
+                // Exited solid into air -- just mark state, keep flying
                 if (_drillInsideSolid)
                 {
                     _drillInsideSolid = false;
-
-                    // Drill has punched through the structure -- detonate on the exit side
-                    if (_drillHasBored)
-                    {
-                        Impact(samplePoint);
-                        return;
-                    }
                 }
             }
 
@@ -449,6 +504,18 @@ public partial class ProjectileBase : Node3D
             if (t > totalDist)
                 break;
         }
+    }
+
+    /// <summary>
+    /// Clamp each component of a Vector3I to the range [-1, 1].
+    /// Used to normalize voxel-space perpendicular offsets for drill bore cross-section.
+    /// </summary>
+    private static Vector3I ClampToUnit(Vector3I v)
+    {
+        return new Vector3I(
+            Mathf.Clamp(v.X, -1, 1),
+            Mathf.Clamp(v.Y, -1, 1),
+            Mathf.Clamp(v.Z, -1, 1));
     }
 
     private void Impact(Vector3 point)

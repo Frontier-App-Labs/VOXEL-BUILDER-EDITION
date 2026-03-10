@@ -189,9 +189,9 @@ public partial class VoxelGiSetup : Node3D
         env.AmbientLightEnergy = 0.35f;
         env.ReflectedLightSource = Godot.Environment.ReflectionSource.Sky;
 
-        // Tonemap
-        env.TonemapMode = Godot.Environment.ToneMapper.Aces;
-        env.TonemapWhite = 6.0f;
+        // Tonemap (Filmic preserves saturation better than ACES for voxel art)
+        env.TonemapMode = Godot.Environment.ToneMapper.Filmic;
+        env.TonemapWhite = 4.0f;
 
         // SSAO
         env.SsaoEnabled = true;
@@ -205,20 +205,16 @@ public partial class VoxelGiSetup : Node3D
         env.SsrFadeOut = 2.0f;
         env.SsrDepthTolerance = 0.2f;
 
-        // Glow
+        // Glow (subtle — avoid washing out colors)
         env.GlowEnabled = true;
-        env.GlowIntensity = 0.5f;
-        env.GlowStrength = 1.0f;
-        env.GlowBloom = 0.1f;
+        env.GlowIntensity = 0.3f;
+        env.GlowStrength = 0.6f;
+        env.GlowBloom = 0.0f;
         env.GlowBlendMode = Godot.Environment.GlowBlendModeEnum.Additive;
-        env.GlowHdrThreshold = 1.2f;
+        env.GlowHdrThreshold = 1.5f;
 
-        // Fog
-        env.FogEnabled = true;
-        env.FogLightColor = new Color(0.7f, 0.75f, 0.85f);
-        env.FogLightEnergy = 0.3f;
-        env.FogDensity = 0.002f;
-
+        // Fog disabled — was causing washed-out look
+        env.FogEnabled = false;
         env.VolumetricFogEnabled = false;
 
         // Color adjustment: slight saturation boost for punchier colors

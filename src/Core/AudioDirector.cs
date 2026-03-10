@@ -319,7 +319,7 @@ public partial class AudioDirector : Node
     private readonly Dictionary<string, double> _sfxLastPlayTime = new();
     private const double SfxCooldownSeconds = 0.08; // minimum gap between same-name sounds
     private const int MaxConcurrentSfx = 48; // max simultaneous SFX players
-    private const float MenuSfxCapDb = -14f; // quiet but audible cap for menu background battles
+    // MenuSfxCapDb removed — PlaySFX now returns early when _menuSfxDucked is true
     private int _activeSfxCount;
 
     // Per-sound volume overrides (dB) for sounds that are too loud
@@ -354,6 +354,17 @@ public partial class AudioDirector : Node
 
     public void PlaySFX(string name, Vector3? position = null)
     {
+        // Skip ALL SFX during the menu phase. The menu background battle is
+        // visual-only; previously we tried capping VolumeDb to -80dB per player
+        // but weapon/rocket fire sounds still leaked through (Godot's
+        // AudioStreamPlayer3D can amplify quiet signals when MaxDb > VolumeDb
+        // and the listener is near the source). Returning early is both more
+        // robust and more efficient (no orphaned silent audio players).
+        if (_menuSfxDucked)
+        {
+            return;
+        }
+
         bool hasRetro = _sfxCache.TryGetValue(name, out AudioStream? retroStream) && retroStream != null;
         bool hasLayer = _sfxLayers.TryGetValue(name, out List<AudioStream>? layers) && layers != null && layers.Count > 0;
 
@@ -381,13 +392,6 @@ public partial class AudioDirector : Node
         // Base volumes boosted so SFX are clearly audible
         float layerDb = (hasRetro ? 0f : 3f) + volumeOverride;
         float retroDb = 6f + volumeOverride;
-
-        // Cap all SFX to a known quiet level during menu phase
-        if (_menuSfxDucked)
-        {
-            layerDb = Mathf.Min(layerDb, MenuSfxCapDb);
-            retroDb = Mathf.Min(retroDb, MenuSfxCapDb);
-        }
 
         // Force weapon fire sounds to play as non-positional (2D) so they remain
         // audible when the camera follows the projectile away from the weapon.
@@ -625,7 +629,7 @@ public partial class AudioDirector : Node
         switch (payload.CurrentPhase)
         {
             case GamePhase.Menu:
-                _menuSfxDucked = true; // per-player cap applied in PlaySFX
+                _menuSfxDucked = true; // PlaySFX returns early — menu battle is visual only
                 // Start random shuffle if nothing is playing
                 if (_musicPlayer == null || !_musicPlayer.Playing)
                 {

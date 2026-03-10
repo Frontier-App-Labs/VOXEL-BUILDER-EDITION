@@ -15,6 +15,7 @@ public partial class MainMenu : Control
     private static readonly Color AccentGreen = new Color("2ea043");
     private static readonly Color AccentGold = new Color("d4a029");
     private static readonly Color AccentRed = new Color("d73a49");
+    private static readonly Color AccentCyan = new Color("3e96ff");
     private static readonly Color TextPrimary = new Color("e6edf3");
     private static readonly Color TextSecondary = new Color("8b949e");
     private static readonly Color ButtonHover = new Color("1f2937");
@@ -54,6 +55,7 @@ public partial class MainMenu : Control
     /// </summary>
     public event Action<string>? JoinWithCodeRequested;
 
+    private HelpScreen? _helpScreen;
     private int _botCount = 1;
     private Label? _botCountLabel;
     private LineEdit? _commanderNameInput;
@@ -337,6 +339,7 @@ public partial class MainMenu : Control
         _mainButtonContainer.AddChild(spacer3);
 
         AddMenuButton(_mainButtonContainer, "SETTINGS", TextSecondary, () => SettingsRequested?.Invoke());
+        AddMenuButton(_mainButtonContainer, "HELP", AccentCyan, OnHelpPressed);
         AddMenuButton(_mainButtonContainer, "QUIT", AccentRed, OnQuitPressed);
 
         // === PLAY ONLINE SUB-PANEL (Host / Join choice) ===
@@ -1589,6 +1592,24 @@ public partial class MainMenu : Control
         steam?.LeaveLobby();
 
         ShowPanel(_playOnlinePanel);
+    }
+
+    private void OnHelpPressed()
+    {
+        if (_helpScreen == null)
+        {
+            _helpScreen = new HelpScreen();
+            _helpScreen.Name = "HelpScreen";
+            _helpScreen.HelpClosed += OnHelpClosed;
+            AddChild(_helpScreen);
+        }
+        _helpScreen.Open();
+        if (_mainButtonContainer != null) _mainButtonContainer.Visible = false;
+    }
+
+    private void OnHelpClosed()
+    {
+        if (_mainButtonContainer != null) _mainButtonContainer.Visible = true;
     }
 
     private void OnQuitPressed()

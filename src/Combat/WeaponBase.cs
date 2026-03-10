@@ -42,9 +42,9 @@ public abstract partial class WeaponBase : Node3D
     public int CooldownTurns { get; set; }
 
     [Export]
-    public int MaxHitPoints { get; set; } = 120;
+    public int MaxHitPoints { get; set; } = 200;
 
-    public int HitPoints { get; private set; } = 120;
+    public int HitPoints { get; private set; } = 200;
     public bool IsDestroyed { get; private set; }
     public int LastFiredRound { get; protected set; } = -999;
     public PlayerSlot OwnerSlot { get; private set; }
@@ -124,8 +124,9 @@ public abstract partial class WeaponBase : Node3D
     }
 
     /// <summary>
-    /// Called when the weapon is destroyed due to loss of structural support
-    /// (the voxels below it have been removed). Instantly destroys the weapon.
+    /// Called when the weapon loses structural support. Instead of being destroyed,
+    /// the weapon drops to the next solid surface below it (gravity anchor).
+    /// Only destroyed if there is no solid ground anywhere beneath.
     /// </summary>
     public void DestroyFromLostSupport()
     {
@@ -134,8 +135,63 @@ public abstract partial class WeaponBase : Node3D
             return;
         }
 
-        GD.Print($"[Weapon] {WeaponId} owned by {OwnerSlot} lost structural support!");
-        ApplyDamage(MaxHitPoints);
+        // Try to find the next solid surface below
+        VoxelWorld? world = GetTree().Root.GetNodeOrNull<VoxelWorld>("Main/GameWorld");
+        if (world == null)
+        {
+            GD.Print($"[Weapon] {WeaponId} owned by {OwnerSlot} lost support (no world ref)!");
+            ApplyDamage(MaxHitPoints);
+            return;
+        }
+
+        Vector3 weaponPos = GlobalPosition;
+        Vector3 cornerPos = weaponPos - new Vector3(
+            GameConfig.BuildUnitMeters * 0.5f,
+            0f,
+            GameConfig.BuildUnitMeters * 0.5f);
+        Vector3I microBase = MathHelpers.WorldToMicrovoxel(cornerPos);
+
+        // Scan downward from current position to find the next solid block
+        // Check up to 64 blocks down (well past any reasonable structure height)
+        const int maxScanDepth = 64;
+        int dropDistance = -1;
+
+        for (int dy = 2; dy < maxScanDepth; dy++)
+        {
+            bool foundSolid = false;
+            for (int z = 0; z < GameConfig.MicrovoxelsPerBuildUnit && !foundSolid; z++)
+            {
+                for (int x = 0; x < GameConfig.MicrovoxelsPerBuildUnit && !foundSolid; x++)
+                {
+                    Vector3I checkPos = microBase + new Vector3I(x, -dy, z);
+                    if (world.GetVoxel(checkPos).IsSolid)
+                    {
+                        foundSolid = true;
+                    }
+                }
+            }
+            if (foundSolid)
+            {
+                // Drop to 1 microvoxel above this solid surface
+                dropDistance = dy - 1;
+                break;
+            }
+        }
+
+        if (dropDistance > 0)
+        {
+            // Anchor to new position — drop down
+            float dropMeters = dropDistance * GameConfig.MicrovoxelMeters;
+            Vector3 newPos = GlobalPosition - new Vector3(0, dropMeters, 0);
+            GD.Print($"[Weapon] {WeaponId} owned by {OwnerSlot} lost support — dropping {dropDistance} blocks to new anchor.");
+            GlobalPosition = newPos;
+        }
+        else
+        {
+            // No solid ground anywhere below — weapon falls to destruction
+            GD.Print($"[Weapon] {WeaponId} owned by {OwnerSlot} lost all support — destroyed!");
+            ApplyDamage(MaxHitPoints);
+        }
     }
 
     public virtual ProjectileBase? Fire(AimingSystem aimingSystem, VoxelWorld world, int currentRound)
