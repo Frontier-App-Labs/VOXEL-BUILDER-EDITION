@@ -130,7 +130,20 @@ public static class VoxelCharacterBuilder
             return; // shader not found — keep the StandardMaterial3D fallback
         }
 
-        toonMat.SetShaderParameter("team_color", new Color(teamColor.R, teamColor.G, teamColor.B, 1f));
+        // Use WHITE team_color so the tint is neutral — the vertex colors already
+        // contain the team color from CommanderModelGenerator.PaintCommander().
+        // Previous approach (teamColor * 0.55) cross-multiplied team hue with skin
+        // tones, turning warm skin grey (blue × peach = grey = desaturated).
+        toonMat.SetShaderParameter("team_color", Colors.White);
+        // Rim at 0.15: subtle silhouette glow without flooding the model with white
+        toonMat.SetShaderParameter("rim_intensity", 0.15f);
+        // Push more surface area into shadow band for dramatic cel shading
+        toonMat.SetShaderParameter("shadow_threshold", 0.45f);
+        toonMat.SetShaderParameter("highlight_threshold", 0.85f);
+        // Darken highlight band so it contrasts with midtone
+        toonMat.SetShaderParameter("highlight_color", new Color(0.78f, 0.75f, 0.70f, 1f));
+        // Darken base albedo to counteract ambient light wash (preserves saturation)
+        toonMat.SetShaderParameter("base_brightness", 0.55f);
 
         ApplyToonMaterialRecursive(root, toonMat);
     }

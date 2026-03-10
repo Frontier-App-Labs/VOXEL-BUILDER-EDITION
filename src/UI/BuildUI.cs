@@ -323,7 +323,7 @@ public partial class BuildUI : Control
             matRow.MouseFilter = MouseFilterEnum.Ignore;
             matBtn.AddChild(matRow);
 
-            // Color swatch — larger, with a beveled border for the chunky toy look
+            // Material texture swatch — show the actual AI-generated texture image
             MarginContainer swatchMargin = new MarginContainer();
             swatchMargin.AddThemeConstantOverride("margin_left", 8);
             swatchMargin.AddThemeConstantOverride("margin_top", 5);
@@ -331,22 +331,52 @@ public partial class BuildUI : Control
             swatchMargin.MouseFilter = MouseFilterEnum.Ignore;
             matRow.AddChild(swatchMargin);
 
-            PanelContainer swatch = new PanelContainer();
-            swatch.CustomMinimumSize = new Vector2(32, 32);
-            StyleBoxFlat swatchStyle = new StyleBoxFlat();
-            swatchStyle.BgColor = previewColor;
-            swatchStyle.CornerRadiusTopLeft = 0;
-            swatchStyle.CornerRadiusTopRight = 0;
-            swatchStyle.CornerRadiusBottomLeft = 0;
-            swatchStyle.CornerRadiusBottomRight = 0;
-            swatchStyle.BorderWidthTop = 2;
-            swatchStyle.BorderWidthBottom = 2;
-            swatchStyle.BorderWidthLeft = 2;
-            swatchStyle.BorderWidthRight = 2;
-            swatchStyle.BorderColor = new Color(previewColor.R * 0.6f, previewColor.G * 0.6f, previewColor.B * 0.6f, 1f);
-            swatch.AddThemeStyleboxOverride("panel", swatchStyle);
-            swatch.MouseFilter = MouseFilterEnum.Ignore;
-            swatchMargin.AddChild(swatch);
+            // Try to load the actual texture; fall back to flat color if missing
+            string texName = mat.ToString().ToLowerInvariant();
+            // Handle multi-word names (ArmorPlate -> armorplate, ReinforcedSteel -> reinforcedsteel)
+            texName = texName.Replace(" ", "");
+            string texPath = $"res://assets/textures/voxels/{texName}_32.png";
+            Texture2D? matTex = ResourceLoader.Exists(texPath) ? ResourceLoader.Load<Texture2D>(texPath) : null;
+
+            if (matTex != null)
+            {
+                // Show the actual texture image
+                PanelContainer swatchBorder = new PanelContainer();
+                swatchBorder.CustomMinimumSize = new Vector2(36, 36);
+                StyleBoxFlat borderStyle = new StyleBoxFlat();
+                borderStyle.BgColor = new Color(previewColor.R * 0.6f, previewColor.G * 0.6f, previewColor.B * 0.6f, 1f);
+                borderStyle.ContentMarginTop = 2;
+                borderStyle.ContentMarginBottom = 2;
+                borderStyle.ContentMarginLeft = 2;
+                borderStyle.ContentMarginRight = 2;
+                swatchBorder.AddThemeStyleboxOverride("panel", borderStyle);
+                swatchBorder.MouseFilter = MouseFilterEnum.Ignore;
+
+                TextureRect texRect = new TextureRect();
+                texRect.Texture = matTex;
+                texRect.ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize;
+                texRect.StretchMode = TextureRect.StretchModeEnum.Scale;
+                texRect.CustomMinimumSize = new Vector2(32, 32);
+                texRect.MouseFilter = MouseFilterEnum.Ignore;
+                swatchBorder.AddChild(texRect);
+                swatchMargin.AddChild(swatchBorder);
+            }
+            else
+            {
+                // Fallback: flat color swatch
+                PanelContainer swatch = new PanelContainer();
+                swatch.CustomMinimumSize = new Vector2(32, 32);
+                StyleBoxFlat swatchStyle = new StyleBoxFlat();
+                swatchStyle.BgColor = previewColor;
+                swatchStyle.BorderWidthTop = 2;
+                swatchStyle.BorderWidthBottom = 2;
+                swatchStyle.BorderWidthLeft = 2;
+                swatchStyle.BorderWidthRight = 2;
+                swatchStyle.BorderColor = new Color(previewColor.R * 0.6f, previewColor.G * 0.6f, previewColor.B * 0.6f, 1f);
+                swatch.AddThemeStyleboxOverride("panel", swatchStyle);
+                swatch.MouseFilter = MouseFilterEnum.Ignore;
+                swatchMargin.AddChild(swatch);
+            }
 
             // Name and cost
             VBoxContainer matInfo = new VBoxContainer();

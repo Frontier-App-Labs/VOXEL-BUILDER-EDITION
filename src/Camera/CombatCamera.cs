@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using Godot;
 using VoxelSiege.Combat;
 using VoxelSiege.Core;
+using VoxelSiege.Voxel;
+
 namespace VoxelSiege.Camera;
 
 /// <summary>
@@ -240,6 +242,7 @@ public partial class CombatCamera : Camera3D
         _povWeapon = null;
         _povAiming = null;
         RestoreTimeScale();
+        SetVoxelKillCamDissolve(0f);
         SetProcess(false);
         SetProcessUnhandledInput(false);
         if (Current)
@@ -331,6 +334,9 @@ public partial class CombatCamera : Camera3D
 
         _preKillTimeScale = (float)Engine.TimeScale;
         Engine.TimeScale = GameConfig.SlowMoTimeScale;
+
+        // Dissolve blocks so the death is visible through fortress walls
+        SetVoxelKillCamDissolve(0.6f);
     }
 
     /// <summary>Free orbit look between turns for inspecting bases.</summary>
@@ -972,6 +978,7 @@ public partial class CombatCamera : Camera3D
         if (_killCamTimer >= KillCamDuration)
         {
             Engine.TimeScale = _preKillTimeScale > 0.01f ? _preKillTimeScale : 1f;
+            SetVoxelKillCamDissolve(0f);
             // Set to Inactive to prevent re-firing on subsequent frames
             CurrentMode = Mode.Inactive;
             // Signal that the cinematic moment is done so GameManager can switch
@@ -1218,4 +1225,13 @@ public partial class CombatCamera : Camera3D
         }
     }
 
+    /// <summary>
+    /// Sets the kill_cam_dissolve uniform on the shared voxel shader material.
+    /// Uses discard-based dithering (not ALPHA) so the shader stays in the opaque pipeline.
+    /// </summary>
+    private static void SetVoxelKillCamDissolve(float dissolve)
+    {
+        ShaderMaterial mat = VoxelChunk.GetSharedOpaqueShaderMaterial();
+        mat.SetShaderParameter("kill_cam_dissolve", dissolve);
+    }
 }

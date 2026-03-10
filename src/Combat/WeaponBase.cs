@@ -435,7 +435,13 @@ public abstract partial class WeaponBase : Node3D
         _weaponMesh = new MeshInstance3D();
         _weaponMesh.Name = "WeaponModel";
         _weaponMesh.Mesh = result.Mesh;
-        _weaponMesh.MaterialOverride = VoxelModelBuilder.CreateVoxelMaterial(0.15f, 0.6f);
+        // Pure dielectric (metallic=0) so diffuse lighting is uniform across all faces.
+        // Previous metallic=0.15 stole 15% from diffuse into specular that reflected
+        // away from camera on top faces, making tops dark. Roughness=0.8 is matte like
+        // the voxel_triplanar shader's default. AlbedoColor boosts dark military colors.
+        StandardMaterial3D weaponMat = VoxelModelBuilder.CreateVoxelMaterial(0.0f, 0.8f);
+        weaponMat.AlbedoColor = new Color(1.5f, 1.5f, 1.5f);
+        _weaponMesh.MaterialOverride = weaponMat;
         AddChild(_weaponMesh);
 
         // Create idle smoke emitter (starts disabled, enabled after first fire)

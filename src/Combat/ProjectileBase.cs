@@ -43,7 +43,7 @@ public partial class ProjectileBase : Node3D
 
     // --- Launch immunity: skip voxel collision for the first few frames ---
     // This prevents projectiles from detonating on their own launcher's structure.
-    private float _launchImmunityTimer = 0.15f;
+    private float _launchImmunityTimer = 0.05f;
 
     [Export]
     public float GravityMultiplier { get; set; } = 1f;

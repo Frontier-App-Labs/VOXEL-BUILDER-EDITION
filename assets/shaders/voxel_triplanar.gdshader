@@ -23,6 +23,10 @@ global uniform vec2 wind_direction;
 // -- Grid visibility (set by GameManager: 1.0 in build mode, 0.0 otherwise) --
 global uniform float edge_grid_enabled;
 
+// -- Kill cam: dither-discard to see through blocks (stays in opaque pipeline) --
+uniform float kill_cam_dissolve : hint_range(0.0, 1.0) = 0.0;
+uniform float kill_cam_ground_y = 3.0;
+
 // -- Varying --
 varying vec3 world_pos;
 varying vec3 world_normal;
@@ -106,7 +110,7 @@ void vertex() {
     // Wind displacement for ground-level vegetation only (grass/leaves, NOT structures)
     // Tight color check: Leaves material has R<0.25, G>0.35 — excludes Dirt (R=0.29) and all player materials
     // Height limit: only near ground (y 2-5) to prevent structures from swaying
-    bool is_vegetation = COLOR.g > 0.35 && COLOR.r < 0.26 && ws.y > 2.0 && ws.y < 5.0;
+    bool is_vegetation = COLOR.g > 0.35 && COLOR.r < 0.26 && ws.y > 1.0 && ws.y < 20.0;
     if (is_vegetation) {
         // Grass sways gently — decreases with height so only short plants move
         float height_factor = clamp(1.0 - (ws.y - 2.0) * 0.35, 0.0, 1.0);
@@ -251,4 +255,16 @@ void fragment() {
     METALLIC = metallic;
     AO = ao;
     AO_LIGHT_AFFECT = 0.7;
+
+    // -- Kill cam: discard pixels in a dither pattern so blocks become see-through.
+    //    Uses discard (not ALPHA) so the shader stays in the opaque render pipeline.
+    if (kill_cam_dissolve > 0.01) {
+        if (world_pos.y > kill_cam_ground_y) {
+            // Screen-space ordered dither (4x4 Bayer matrix approximation)
+            float dither = fract(sin(dot(FRAGCOORD.xy, vec2(12.9898, 78.233))) * 43758.5453);
+            if (dither < kill_cam_dissolve) {
+                discard;
+            }
+        }
+    }
 }

@@ -3180,10 +3180,10 @@ public partial class GameManager : Node
         Vector3 awayDir = new Vector3(fortCenter.X - arenaCenter.X, 0f, fortCenter.Z - arenaCenter.Z);
         if (awayDir.LengthSquared() < 0.01f) awayDir = new Vector3(0f, 0f, 1f);
         awayDir = awayDir.Normalized();
-        Vector3 behindPos = fortCenter + new Vector3(0f, 40f, 0f) + awayDir * 49f;
+        Vector3 behindPos = fortCenter + new Vector3(0f, 30f, 0f) + awayDir * 38f;
 
         // Start position: directly above the fortress looking down
-        Vector3 topDownPos = fortCenter + new Vector3(0f, 65f, 0f);
+        Vector3 topDownPos = fortCenter + new Vector3(0f, 50f, 0f);
 
         float progress = Mathf.Clamp(_combatIntroTimer / CombatIntroDuration, 0f, 1f);
         float t = progress * progress * (3f - 2f * progress); // smoothstep easing
@@ -5075,8 +5075,8 @@ public partial class GameManager : Node
         }
         awayFromCenter = awayFromCenter.Normalized();
 
-        float cameraHeight = 40f;
-        float cameraBack = 49f;
+        float cameraHeight = 30f;
+        float cameraBack = 38f;
         Vector3 cameraPos = pivot + new Vector3(0f, cameraHeight, 0f) + awayFromCenter * cameraBack;
 
         _camera.TransitionToLookTarget(cameraPos, pivot);

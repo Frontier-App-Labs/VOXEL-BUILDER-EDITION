@@ -14,6 +14,7 @@ uniform vec4 highlight_color : source_color = vec4(1.0, 0.97, 0.9, 1.0);
 uniform float specular_size : hint_range(0.0, 1.0) = 0.12;
 uniform float wobble_amplitude : hint_range(0.0, 0.15) = 0.06;
 uniform float wobble_speed : hint_range(1.0, 20.0) = 8.0;
+uniform float base_brightness : hint_range(0.0, 2.0) = 1.0;
 
 // -- Varying --
 varying vec3 world_pos;
@@ -91,7 +92,7 @@ void fragment() {
     // -- 3-band cel shading via light --
     // We use DIFFUSE_LIGHT in the light() function, but for the albedo pass
     // we set up the base color. The cel shading bands are applied in light().
-    ALBEDO = base_color;
+    ALBEDO = base_color * base_brightness;
     ROUGHNESS = 0.85;
     METALLIC = 0.0;
 
