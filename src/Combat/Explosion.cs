@@ -1,4 +1,5 @@
 using Godot;
+using System;
 using System.Collections.Generic;
 using VoxelSiege.Commander;
 using VoxelSiege.Core;
@@ -30,6 +31,12 @@ public partial class Explosion : Node3D
         new Vector3I(0, 0, 1),
         new Vector3I(0, 0, -1)
     };
+
+    /// <summary>
+    /// Optional callback set by GameManager to apply shield damage multipliers.
+    /// Given a microvoxel position, returns a multiplier (0.5 if shielded, 1.0 otherwise).
+    /// </summary>
+    public static Func<Vector3I, float>? ShieldMultiplierCallback;
 
     private static readonly Vector3[] DecalDirections =
     {
@@ -78,6 +85,13 @@ public partial class Explosion : Node3D
             if (damage <= 0)
             {
                 continue;
+            }
+
+            // Apply shield damage reduction if the target position is shielded
+            float shieldMult = ShieldMultiplierCallback?.Invoke(position) ?? 1.0f;
+            if (shieldMult < 1.0f)
+            {
+                damage = Mathf.Max(1, (int)(damage * shieldMult));
             }
 
             int nextHitPoints = voxel.HitPoints - damage;
@@ -181,6 +195,15 @@ public partial class Explosion : Node3D
                 {
                     commanderDamage = Mathf.RoundToInt(commanderDamage * GameConfig.CommanderExposedMultiplier);
                 }
+
+                // Apply shield damage reduction if the commander's zone is shielded
+                Vector3I cmdMicro = MathHelpers.WorldToMicrovoxel(commander.GlobalPosition);
+                float cmdShieldMult = ShieldMultiplierCallback?.Invoke(cmdMicro) ?? 1.0f;
+                if (cmdShieldMult < 1.0f)
+                {
+                    commanderDamage = Mathf.Max(1, (int)(commanderDamage * cmdShieldMult));
+                }
+
                 commander.ApplyDamage(commanderDamage, instigator, worldPosition);
             }
 

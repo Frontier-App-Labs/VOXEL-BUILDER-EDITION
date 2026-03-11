@@ -208,6 +208,20 @@ public partial class GameManager : Node
         _powerupExecutor.PowerupActivated += OnPowerupActivated;
         _powerupExecutor.PowerupExpired += OnPowerupExpired;
 
+        // Wire shield damage multiplier into the explosion system
+        Explosion.ShieldMultiplierCallback = (microvoxelPos) =>
+        {
+            foreach (PlayerData p in _players.Values)
+            {
+                if (p.Powerups.HasActiveEffect(PowerupType.ShieldGenerator) &&
+                    p.AssignedBuildZone.ContainsMicrovoxel(microvoxelPos))
+                {
+                    return 0.5f;
+                }
+            }
+            return 1.0f;
+        };
+
         // Create ghost preview for build phase
         _ghostPreview = GetNodeOrNull<GhostPreview>("GhostPreview") ?? CreateNode<GhostPreview>("GhostPreview");
 
@@ -908,7 +922,7 @@ public partial class GameManager : Node
     /// If already in targeting mode, switches the weapon without resetting
     /// the camera or target point so the player's aim is preserved.
     /// </summary>
-    public void OnWeaponSelectedFromUI(int weaponIndex)
+    public void OnWeaponSelectedFromUI(int weaponIndex, bool cycleOnly = false)
     {
         if (CurrentPhase != GamePhase.Combat || _turnManager?.CurrentPlayer is not PlayerSlot currentPlayer)
         {
@@ -953,6 +967,15 @@ public partial class GameManager : Node
 
         // Highlight the confirmed weapon in the 3D world
         UpdateWeaponHighlight();
+
+        // Cycle-only: just update the selection and highlight without transitioning
+        // to targeting mode. Used by right-click weapon cycling so the player can
+        // see which weapon is selected in their base view before clicking to target.
+        if (cycleOnly)
+        {
+            GD.Print($"[Combat] Weapon {_selectedWeaponIndex} cycled (highlight only).");
+            return;
+        }
 
         GD.Print($"[Combat] Weapon {_selectedWeaponIndex} confirmed. Entering targeting mode.");
 
@@ -1831,6 +1854,14 @@ public partial class GameManager : Node
                 {
                     EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(slot, playerData.Budget, 0));
                 }
+                // Initialize powerup counts in the BuildUI for the human player
+                if (_players.TryGetValue(PlayerSlot.Player1, out PlayerData? p1Data))
+                {
+                    BuildUI? buildUI = GetNodeOrNull<BuildUI>("BuildHUD")
+                        ?? GetNodeOrNull<BuildUI>("%BuildUI")
+                        ?? GetTree().Root.FindChild("BuildHUD", true, false) as BuildUI;
+                    buildUI?.UpdatePowerupCounts(p1Data.Powerups);
+                }
                 break;
 
             case GamePhase.FogReveal:
@@ -2091,6 +2122,27 @@ public partial class GameManager : Node
 
                 _ghostPreview.SetPreview(allMicrovoxels, allValid);
                 _buildCursorValid = allValid;
+            }
+            else if (!_isDragBuilding && _buildSystem != null && _ghostPreview != null
+                     && IsMultiVoxelTool(_buildSystem.CurrentToolMode)
+                     && _placementMode == PlacementMode.Block)
+            {
+                // Pre-drag preview for multi-voxel tools: show the tool shape at
+                // the cursor using cursor as both start and end. This gives the
+                // player a visual hint of the tool's shape before they click.
+                BuildToolMode currentMode = _buildSystem.CurrentToolMode;
+                List<Vector3I> allMicrovoxels = new List<Vector3I>();
+
+                foreach (Vector3I buildUnit in BuildSystem.GenerateBuildUnitCells(currentMode, _buildCursorBuildUnit, _buildCursorBuildUnit, _buildSystem.HollowBoxMode))
+                {
+                    foreach (Vector3I micro in BuildSystem.ExpandBuildUnit(buildUnit, currentMode, _buildCursorBuildUnit, _buildCursorBuildUnit))
+                    {
+                        allMicrovoxels.Add(micro);
+                    }
+                    allMicrovoxels.AddRange(_buildSystem.GetSymmetryMirroredMicrovoxels(zone, buildUnit));
+                }
+
+                _ghostPreview.SetPreview(allMicrovoxels, _buildCursorValid);
             }
             else if (_placementMode == PlacementMode.Weapon && _ghostPreview != null)
             {
@@ -3979,22 +4031,20 @@ public partial class GameManager : Node
 
         int safeIndex = _selectedWeaponIndex % weaponList.Count;
         WeaponBase? weapon = weaponList[safeIndex];
-        if (weapon == null || !GodotObject.IsInstanceValid(weapon) || !weapon.CanFire(_turnManager.RoundNumber))
+        bool isEmpd = weapon != null && GodotObject.IsInstanceValid(weapon) &&
+            (_powerupExecutor?.IsWeaponEmpDisabled(weapon, _players) ?? false);
+        if (weapon == null || !GodotObject.IsInstanceValid(weapon) || !weapon.CanFire(_turnManager.RoundNumber) || isEmpd)
         {
-            // Try to find any weapon that can fire
-            weapon = weaponList.Find(candidate => GodotObject.IsInstanceValid(candidate) && candidate.CanFire(_turnManager.RoundNumber));
+            // Try to find any weapon that can fire and isn't EMP'd
+            weapon = weaponList.Find(candidate =>
+                GodotObject.IsInstanceValid(candidate) &&
+                candidate.CanFire(_turnManager.RoundNumber) &&
+                !(_powerupExecutor?.IsWeaponEmpDisabled(candidate, _players) ?? false));
             if (weapon == null)
             {
-                GD.Print("[Combat] No weapons can fire this turn.");
+                GD.Print("[Combat] No weapons can fire this turn (all disabled or on cooldown).");
                 return;
             }
-        }
-
-        // Check if weapon is EMP-disabled
-        if (_powerupExecutor != null && _powerupExecutor.IsWeaponEmpDisabled(weapon.WeaponId, currentPlayer, _players))
-        {
-            GD.Print($"[Combat] {weapon.WeaponId} is EMP-disabled and cannot fire!");
-            return;
         }
 
         int roundBefore = weapon.LastFiredRound;
@@ -4351,11 +4401,21 @@ public partial class GameManager : Node
             killer.Stats.CommanderKills++;
         }
 
-        // Activate kill cam: orbit the death location
+        // Activate kill cam: orbit the death location.
+        // Self-kills (killer == victim) use an overhead impact view instead of
+        // the standard orbit cam, which glitches when there's no distinct killer.
         if (_combatCamera != null)
         {
             _camera?.Deactivate();
-            _combatCamera.KillCam(payload.WorldPosition);
+            if (payload.Killer.HasValue && payload.Killer.Value == payload.Victim)
+            {
+                // Self-kill: fixed overhead impact view looking down at the death position
+                _combatCamera.ImpactCam(payload.WorldPosition, 5f);
+            }
+            else
+            {
+                _combatCamera.KillCam(payload.WorldPosition);
+            }
         }
 
         _turnManager?.RemovePlayer(payload.Victim, Settings.TurnTimeSeconds);
@@ -4736,10 +4796,11 @@ public partial class GameManager : Node
         // Purge destroyed/invalid weapons
         weaponList.RemoveAll(w => w == null || !GodotObject.IsInstanceValid(w) || w.IsDestroyed);
 
-        WeaponBase? weapon = weaponList.Find(w => w.CanFire(_turnManager.RoundNumber));
+        WeaponBase? weapon = weaponList.Find(w => w.CanFire(_turnManager.RoundNumber) &&
+            !(_powerupExecutor?.IsWeaponEmpDisabled(w, _players) ?? false));
         if (weapon == null)
         {
-            GD.Print($"[Bot] {botSlot} has no weapons ready — skipping turn.");
+            GD.Print($"[Bot] {botSlot} has no weapons ready (or all EMP'd) — skipping turn.");
             _turnManager.AdvanceTurn(Settings.TurnTimeSeconds);
             return;
         }
@@ -4831,6 +4892,18 @@ public partial class GameManager : Node
 
         Vector3 targetPos = prioritizedResult.Position;
         GD.Print($"[Bot] {botSlot} targeting {enemy.Slot} — priority={prioritizedResult.Priority}, reason=\"{prioritizedResult.Description}\"");
+
+        // If the target zone is smoked, fire at a random position instead
+        if (_powerupExecutor?.IsZoneSmoked(enemy.Slot, _players) == true)
+        {
+            Vector3 zoneWorldMin = MathHelpers.MicrovoxelToWorld(enemyZone.OriginMicrovoxels);
+            Vector3 zoneWorldMax = MathHelpers.MicrovoxelToWorld(enemyZone.MaxMicrovoxelsInclusive);
+            targetPos = new Vector3(
+                (float)(zoneWorldMin.X + rng.NextDouble() * (zoneWorldMax.X - zoneWorldMin.X)),
+                (float)(zoneWorldMin.Y + rng.NextDouble() * (zoneWorldMax.Y - zoneWorldMin.Y)),
+                (float)(zoneWorldMin.Z + rng.NextDouble() * (zoneWorldMax.Z - zoneWorldMin.Z)));
+            GD.Print($"[Bot] {botSlot} target zone is smoked — firing blind at {targetPos}");
+        }
 
         // Apply difficulty-based scatter to the target position
         // Reduce scatter when targeting the commander for a more lethal shot
@@ -6268,28 +6341,22 @@ public partial class GameManager : Node
             return;
         }
 
+        // Count alive players for rotation-based duration
+        int alivePlayerCount = _players.Values.Count(p => p.IsAlive);
+
         bool success = false;
         switch (type)
         {
             case PowerupType.SmokeScreen:
-                success = _powerupExecutor.ActivateSmokeScreen(player);
+                success = _powerupExecutor.ActivateSmokeScreen(player, alivePlayerCount);
                 break;
 
-            case PowerupType.RepairKit:
-                success = _powerupExecutor.ActivateRepairKit(player);
-                break;
-
-            case PowerupType.SpyDrone:
-                _powerupExecutor.ActivateSpyDrone(player, _players);
-                success = true;
+            case PowerupType.Medkit:
+                success = _powerupExecutor.ActivateMedkit(player);
                 break;
 
             case PowerupType.ShieldGenerator:
-                if (player.AssignedBuildZone is BuildZone shieldZone)
-                {
-                    Vector3I center = shieldZone.OriginBuildUnits + shieldZone.SizeBuildUnits / 2;
-                    success = _powerupExecutor.ActivateShieldGenerator(player, center);
-                }
+                success = _powerupExecutor.ActivateShieldGenerator(player, alivePlayerCount);
                 break;
 
             case PowerupType.AirstrikeBeacon:
@@ -6350,23 +6417,7 @@ public partial class GameManager : Node
                 break;
 
             case PowerupType.EmpBlast:
-                foreach (PlayerData enemy in _players.Values)
-                {
-                    if (enemy.Slot == currentPlayer || !enemy.IsAlive)
-                    {
-                        continue;
-                    }
-
-                    if (_weapons.TryGetValue(enemy.Slot, out List<WeaponBase>? enemyWeapons) && enemyWeapons.Count > 0)
-                    {
-                        WeaponBase targetWeapon = enemyWeapons[0];
-                        if (GodotObject.IsInstanceValid(targetWeapon))
-                        {
-                            success = _powerupExecutor.ActivateEmp(player, targetWeapon, enemy.Slot);
-                            break;
-                        }
-                    }
-                }
+                success = _powerupExecutor.ActivateEmp(player, _players, _weapons);
                 break;
         }
 

@@ -13,7 +13,7 @@ namespace VoxelSiege.Combat;
 
 /// <summary>
 /// Executes powerup effects during combat. Created as a child of GameManager
-/// and orchestrates smoke, repair, drone, shield, airstrike, and EMP mechanics.
+/// and orchestrates smoke, medkit, shield, airstrike, and EMP mechanics.
 /// </summary>
 public partial class PowerupExecutor : Node
 {
@@ -31,20 +31,38 @@ public partial class PowerupExecutor : Node
 
     public override void _Ready()
     {
-        // VoxelWorld is expected to be a sibling node named "GameWorld"
         _voxelWorld = GetParent()?.GetNodeOrNull<VoxelWorld>("GameWorld");
     }
 
     // ─────────────────────────────────────────────────
-    //  SMOKE SCREEN
+    //  SMOKE SCREEN (invisibility)
     // ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Activates smoke screen over the player's build zone. Consumes the powerup
-    /// from inventory and registers an active effect for 2 turns.
+    /// Data for smoke screen: tracks the zone and the number of players in the
+    /// match so we know when a full rotation has elapsed.
     /// </summary>
-    public bool ActivateSmokeScreen(PlayerData player)
+    public sealed class SmokeScreenData
     {
+        public BuildZone Zone { get; init; }
+        public int TotalPlayers { get; init; }
+        public int TurnsRemaining { get; set; }
+    }
+
+    /// <summary>
+    /// Activates smoke screen: makes the player's fortress visually invisible
+    /// for a full rotation of turns. Bots will fire randomly at the smoked zone.
+    /// Debris from destroyed blocks IS still visible.
+    /// </summary>
+    public bool ActivateSmokeScreen(PlayerData player, int totalPlayersAlive)
+    {
+        // Prevent stacking — can't smoke an already-smoked zone
+        if (player.Powerups.HasActiveEffect(PowerupType.SmokeScreen))
+        {
+            GD.Print($"[Powerup] {player.Slot}: Fortress already smoked.");
+            return false;
+        }
+
         if (!player.Powerups.TryConsume(PowerupType.SmokeScreen))
         {
             return false;
@@ -54,14 +72,70 @@ public partial class PowerupExecutor : Node
         Vector3 center = MathHelpers.MicrovoxelToWorld(
             zone.OriginMicrovoxels + zone.SizeMicrovoxels / 2);
 
-        player.Powerups.AddActiveEffect(PowerupType.SmokeScreen, player.Slot, 2, zone);
+        // Duration = total alive players (one full rotation back to this player)
+        SmokeScreenData data = new SmokeScreenData
+        {
+            Zone = zone,
+            TotalPlayers = totalPlayersAlive,
+            TurnsRemaining = totalPlayersAlive,
+        };
+
+        player.Powerups.AddActiveEffect(PowerupType.SmokeScreen, player.Slot, totalPlayersAlive, data);
 
         // Spawn visual smoke cloud
         PowerupFX.SpawnSmokeScreen(GetTree().Root, center, zone);
 
+        // Hide all voxel chunks within the zone
+        HideZoneChunks(zone, true);
+
         PowerupActivated?.Invoke(PowerupType.SmokeScreen, player.Slot, center);
-        GD.Print($"[Powerup] {player.Slot}: Smoke Screen deployed over build zone.");
+        GD.Print($"[Powerup] {player.Slot}: Smoke Screen deployed — fortress invisible for {totalPlayersAlive} turns.");
         return true;
+    }
+
+    /// <summary>
+    /// Checks if a player's fortress is currently cloaked by smoke screen.
+    /// Used by bot AI to determine if it should fire randomly.
+    /// </summary>
+    public bool IsZoneSmoked(PlayerSlot owner, IReadOnlyDictionary<PlayerSlot, PlayerData> allPlayers)
+    {
+        if (!allPlayers.TryGetValue(owner, out PlayerData? player))
+        {
+            return false;
+        }
+
+        return player.Powerups.HasActiveEffect(PowerupType.SmokeScreen);
+    }
+
+    /// <summary>
+    /// Hides or shows all voxel chunks that overlap the given build zone.
+    /// When hidden, the fortress becomes invisible but debris from hits is still
+    /// spawned normally (debris is created as independent RigidBody3D nodes).
+    /// </summary>
+    private void HideZoneChunks(BuildZone zone, bool hide)
+    {
+        if (_voxelWorld == null)
+        {
+            return;
+        }
+
+        Vector3I minChunk = zone.OriginMicrovoxels / GameConfig.ChunkSize;
+        Vector3I maxChunk = zone.MaxMicrovoxelsInclusive / GameConfig.ChunkSize;
+
+        for (int z = minChunk.Z; z <= maxChunk.Z; z++)
+        {
+            for (int y = minChunk.Y; y <= maxChunk.Y; y++)
+            {
+                for (int x = minChunk.X; x <= maxChunk.X; x++)
+                {
+                    VoxelChunk? chunk = _voxelWorld.GetChunkAt(new Vector3I(x, y, z));
+                    if (chunk != null)
+                    {
+                        chunk.Visible = !hide;
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -75,12 +149,12 @@ public partial class PowerupExecutor : Node
         {
             foreach (ActivePowerup effect in player.Powerups.GetActiveEffects(PowerupType.SmokeScreen))
             {
-                if (effect.TargetData is not BuildZone zone)
+                if (effect.TargetData is not SmokeScreenData smokeData)
                 {
                     continue;
                 }
 
-                // Check if projectile is within the smoke zone (expanded slightly)
+                BuildZone zone = smokeData.Zone;
                 Vector3I projMicro = MathHelpers.WorldToMicrovoxel(projectilePosition);
                 Vector3I expandedMin = zone.OriginMicrovoxels - new Vector3I(2, 2, 2);
                 Vector3I expandedMax = zone.MaxMicrovoxelsInclusive + new Vector3I(2, 2, 2);
@@ -89,7 +163,6 @@ public partial class PowerupExecutor : Node
                     projMicro.Y >= expandedMin.Y && projMicro.Y <= expandedMax.Y &&
                     projMicro.Z >= expandedMin.Z && projMicro.Z <= expandedMax.Z)
                 {
-                    // Deflect by +/- 15 degrees randomly
                     RandomNumberGenerator rng = new();
                     rng.Randomize();
                     float deflectYaw = rng.RandfRange(-Mathf.DegToRad(15f), Mathf.DegToRad(15f));
@@ -111,195 +184,111 @@ public partial class PowerupExecutor : Node
     }
 
     // ─────────────────────────────────────────────────
-    //  REPAIR KIT
+    //  MEDKIT (heals commander to full HP)
     // ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Instantly repairs up to 20 damaged voxels in the player's build zone,
-    /// targeting the most damaged blocks first.
+    /// Instantly heals the player's Commander to full HP.
     /// </summary>
-    public bool ActivateRepairKit(PlayerData player)
+    public bool ActivateMedkit(PlayerData player)
     {
-        if (!player.Powerups.TryConsume(PowerupType.RepairKit))
+        if (!player.Powerups.TryConsume(PowerupType.Medkit))
         {
             return false;
         }
 
-        if (_voxelWorld == null)
+        // Find the commander node
+        Commander.Commander? commander = FindCommanderForPlayer(player.Slot);
+        if (commander == null)
         {
+            // Refund if no commander found
+            player.Powerups.RefundConsumed(PowerupType.Medkit);
+            GD.Print($"[Powerup] {player.Slot}: No commander found. Medkit refunded.");
             return false;
         }
 
-        BuildZone zone = player.AssignedBuildZone;
-        Vector3I min = zone.OriginMicrovoxels;
-        Vector3I max = zone.MaxMicrovoxelsInclusive;
-
-        // Collect all damaged voxels in the zone
-        List<(Vector3I Position, VoxelValue Voxel, float DamagePercent)> damaged = new();
-
-        for (int z = min.Z; z <= max.Z; z++)
+        Commander.CommanderHealth? health = commander.GetNodeOrNull<Commander.CommanderHealth>("CommanderHealth");
+        if (health == null || health.IsDead)
         {
-            for (int y = min.Y; y <= max.Y; y++)
-            {
-                for (int x = min.X; x <= max.X; x++)
-                {
-                    Vector3I pos = new(x, y, z);
-                    VoxelValue voxel = _voxelWorld.GetVoxel(pos);
-                    if (voxel.IsAir || voxel.Material == VoxelMaterialType.Foundation)
-                    {
-                        continue;
-                    }
-
-                    int maxHp = VoxelMaterials.GetDefinition(voxel.Material).MaxHitPoints;
-                    if (voxel.HitPoints < maxHp)
-                    {
-                        float damagePercent = 1f - (voxel.HitPoints / (float)maxHp);
-                        damaged.Add((pos, voxel, damagePercent));
-                    }
-                }
-            }
-        }
-
-        // Sort by most damaged first
-        damaged.Sort((a, b) => b.DamagePercent.CompareTo(a.DamagePercent));
-
-        int repaired = 0;
-        const int maxRepairs = 20;
-
-        Vector3 fxCenter = Vector3.Zero;
-
-        for (int i = 0; i < damaged.Count && repaired < maxRepairs; i++)
-        {
-            var (pos, voxel, _) = damaged[i];
-            int maxHp = VoxelMaterials.GetDefinition(voxel.Material).MaxHitPoints;
-            _voxelWorld.SetVoxel(pos, voxel.WithHitPoints(maxHp).WithDamaged(false), player.Slot);
-            fxCenter += MathHelpers.MicrovoxelToWorld(pos);
-            repaired++;
-        }
-
-        if (repaired > 0)
-        {
-            fxCenter /= repaired;
-            PowerupFX.SpawnRepairEffect(GetTree().Root, fxCenter, repaired);
-        }
-        else
-        {
-            // Refund if nothing to repair -- give the powerup back
-            player.Powerups.TryBuy(PowerupType.RepairKit, player);
-            GD.Print($"[Powerup] {player.Slot}: No damaged voxels found. Repair Kit refunded.");
+            player.Powerups.RefundConsumed(PowerupType.Medkit);
+            GD.Print($"[Powerup] {player.Slot}: Commander dead or no health component. Medkit refunded.");
             return false;
         }
 
-        PowerupActivated?.Invoke(PowerupType.RepairKit, player.Slot, fxCenter);
-        GD.Print($"[Powerup] {player.Slot}: Repair Kit healed {repaired} voxels.");
+        int healed = health.MaxHealth - health.CurrentHealth;
+        if (healed <= 0)
+        {
+            player.Powerups.RefundConsumed(PowerupType.Medkit);
+            GD.Print($"[Powerup] {player.Slot}: Commander already at full health. Medkit refunded.");
+            return false;
+        }
+
+        health.ResetHealth();
+
+        Vector3 fxPos = commander.GlobalPosition + Vector3.Up * 1.5f;
+        PowerupFX.SpawnMedkitEffect(GetTree().Root, fxPos);
+
+        PowerupActivated?.Invoke(PowerupType.Medkit, player.Slot, fxPos);
+        GD.Print($"[Powerup] {player.Slot}: Medkit healed Commander for {healed} HP (now {health.CurrentHealth}/{health.MaxHealth}).");
         return true;
     }
 
-    // ─────────────────────────────────────────────────
-    //  SPY DRONE
-    // ─────────────────────────────────────────────────
-
-    /// <summary>
-    /// Reveals the approximate location of the nearest enemy commander for 1 turn.
-    /// Returns the approximate world position, or null if no enemy found.
-    /// </summary>
-    public Vector3? ActivateSpyDrone(PlayerData player, IReadOnlyDictionary<PlayerSlot, PlayerData> allPlayers)
+    private Commander.Commander? FindCommanderForPlayer(PlayerSlot slot)
     {
-        if (!player.Powerups.TryConsume(PowerupType.SpyDrone))
+        foreach (Node node in GetTree().GetNodesInGroup("Commanders"))
         {
-            return null;
-        }
-
-        // Find first alive enemy with a known commander position
-        foreach (PlayerData enemy in allPlayers.Values)
-        {
-            if (enemy.Slot == player.Slot || !enemy.IsAlive)
+            if (node is Commander.Commander cmd && cmd.OwnerSlot == slot)
             {
-                continue;
-            }
-
-            if (enemy.CommanderMicrovoxelPosition is Vector3I cmdPos)
-            {
-                // Add random offset of +/- 3 build units (6 microvoxels)
-                RandomNumberGenerator rng = new();
-                rng.Randomize();
-                int offsetX = rng.RandiRange(-6, 6);
-                int offsetZ = rng.RandiRange(-6, 6);
-                Vector3I approxPos = cmdPos + new Vector3I(offsetX, 0, offsetZ);
-                Vector3 worldPos = MathHelpers.MicrovoxelToWorld(approxPos);
-
-                player.Powerups.AddActiveEffect(PowerupType.SpyDrone, player.Slot, 1, worldPos);
-                PowerupFX.SpawnDroneHighlight(GetTree().Root, worldPos);
-                PowerupActivated?.Invoke(PowerupType.SpyDrone, player.Slot, worldPos);
-                GD.Print($"[Powerup] {player.Slot}: Spy Drone reveals enemy at ~{worldPos}.");
-                return worldPos;
+                return cmd;
             }
         }
-
-        // No valid enemy found -- refund
-        player.Powerups.TryBuy(PowerupType.SpyDrone, player);
-        GD.Print($"[Powerup] {player.Slot}: No enemy commander found. Spy Drone refunded.");
         return null;
     }
 
     // ─────────────────────────────────────────────────
-    //  SHIELD GENERATOR
+    //  SHIELD GENERATOR (player-wide 50% damage for 1 rotation)
     // ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Data for an active shield: center position and radius in build units.
+    /// Activates a shield that halves all damage to the player's fortress
+    /// and commander for one full rotation of turns.
     /// </summary>
-    public readonly record struct ShieldData(Vector3I CenterBuildUnit, int RadiusBuildUnits);
-
-    /// <summary>
-    /// Creates a shield bubble over a 5x5x5 build unit area centered at the specified
-    /// build unit position. Lasts 2 turns. Blocks inside take 50% less damage.
-    /// </summary>
-    public bool ActivateShieldGenerator(PlayerData player, Vector3I centerBuildUnit)
+    public bool ActivateShieldGenerator(PlayerData player, int totalPlayersAlive)
     {
         if (!player.Powerups.TryConsume(PowerupType.ShieldGenerator))
         {
             return false;
         }
 
-        ShieldData data = new(centerBuildUnit, 2); // radius 2 = 5x5x5 area
-        player.Powerups.AddActiveEffect(PowerupType.ShieldGenerator, player.Slot, 2, data);
+        // Duration = number of alive players (full rotation)
+        player.Powerups.AddActiveEffect(PowerupType.ShieldGenerator, player.Slot, totalPlayersAlive, null);
 
+        BuildZone zone = player.AssignedBuildZone;
         Vector3 worldCenter = MathHelpers.MicrovoxelToWorld(
-            MathHelpers.BuildToMicrovoxel(centerBuildUnit));
-        PowerupFX.SpawnShieldBubble(GetTree().Root, worldCenter, 2.5f);
+            zone.OriginMicrovoxels + zone.SizeMicrovoxels / 2);
+        float radiusMeters = (zone.SizeBuildUnits.X * GameConfig.BuildUnitMeters) * 0.5f;
+        PowerupFX.SpawnShieldBubble(GetTree().Root, worldCenter, radiusMeters);
 
         PowerupActivated?.Invoke(PowerupType.ShieldGenerator, player.Slot, worldCenter);
-        GD.Print($"[Powerup] {player.Slot}: Shield Generator at {centerBuildUnit} for 2 turns.");
+        GD.Print($"[Powerup] {player.Slot}: Shield Generator active — 50% damage reduction for {totalPlayersAlive} turns.");
         return true;
     }
 
     /// <summary>
-    /// Checks if a microvoxel position is within any active shield, and returns
-    /// the damage multiplier (0.5 if shielded, 1.0 if not).
+    /// Returns the shield damage multiplier for a given player.
+    /// 0.5 if the player has an active shield, 1.0 otherwise.
+    /// This is a player-wide effect, not position-based.
     /// </summary>
-    public float GetShieldDamageMultiplier(Vector3I microvoxelPosition, IReadOnlyDictionary<PlayerSlot, PlayerData> allPlayers)
+    public float GetShieldDamageMultiplier(PlayerSlot targetPlayer, IReadOnlyDictionary<PlayerSlot, PlayerData> allPlayers)
     {
-        Vector3I buildUnit = MathHelpers.MicrovoxelToBuild(microvoxelPosition);
-
-        foreach (PlayerData player in allPlayers.Values)
+        if (!allPlayers.TryGetValue(targetPlayer, out PlayerData? player))
         {
-            foreach (ActivePowerup effect in player.Powerups.GetActiveEffects(PowerupType.ShieldGenerator))
-            {
-                if (effect.TargetData is not ShieldData shield)
-                {
-                    continue;
-                }
+            return 1.0f;
+        }
 
-                int dx = Math.Abs(buildUnit.X - shield.CenterBuildUnit.X);
-                int dy = Math.Abs(buildUnit.Y - shield.CenterBuildUnit.Y);
-                int dz = Math.Abs(buildUnit.Z - shield.CenterBuildUnit.Z);
-
-                if (dx <= shield.RadiusBuildUnits && dy <= shield.RadiusBuildUnits && dz <= shield.RadiusBuildUnits)
-                {
-                    return 0.5f; // 50% damage reduction
-                }
-            }
+        if (player.Powerups.HasActiveEffect(PowerupType.ShieldGenerator))
+        {
+            return 0.5f;
         }
 
         return 1.0f;
@@ -310,9 +299,8 @@ public partial class PowerupExecutor : Node
     // ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Calls in 1-3 fighter jets that fly across the arena and drop 3 bombardment
-    /// shells on an 8x8 build unit area of an enemy's fortress. The planes fly in
-    /// from one edge, cross the map, and exit the other side.
+    /// Calls in fighter jets that drop 3 bombardment shells on an 8x8 build unit
+    /// area of an enemy's fortress.
     /// </summary>
     public bool ActivateAirstrike(PlayerData player, Vector3I targetBuildUnit, PlayerSlot targetEnemy)
     {
@@ -329,10 +317,8 @@ public partial class PowerupExecutor : Node
         Vector3 targetWorld = MathHelpers.MicrovoxelToWorld(
             MathHelpers.BuildToMicrovoxel(targetBuildUnit));
 
-        // Show targeting circles before impact
         PowerupFX.SpawnAirstrikeTargeting(GetTree().Root, targetWorld);
 
-        // Pre-calculate the 3 bomb impact positions so we can fire them from the flyover callback
         RandomNumberGenerator rng = new();
         rng.Randomize();
 
@@ -341,24 +327,18 @@ public partial class PowerupExecutor : Node
         Vector3[] impactPositions = new Vector3[3];
         for (int shell = 0; shell < 3; shell++)
         {
-            // Random position within 8x8 build unit area (16x16 microvoxels)
             int offsetX = rng.RandiRange(-8, 8);
             int offsetZ = rng.RandiRange(-8, 8);
             Vector3I impactMicro = MathHelpers.BuildToMicrovoxel(targetBuildUnit) + new Vector3I(offsetX, 0, offsetZ);
-
-            // Find the highest non-air voxel at this XZ column
             int surfaceY = FindSurfaceY(impactMicro.X, impactMicro.Z);
             impactMicro = impactMicro with { Y = surfaceY };
-
             impactPositions[shell] = MathHelpers.MicrovoxelToWorld(impactMicro);
         }
 
-        // Capture references for the lambda
         VoxelWorld capturedWorld = _voxelWorld;
         PlayerSlot capturedInstigator = player.Slot;
         SceneTree capturedTree = GetTree();
 
-        // Spawn fighter jet flyover -- bombs drop when the planes reach the target
         AirstrikeFlyover.Spawn(
             GetTree().Root,
             targetWorld,
@@ -366,7 +346,6 @@ public partial class PowerupExecutor : Node
             planeCount,
             onBombDrop: () =>
             {
-                // Stagger the 3 bomb explosions over a short window for dramatic effect
                 for (int shell = 0; shell < 3; shell++)
                 {
                     float delay = shell * 0.3f;
@@ -375,7 +354,6 @@ public partial class PowerupExecutor : Node
 
                     capturedTree.CreateTimer(delay).Timeout += () =>
                     {
-                        // Cannon-equivalent damage: 40 base, 4 radius
                         Explosion.Trigger(capturedTree.Root, capturedWorld, capturedImpact, 40, 4f, capturedInstigator);
                         GD.Print($"[Powerup] Airstrike bomb {capturedShell + 1}/3 hit at {capturedImpact}.");
                     };
@@ -394,14 +372,13 @@ public partial class PowerupExecutor : Node
             return GameConfig.PrototypeGroundThickness;
         }
 
-        // Scan from top down to find the highest solid voxel
         int maxY = GameConfig.PrototypeGroundThickness + GameConfig.FourPlayerBuildZoneHeight * GameConfig.MicrovoxelsPerBuildUnit;
         for (int y = maxY; y >= 0; y--)
         {
             VoxelValue voxel = _voxelWorld.GetVoxel(new Vector3I(microX, y, microZ));
             if (voxel.IsSolid)
             {
-                return y + 1; // Impact on top of the solid voxel
+                return y + 1;
             }
         }
 
@@ -409,36 +386,128 @@ public partial class PowerupExecutor : Node
     }
 
     // ─────────────────────────────────────────────────
-    //  EMP BLAST
+    //  EMP BLAST (probabilistic, 1/3 per weapon, min 1)
     // ─────────────────────────────────────────────────
 
     /// <summary>
     /// Data for an active EMP: which weapon is disabled.
     /// </summary>
-    public readonly record struct EmpData(string WeaponId, PlayerSlot TargetPlayer);
+    public readonly record struct EmpData(ulong WeaponInstanceId, string WeaponId, PlayerSlot TargetPlayer);
 
     /// <summary>
-    /// Disables an enemy weapon for 2 turns. The weapon cannot fire while EMP'd.
+    /// Sends an EMP blast that has a 1/3 chance of disabling each enemy weapon,
+    /// with a guaranteed minimum of 1 weapon disabled. Disabled weapons cannot fire
+    /// for 2 turns.
     /// </summary>
-    public bool ActivateEmp(PlayerData player, WeaponBase targetWeapon, PlayerSlot targetPlayer)
+    public bool ActivateEmp(PlayerData player, IReadOnlyDictionary<PlayerSlot, PlayerData> allPlayers,
+        IReadOnlyDictionary<PlayerSlot, List<WeaponBase>> allWeapons)
     {
         if (!player.Powerups.TryConsume(PowerupType.EmpBlast))
         {
             return false;
         }
 
-        EmpData data = new(targetWeapon.WeaponId, targetPlayer);
-        player.Powerups.AddActiveEffect(PowerupType.EmpBlast, player.Slot, 2, data);
+        // Collect all valid enemy weapons
+        List<(WeaponBase Weapon, PlayerSlot Owner)> candidates = new();
+        foreach (var kvp in allWeapons)
+        {
+            if (kvp.Key == player.Slot)
+            {
+                continue;
+            }
 
-        PowerupFX.SpawnEmpEffect(GetTree().Root, targetWeapon.GlobalPosition);
-        PowerupActivated?.Invoke(PowerupType.EmpBlast, player.Slot, targetWeapon.GlobalPosition);
-        GD.Print($"[Powerup] {player.Slot}: EMP disabled {targetWeapon.WeaponId} on {targetPlayer} for 2 turns.");
-        return true;
+            if (!allPlayers.TryGetValue(kvp.Key, out PlayerData? enemy) || !enemy.IsAlive)
+            {
+                continue;
+            }
+
+            foreach (WeaponBase w in kvp.Value)
+            {
+                if (GodotObject.IsInstanceValid(w) && !w.IsDestroyed)
+                {
+                    candidates.Add((w, kvp.Key));
+                }
+            }
+        }
+
+        if (candidates.Count == 0)
+        {
+            player.Powerups.RefundConsumed(PowerupType.EmpBlast);
+            GD.Print($"[Powerup] {player.Slot}: No enemy weapons to EMP. Refunded.");
+            return false;
+        }
+
+        // Roll 1/3 chance per weapon
+        RandomNumberGenerator rng = new();
+        rng.Randomize();
+
+        List<(WeaponBase Weapon, PlayerSlot Owner)> disabled = new();
+        foreach (var (weapon, owner) in candidates)
+        {
+            if (rng.Randf() < 1f / 3f)
+            {
+                disabled.Add((weapon, owner));
+            }
+        }
+
+        // Guarantee minimum 1 weapon disabled
+        if (disabled.Count == 0)
+        {
+            int pickIndex = rng.RandiRange(0, candidates.Count - 1);
+            disabled.Add(candidates[pickIndex]);
+        }
+
+        // Apply EMP to each disabled weapon
+        bool success = false;
+        foreach (var (weapon, owner) in disabled)
+        {
+            EmpData data = new(weapon.GetInstanceId(), weapon.WeaponId, owner);
+            player.Powerups.AddActiveEffect(PowerupType.EmpBlast, player.Slot, 2, data);
+            PowerupFX.SpawnEmpEffect(GetTree().Root, weapon.GlobalPosition);
+            GD.Print($"[Powerup] {player.Slot}: EMP disabled {weapon.WeaponId} on {owner} for 2 turns.");
+            success = true;
+        }
+
+        if (success)
+        {
+            Vector3 fxCenter = disabled[0].Weapon.GlobalPosition;
+            PowerupActivated?.Invoke(PowerupType.EmpBlast, player.Slot, fxCenter);
+            GD.Print($"[Powerup] {player.Slot}: EMP disabled {disabled.Count}/{candidates.Count} enemy weapons.");
+        }
+
+        return success;
     }
 
     /// <summary>
-    /// Checks if a specific weapon is currently disabled by an EMP.
-    /// Searches all players' active effects for an EMP targeting this weapon.
+    /// Checks if a specific weapon instance is currently disabled by an EMP.
+    /// Uses the weapon's Godot instance ID for exact match (not WeaponId string,
+    /// since multiple weapons can share the same type ID like "cannon").
+    /// </summary>
+    public bool IsWeaponEmpDisabled(WeaponBase weapon, IReadOnlyDictionary<PlayerSlot, PlayerData> allPlayers)
+    {
+        if (!GodotObject.IsInstanceValid(weapon))
+        {
+            return false;
+        }
+
+        ulong instanceId = weapon.GetInstanceId();
+        foreach (PlayerData player in allPlayers.Values)
+        {
+            foreach (ActivePowerup effect in player.Powerups.GetActiveEffects(PowerupType.EmpBlast))
+            {
+                if (effect.TargetData is EmpData emp && emp.WeaponInstanceId == instanceId)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Overload for backward compatibility — checks by weapon ID string.
+    /// Prefer the WeaponBase overload for exact instance matching.
     /// </summary>
     public bool IsWeaponEmpDisabled(string weaponId, PlayerSlot weaponOwner, IReadOnlyDictionary<PlayerSlot, PlayerData> allPlayers)
     {
@@ -473,8 +542,6 @@ public partial class PowerupExecutor : Node
     {
         List<ActivePowerup> allExpired = new();
 
-        // Only tick effects belonging to the current player's turn,
-        // so that a "2 turn" duration means 2 of THIS player's turns.
         if (!allPlayers.TryGetValue(currentPlayer, out PlayerData? currentPlayerData))
         {
             return allExpired;
@@ -497,12 +564,17 @@ public partial class PowerupExecutor : Node
     /// </summary>
     private void CleanupExpiredEffect(ActivePowerup effect)
     {
+        // Re-show zone chunks if smoke screen expired
+        if (effect.Type == PowerupType.SmokeScreen && effect.TargetData is SmokeScreenData smokeData)
+        {
+            HideZoneChunks(smokeData.Zone, false);
+        }
+
         string fxName = effect.Type switch
         {
             PowerupType.SmokeScreen => "SmokeScreenFX",
             PowerupType.ShieldGenerator => "ShieldBubbleFX",
             PowerupType.EmpBlast => "EmpFX",
-            PowerupType.SpyDrone => "DroneHighlightFX",
             _ => "",
         };
 
@@ -511,14 +583,13 @@ public partial class PowerupExecutor : Node
             return;
         }
 
-        // Search the scene tree root for FX nodes with matching name
         Node root = GetTree().Root;
         foreach (Node child in root.GetChildren())
         {
             if (child.Name == fxName && GodotObject.IsInstanceValid(child))
             {
                 child.QueueFree();
-                break; // Remove one instance per expired effect
+                break;
             }
         }
     }

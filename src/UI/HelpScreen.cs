@@ -279,7 +279,7 @@ public partial class HelpScreen : Control
 
         AddSubHeader(parent, "1. BUILD PHASE");
         AddParagraph(parent,
-            "You have 5 minutes and a budget of $10,000 to construct your fortress. " +
+            "You have 5 minutes and a budget of $15,000 to construct your fortress. " +
             "Place blocks of various materials, mount weapons on your structure, " +
             "and buy troops. Your commander is automatically placed inside your " +
             "build zone -- surround them with strong materials to protect them!");
@@ -424,8 +424,8 @@ public partial class HelpScreen : Control
             new[] { "WEAPON", "COST", "DMG", "BLAST", "SPECIAL" },
             new[] { "Cannon", "$500", "30", "4", "Ballistic arc. Bread-and-butter weapon. Fast, reliable." },
             new[] { "Mortar", "$600", "30", "6", "High arc -- lobs shells OVER walls. Larger blast radius." },
-            new[] { "Drill", "$550", "50", "5", "Bunker buster! Bores through 10 blocks, then detonates inside." },
-            new[] { "Railgun", "$800", "50", "-", "Instant hitscan beam. Pierces 5 blocks. Can hit commanders through walls!" },
+            new[] { "Drill", "$550", "80", "5", "Bunker buster! Bores through 5 blocks, then detonates inside." },
+            new[] { "Railgun", "$800", "50", "-", "Hitscan beam. Pierces 5 blocks. 3-shot kill on commanders." },
             new[] { "Missile", "$850", "50", "8", "Guided homing missile. Huge blast radius. Slow but devastating." },
         };
         AddDataTable(parent, weaponData);
@@ -447,15 +447,16 @@ public partial class HelpScreen : Control
         AddSubHeader(parent, "Drill (Bunker Buster)", 11, AccentGreen);
         AddParagraph(parent,
             "The anti-fortress specialist. Fires a drill bit that bores a 3x3 tunnel " +
-            "through up to 10 solid blocks, then detonates with a blast radius of 5 inside " +
-            "the enemy structure. Foundation blocks stop it. No gravity -- flies straight. Speed: 14.");
+            "through up to 5 solid blocks, then detonates with a blast radius of 5 inside " +
+            "the enemy structure. Higher damage (80) cracks tough materials. Foundation blocks stop it. " +
+            "No gravity -- flies straight. Speed: 14.");
 
         AddSubHeader(parent, "Railgun", 11, AccentCyan);
         AddParagraph(parent,
             "Fires an instant hitscan beam that penetrates up to 5 blocks. The first block " +
-            "hit is always destroyed. Deeper blocks take reduced damage. Can damage commanders " +
-            "and weapons through walls! Foundation blocks are railgun-proof. No blast radius. " +
-            "Range: 96 microvoxels. Damage: 50 (25 to commanders/weapons).");
+            "hit is always destroyed. Deeper blocks take reduced damage. Deals 6 damage to commanders " +
+            "(3-shot kill). Foundation blocks are railgun-proof. No blast radius. " +
+            "Range: 96 microvoxels. Base damage: 50 (voxels), 25 (weapons), 6 (commanders).");
 
         AddSubHeader(parent, "Missile Launcher", 11, AccentRed);
         AddParagraph(parent,
@@ -507,14 +508,16 @@ public partial class HelpScreen : Control
         string[][] powerupData = new string[][]
         {
             new[] { "POWERUP", "COST", "DUR.", "EFFECT" },
-            new[] { "Smoke Screen", "$300", "2 turns", "Deflects projectiles passing through +/-15 degrees." },
-            new[] { "Repair Kit", "$400", "Instant", "Repairs up to 20 most-damaged voxels to full HP." },
-            new[] { "Spy Drone", "$500", "1 turn", "Reveals enemy commander location (within 3 build units)." },
-            new[] { "Shield Gen.", "$600", "2 turns", "5x5x5 force field. Shielded blocks take 50% less damage." },
-            new[] { "EMP Blast", "$700", "2 turns", "Disables one enemy weapon for 2 turns." },
+            new[] { "Smoke Screen", "$300", "1 rotation", "Makes your fortress invisible. Enemies fire blind. Debris from hits still visible." },
+            new[] { "Medkit", "$400", "Instant", "Heals your commander to full HP." },
+            new[] { "Shield Gen.", "$600", "1 rotation", "50% damage reduction to your entire fortress and commander." },
+            new[] { "EMP Blast", "$700", "2 turns", "1/3 chance per enemy weapon disabled (minimum 1). Disabled for 2 turns." },
             new[] { "Airstrike", "$800", "Instant", "3 bombardment shells on an 8x8 area of enemy fortress." },
         };
         AddDataTable(parent, powerupData);
+
+        AddParagraph(parent,
+            "Each powerup type can be used a maximum of 5 times per match.");
     }
 
     private void BuildCommander(VBoxContainer parent)
@@ -560,21 +563,21 @@ public partial class HelpScreen : Control
         AddSubHeader(parent, "WEAPONS");
         AddBullet(parent, "Place weapons HIGH on your structure for better firing angles");
         AddBullet(parent, "Mix weapon types: Cannons for precision, Mortars for area damage");
-        AddBullet(parent, "Drills are devastating against compact fortresses -- they bore deep inside");
+        AddBullet(parent, "Drills crack tough materials -- shorter bore but higher damage per block");
         AddBullet(parent, "Railguns can snipe commanders through walls -- aim carefully!");
         AddBullet(parent, "Missiles have the biggest blast (8 radius) -- use them to open up enemy bases");
         AddBullet(parent, "Protect weapon foundations -- if the floor is destroyed, the weapon falls!");
 
         AddSubHeader(parent, "COMBAT");
         AddBullet(parent, "Target weak spots: look for thin walls, exposed areas, or damaged sections");
-        AddBullet(parent, "Use Spy Drone to locate the enemy commander before firing");
-        AddBullet(parent, "Smoke Screen deflects incoming shots -- activate before enemy turns");
-        AddBullet(parent, "Shield Generator halves damage on a 5x5x5 area -- protect key sections");
-        AddBullet(parent, "EMP Blast can disable the enemy's best weapon for 2 crucial turns");
+        AddBullet(parent, "Smoke Screen makes your fortress invisible -- enemies fire blind");
+        AddBullet(parent, "Shield Generator halves all damage to your entire fortress for a full rotation");
+        AddBullet(parent, "EMP Blast has 1/3 chance per enemy weapon (min 1 disabled) for 2 turns");
+        AddBullet(parent, "Medkit heals your commander to full HP -- save it for critical moments");
         AddBullet(parent, "Airstrike is expensive but deals massive area damage");
 
         AddSubHeader(parent, "ECONOMY");
-        AddBullet(parent, "Starting budget: $10,000 (bots get $8k/$18k/$35k for Easy/Medium/Hard)");
+        AddBullet(parent, "Starting budget: $15,000 (bots get $8k/$18k/$35k for Easy/Medium/Hard)");
         AddBullet(parent, "You earn currency by destroying enemy-built voxels during combat");
         AddBullet(parent, "Earned currency carries over to future matches via your wallet");
         AddBullet(parent, "Stronger materials earn more when destroyed (Obsidian: $18, Steel: $20)");

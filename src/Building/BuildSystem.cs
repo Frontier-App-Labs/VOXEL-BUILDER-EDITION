@@ -329,10 +329,16 @@ public partial class BuildSystem : Node
 
     private static void ApplyBuildAction(VoxelWorld world, BuildAction action, bool useAfter)
     {
+        // Use bulk changes to apply all voxel modifications in one pass.
+        // This queues a single remesh per affected chunk instead of one per voxel,
+        // preventing floating texture faces caused by async remeshes snapshotting
+        // partially-modified chunk data.
+        var changes = new List<(Vector3I Position, VoxelValue NewVoxel)>(action.Positions.Count);
         for (int index = 0; index < action.Positions.Count; index++)
         {
-            world.SetVoxel(action.Positions[index], useAfter ? action.After[index] : action.Before[index], action.Player);
+            changes.Add((action.Positions[index], useAfter ? action.After[index] : action.Before[index]));
         }
+        world.ApplyBulkChanges(changes, action.Player);
     }
 
     private static bool ApplyBudgetDelta(PlayerData player, int budgetDelta)

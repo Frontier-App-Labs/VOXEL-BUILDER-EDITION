@@ -147,7 +147,11 @@ public partial class Railgun : WeaponBase
             float distance = commander.GlobalPosition.DistanceTo(closestPoint) / GameConfig.MicrovoxelMeters;
             if (distance < 3.5f) // within 3.5 microvoxels of the beam (~1.75m)
             {
-                int commanderDamage = Mathf.Max(1, BaseDamage / 2);
+                // Railgun commander damage: tuned for a 3-shot kill (Commander HP=15).
+                // 2 direct hits = 12 damage (3 HP left, super low), 3rd hit finishes.
+                // With exposed multiplier (1.5x): 6*1.5=9, so 2 exposed hits = 18 → 2-shot
+                // kill if commander has zero cover, which is a fair punishment.
+                int commanderDamage = 6;
                 // Exposed commanders take extra damage — they have no cover
                 if (commander.IsExposed)
                 {
@@ -159,7 +163,7 @@ public partial class Railgun : WeaponBase
 
         // Damage enemy weapons along the beam path (same point-to-line check).
         // Railgun beams that pass within 1 build unit of a weapon score a direct
-        // hit, dealing half base damage (same ratio as commander hits).
+        // hit, dealing half base damage.
         foreach (Node node in GetTree().GetNodesInGroup("Weapons"))
         {
             if (node is not WeaponBase weapon || weapon.IsDestroyed)

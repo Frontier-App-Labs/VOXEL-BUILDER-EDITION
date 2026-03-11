@@ -3,8 +3,7 @@ namespace VoxelSiege.Core;
 public enum PowerupType
 {
     SmokeScreen,
-    RepairKit,
-    SpyDrone,
+    Medkit,
     ShieldGenerator,
     AirstrikeBeacon,
     EmpBlast,

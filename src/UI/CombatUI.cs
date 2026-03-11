@@ -1413,7 +1413,9 @@ public partial class CombatUI : Control
         WeaponSelected?.Invoke(flatIndex);
 
         GameManager? gm = GetTree().Root.GetNodeOrNull<GameManager>("Main");
-        gm?.OnWeaponSelectedFromUI(flatIndex);
+        // cycleOnly: true — just update the highlight and selection without
+        // transitioning to targeting mode. The green glow shows in base view.
+        gm?.OnWeaponSelectedFromUI(flatIndex, cycleOnly: true);
 
         // Rebuild to update the "1/3" label
         RebuildWeaponButtons();

@@ -75,7 +75,7 @@ public class DoorRegistry
 
         if (!onMinX && !onMaxX && !onMinZ && !onMaxZ)
         {
-            failReason = "Door must be placed on the edge of the build zone.";
+            failReason = "Doors are troop entry/exit points — place them on an outer wall at the zone boundary.";
             return false;
         }
 

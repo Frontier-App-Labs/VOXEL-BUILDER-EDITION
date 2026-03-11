@@ -53,6 +53,14 @@ public partial class VoxelWorld : Node3D
     public VoxelTextureAtlas TextureAtlas { get; } = new VoxelTextureAtlas();
     public int ChunkCount => _chunks.Count;
 
+    /// <summary>
+    /// Returns the chunk at the given chunk coordinates, or null if not loaded.
+    /// </summary>
+    public VoxelChunk? GetChunkAt(Vector3I chunkCoords)
+    {
+        return _chunks.TryGetValue(chunkCoords, out VoxelChunk? chunk) ? chunk : null;
+    }
+
     public override void _Ready()
     {
         WireAtlasToShader();
@@ -156,11 +164,13 @@ public partial class VoxelWorld : Node3D
         QueueNeighborRemeshesOnEdge(local, chunkCoords);
         EventBus.Instance?.EmitVoxelChanged(new VoxelChangeEvent(worldPosition, before.Data, voxel.Data, instigator));
 
-        // When a solid voxel is destroyed (replaced with air), remove grass above it
-        // so blades don't float in the air after terrain destruction.
+        // When a solid voxel is destroyed (replaced with air), remove grass in the
+        // surrounding area. Grass blades have random offsets within 2x2 cells so we
+        // need to check a 3x3 neighborhood, not just the exact position.
         if (before.IsSolid && voxel.IsAir)
         {
-            TerrainDecorator.RemoveGrassAt(new[] { worldPosition, worldPosition + Vector3I.Up });
+            Vector3 worldPos = MathHelpers.MicrovoxelToWorld(worldPosition);
+            TerrainDecorator.RemoveGrassInRadius(worldPos, GameConfig.MicrovoxelMeters * 2f);
         }
     }
 
@@ -293,6 +303,16 @@ public partial class VoxelWorld : Node3D
             if (!affectedChunks.ContainsKey(neighborCoords))
             {
                 _deferredEdgeRemesh.Enqueue(neighborCoords);
+            }
+        }
+
+        // Remove grass for any solid→air transitions so blades don't float
+        for (int i = 0; i < changes.Count; i++)
+        {
+            if (changes[i].NewVoxel.IsAir)
+            {
+                Vector3 grassPos = MathHelpers.MicrovoxelToWorld(changes[i].Position);
+                TerrainDecorator.RemoveGrassInRadius(grassPos, GameConfig.MicrovoxelMeters * 2f);
             }
         }
     }

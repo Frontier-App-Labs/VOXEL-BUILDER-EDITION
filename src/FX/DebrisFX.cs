@@ -337,10 +337,10 @@ public partial class DebrisFX : Node3D
         return shape switch
         {
             DebrisShape.Shard => (0.8f, 8f, 1.2f, 0.2f),       // Light, spinny glass
-            DebrisShape.Splinter => (1.0f, 6f, 1.3f, 0.3f),     // Tumbling wood pieces
+            DebrisShape.Splinter => (1.8f, 8f, 1.3f, 0.3f),     // Tumbling wood/bark — flies further on direct hit
             DebrisShape.MetalChunk => (0.6f, 4f, 2.0f, 1.0f),   // Heavy, less air time
             DebrisShape.Granular => (1.2f, 10f, 1.8f, 0.1f),    // Scattered fast
-            DebrisShape.Leaf => (1.2f, 12f, 0.35f, 0.05f),      // Light, fluttery, slow fall, wide scatter
+            DebrisShape.Leaf => (2.5f, 14f, 0.35f, 0.15f),      // Light, fluttery, slow fall, blasts far on direct hit
             _ => (1.0f, 6f, 1.5f, 0.4f),                        // Default cubes
         };
     }

@@ -16,7 +16,7 @@ namespace VoxelSiege.FX;
 ///   - All draw-pass materials set VertexColorUseAsAlbedo = true so that
 ///     ParticleProcessMaterial.ColorRamp actually tints the particles.
 ///   - BillboardMode = Particles ensures smoke always faces the camera.
-///   - NoDepthTest = true prevents harsh clipping against geometry.
+///   - NoDepthTest = false so trails are properly occluded by solid geometry.
 ///   - AngularVelocity gives smoke puffs a tumbling look.
 /// </summary>
 public partial class TrailFX : Node3D
@@ -374,7 +374,7 @@ public partial class TrailFX : Node3D
     /// All materials are configured with:
     ///   - VertexColorUseAsAlbedo = true (required for ColorRamp tinting)
     ///   - BillboardMode = Particles (always face camera)
-    ///   - NoDepthTest = true (no harsh geometry clipping)
+    ///   - NoDepthTest = false (no harsh geometry clipping)
     ///   - Alpha transparency
     /// </summary>
     private static SphereMesh GetSmokeSphere(float radius)
@@ -416,7 +416,7 @@ public partial class TrailFX : Node3D
         mat.VertexColorUseAsAlbedo = true; // Required for ColorRamp to tint particles
         mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
         mat.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
-        mat.NoDepthTest = true;
+        mat.NoDepthTest = false;
         sphere.Material = mat;
         return sphere;
     }
@@ -433,7 +433,7 @@ public partial class TrailFX : Node3D
             boxMat.VertexColorUseAsAlbedo = true;
             boxMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
             boxMat.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
-            boxMat.NoDepthTest = true;
+            boxMat.NoDepthTest = false;
             _cachedSparkBox.Material = boxMat;
         }
         return _cachedSparkBox;
@@ -451,7 +451,7 @@ public partial class TrailFX : Node3D
             prismMat.VertexColorUseAsAlbedo = true;
             prismMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
             prismMat.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
-            prismMat.NoDepthTest = true;
+            prismMat.NoDepthTest = false;
             _cachedSparkPrism.Material = prismMat;
         }
         return _cachedSparkPrism;

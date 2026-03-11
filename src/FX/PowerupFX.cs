@@ -175,70 +175,62 @@ public static class PowerupFX
     }
 
     // ─────────────────────────────────────────────────
-    //  SPY DRONE
+    //  MEDKIT
     // ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Spawns a pulsing gold highlight circle at the approximate enemy commander position.
+    /// Spawns a green healing cross burst at the commander's position.
     /// </summary>
-    public static void SpawnDroneHighlight(Node parent, Vector3 position)
+    public static void SpawnMedkitEffect(Node parent, Vector3 center)
     {
         Node3D root = new Node3D();
-        root.Name = "DroneHighlightFX";
+        root.Name = "MedkitFX";
         parent.AddChild(root);
-        root.GlobalPosition = position;
+        root.GlobalPosition = center;
 
-        // Pulsing ring on the ground using a torus-like scaled cylinder
-        MeshInstance3D ring = new MeshInstance3D();
-        ring.Name = "PulseRing";
-        CylinderMesh ringMesh = new CylinderMesh();
-        ringMesh.TopRadius = 1.5f; // ~3 build units
-        ringMesh.BottomRadius = 1.5f;
-        ringMesh.Height = 0.05f;
-        ringMesh.RadialSegments = 16;
-        ring.Mesh = ringMesh;
+        // Green healing particles rising up (cross-shaped burst)
+        GpuParticles3D heal = new GpuParticles3D();
+        heal.Name = "HealParticles";
+        heal.Amount = 40;
+        heal.Lifetime = 1.5f;
+        heal.Explosiveness = 0.7f;
+        heal.OneShot = true;
 
-        StandardMaterial3D ringMat = new StandardMaterial3D();
-        ringMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-        ringMat.AlbedoColor = new Color(1f, 0.8f, 0.2f, 0.6f);
-        ringMat.EmissionEnabled = true;
-        ringMat.Emission = new Color(1f, 0.8f, 0.2f);
-        ringMat.EmissionEnergyMultiplier = 3f;
-        ringMat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
-        ringMat.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
-        ring.MaterialOverride = ringMat;
-        root.AddChild(ring);
+        ParticleProcessMaterial healMat = new ParticleProcessMaterial();
+        healMat.Direction = new Vector3(0, 1, 0);
+        healMat.Spread = 30f;
+        healMat.InitialVelocityMin = 1.5f;
+        healMat.InitialVelocityMax = 4f;
+        healMat.Gravity = new Vector3(0, -0.5f, 0);
+        healMat.ScaleMin = 0.1f;
+        healMat.ScaleMax = 0.3f;
+        healMat.EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Sphere;
+        healMat.EmissionSphereRadius = 1f;
+        healMat.Color = new Color(0.2f, 0.9f, 0.3f, 0.9f);
+        heal.ProcessMaterial = healMat;
 
-        // Add a second slightly larger ring for pulse effect
-        MeshInstance3D outerRing = new MeshInstance3D();
-        CylinderMesh outerMesh = new CylinderMesh();
-        outerMesh.TopRadius = 2.0f;
-        outerMesh.BottomRadius = 2.0f;
-        outerMesh.Height = 0.03f;
-        outerMesh.RadialSegments = 16;
-        outerRing.Mesh = outerMesh;
+        BoxMesh healBox = new BoxMesh();
+        healBox.Size = new Vector3(0.15f, 0.15f, 0.15f);
+        StandardMaterial3D healVisual = new StandardMaterial3D();
+        healVisual.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+        healVisual.AlbedoColor = new Color(0.2f, 1f, 0.3f, 0.8f);
+        healVisual.EmissionEnabled = true;
+        healVisual.Emission = new Color(0.2f, 1f, 0.3f);
+        healVisual.EmissionEnergyMultiplier = 2.5f;
+        healVisual.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
+        healBox.Material = healVisual;
+        heal.DrawPass1 = healBox;
+        root.AddChild(heal);
 
-        StandardMaterial3D outerMat = new StandardMaterial3D();
-        outerMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-        outerMat.AlbedoColor = new Color(1f, 0.8f, 0.2f, 0.3f);
-        outerMat.EmissionEnabled = true;
-        outerMat.Emission = new Color(1f, 0.8f, 0.2f);
-        outerMat.EmissionEnergyMultiplier = 1.5f;
-        outerMat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
-        outerMat.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
-        outerRing.MaterialOverride = outerMat;
-        root.AddChild(outerRing);
+        // Green flash light
+        OmniLight3D flash = new OmniLight3D();
+        flash.LightColor = new Color(0.2f, 1f, 0.3f);
+        flash.LightEnergy = 4f;
+        flash.OmniRange = 6f;
+        root.AddChild(flash);
 
-        // Vertical beacon light
-        OmniLight3D beacon = new OmniLight3D();
-        beacon.LightColor = new Color(1f, 0.8f, 0.2f);
-        beacon.LightEnergy = 4f;
-        beacon.OmniRange = 8f;
-        beacon.Position = new Vector3(0, 3f, 0);
-        root.AddChild(beacon);
-
-        // Cleanup after turn expires (~65 seconds, one turn)
-        parent.GetTree().CreateTimer(65f).Timeout += () =>
+        // Cleanup
+        parent.GetTree().CreateTimer(2.5f).Timeout += () =>
         {
             if (GodotObject.IsInstanceValid(root))
             {

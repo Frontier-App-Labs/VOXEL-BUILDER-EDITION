@@ -25,6 +25,10 @@ public sealed class PowerupInventory
 {
     private readonly List<PowerupType> _owned = new();
     private readonly List<ActivePowerup> _active = new();
+    private readonly Dictionary<PowerupType, int> _usedThisMatch = new();
+
+    /// <summary>Maximum number of times any single powerup type can be used per match.</summary>
+    public const int MaxUsesPerMatch = 5;
 
     /// <summary>Items purchased but not yet used.</summary>
     public IReadOnlyList<PowerupType> OwnedPowerups => _owned;
@@ -34,10 +38,17 @@ public sealed class PowerupInventory
 
     /// <summary>
     /// Attempts to buy a powerup, deducting from the player's budget.
-    /// Returns true if the purchase succeeds.
+    /// Returns true if the purchase succeeds. Fails if at max uses for this match.
     /// </summary>
     public bool TryBuy(PowerupType type, PlayerData player)
     {
+        // Check match usage cap
+        int totalUsed = _usedThisMatch.GetValueOrDefault(type, 0) + CountOf(type);
+        if (totalUsed >= MaxUsesPerMatch)
+        {
+            return false;
+        }
+
         PowerupDefinition def = PowerupDefinitions.Get(type);
         if (!player.TrySpend(def.Cost))
         {
@@ -78,7 +89,7 @@ public sealed class PowerupInventory
 
     /// <summary>
     /// Consumes one instance of the powerup from inventory and returns true.
-    /// Returns false if not owned.
+    /// Returns false if not owned. Tracks usage toward the per-match cap.
     /// </summary>
     public bool TryConsume(PowerupType type)
     {
@@ -89,6 +100,7 @@ public sealed class PowerupInventory
         }
 
         _owned.RemoveAt(index);
+        _usedThisMatch[type] = _usedThisMatch.GetValueOrDefault(type, 0) + 1;
         return true;
     }
 
@@ -150,6 +162,7 @@ public sealed class PowerupInventory
     {
         _owned.Clear();
         _active.Clear();
+        _usedThisMatch.Clear();
     }
 
     /// <summary>
@@ -158,5 +171,36 @@ public sealed class PowerupInventory
     public int CountOf(PowerupType type)
     {
         return _owned.Count(p => p == type);
+    }
+
+    /// <summary>
+    /// Returns how many times a powerup type has been used this match.
+    /// </summary>
+    public int UsedThisMatch(PowerupType type)
+    {
+        return _usedThisMatch.GetValueOrDefault(type, 0);
+    }
+
+    /// <summary>
+    /// Checks if a powerup type has reached its per-match usage cap.
+    /// </summary>
+    public bool IsAtMaxUses(PowerupType type)
+    {
+        return _usedThisMatch.GetValueOrDefault(type, 0) + CountOf(type) >= MaxUsesPerMatch;
+    }
+
+    /// <summary>
+    /// Refunds a consumed powerup back to inventory, undoing both the removal
+    /// and the usage tracking. Used when a powerup activation fails (e.g., medkit
+    /// on a full-health commander) and should not count toward the per-match cap.
+    /// </summary>
+    public void RefundConsumed(PowerupType type)
+    {
+        _owned.Add(type);
+        int used = _usedThisMatch.GetValueOrDefault(type, 0);
+        if (used > 0)
+        {
+            _usedThisMatch[type] = used - 1;
+        }
     }
 }

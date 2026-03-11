@@ -86,6 +86,7 @@ public partial class BuildUI : Control
     private readonly List<PanelContainer> _troopButtons = new List<PanelContainer>();
     private readonly List<Label> _troopCountLabels = new List<Label>();
     private readonly List<PanelContainer> _blueprintButtons = new List<PanelContainer>();
+    private readonly List<Button> _symmetryButtons = new List<Button>();
     private int _selectedBlueprintIndex = -1;
     private TooltipSystem? _tooltipSystem;
 
@@ -1258,11 +1259,18 @@ public partial class BuildUI : Control
 
         string[] symModes = { "OFF", "X", "Z", "XZ" };
         BuildSymmetryMode[] symValues = { BuildSymmetryMode.None, BuildSymmetryMode.MirrorX, BuildSymmetryMode.MirrorZ, BuildSymmetryMode.MirrorXZ };
+        _symmetryButtons.Clear();
         for (int i = 0; i < symModes.Length; i++)
         {
             int idx = i;
             Button symBtn = CreateSmallButton(symModes[i], i == 0 ? AccentGreen : TextSecondary);
-            symBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); SymmetryChanged?.Invoke(symValues[idx]); };
+            symBtn.Pressed += () =>
+            {
+                AudioDirector.Instance?.PlaySFX("ui_click");
+                SymmetryChanged?.Invoke(symValues[idx]);
+                SelectSymmetry(idx);
+            };
+            _symmetryButtons.Add(symBtn);
             bottomContent.AddChild(symBtn);
         }
 
@@ -1303,6 +1311,14 @@ public partial class BuildUI : Control
         }
 
         ToolSelected?.Invoke(Tools[index].Mode);
+    }
+
+    private void SelectSymmetry(int index)
+    {
+        for (int i = 0; i < _symmetryButtons.Count; i++)
+        {
+            _symmetryButtons[i].AddThemeColorOverride("font_color", i == index ? AccentGreen : TextSecondary);
+        }
     }
 
     private void SelectMaterial(int index)

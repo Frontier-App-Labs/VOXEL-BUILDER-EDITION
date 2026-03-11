@@ -20,6 +20,7 @@ public abstract partial class WeaponBase : Node3D
     private bool _ownerAssigned;
     private bool _isHighlighted;
     private float _supportCheckTimer;
+    private bool _isFalling;
     private Color?[,,]? _voxelGrid;
     private float _voxelSize;
 
@@ -130,10 +131,12 @@ public abstract partial class WeaponBase : Node3D
     /// </summary>
     public void DestroyFromLostSupport()
     {
-        if (IsDestroyed)
+        if (IsDestroyed || _isFalling)
         {
             return;
         }
+
+        _isFalling = true;
 
         // Try to find the next solid surface below
         VoxelWorld? world = GetTree().Root.GetNodeOrNull<VoxelWorld>("Main/GameWorld");
@@ -190,10 +193,10 @@ public abstract partial class WeaponBase : Node3D
             fallDuration = Mathf.Clamp(fallDuration, 0.2f, 1.0f);
 
             Tween tween = CreateTween();
-            // Ease-in for accelerating fall (like real gravity)
             tween.TweenProperty(this, "global_position", newPos, fallDuration)
                 .SetEase(Tween.EaseType.In)
                 .SetTrans(Tween.TransitionType.Quad);
+            tween.TweenCallback(Callable.From(() => _isFalling = false));
         }
         else
         {
