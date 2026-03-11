@@ -338,7 +338,7 @@ public partial class CombatCamera : Camera3D
         Engine.TimeScale = GameConfig.SlowMoTimeScale;
 
         // Dissolve blocks so the death is visible through fortress walls
-        SetVoxelKillCamDissolve(0.75f);
+        SetVoxelKillCamDissolve(0.9f);
     }
 
     /// <summary>Free orbit look between turns for inspecting bases.</summary>

@@ -472,6 +472,12 @@ public class DoorRegistry
 
         voxelGridOut = (Color?[,,])v.Clone();
 
+        // Use VoxelPalette texture system (same as weapons/commander) for
+        // consistent rendering with all other voxel art in the game.
+        var palette = new Art.VoxelPalette();
+        palette.AddColors(v);
+        palette.Build();
+
         var builder = new Art.VoxelModelBuilder()
         {
             VoxelSize = voxelSize,
@@ -479,7 +485,7 @@ public class DoorRegistry
             OriginOffset = new Vector3(-dw * 0.5f * voxelSize, 0, -dd * 0.5f * voxelSize),
         };
 
-        ArrayMesh doorMesh = builder.BuildMesh(v);
+        ArrayMesh doorMesh = builder.BuildMesh(v, palette);
 
         // Position the door in the opening
         float panelHeight = DoorHeight * mv;
@@ -522,8 +528,9 @@ public class DoorRegistry
         float scaleZ = (mv * 0.15f) / (dd * voxelSize); // thin depth
         doorMeshInstance.Scale = new Vector3(scaleX, scaleY, scaleZ);
 
-        // Material: wood-like with slight emission so doors are visible in shadows
-        StandardMaterial3D mat = Art.VoxelModelBuilder.CreateVoxelMaterial(0.7f, 0.0f);
+        // Use palette texture material (same pipeline as weapons/commander)
+        // with slight emission so doors are visible in shadows
+        StandardMaterial3D mat = palette.CreateMaterial();
         mat.EmissionEnabled = true;
         mat.Emission = PlanksLight;
         mat.EmissionEnergyMultiplier = 0.05f;
