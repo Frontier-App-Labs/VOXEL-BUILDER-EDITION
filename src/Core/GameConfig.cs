@@ -95,6 +95,7 @@ public static class GameConfig
     // Commander critical direct hit
     public const float CommanderDirectHitMultiplier = 2.5f;  // damage multiplier for direct projectile/beam hits
     public const float CommanderExposedMultiplier = 1.5f;     // damage multiplier when commander's IsExposed is true
+    public const int MaxExplosionCommanderDamage = 8;         // cap per-explosion commander damage (2-shot kill at 15 HP)
     public const float CommanderCriticalShakeIntensity = 1.2f;
     public const float CommanderCriticalShakeDuration = 0.5f;
 

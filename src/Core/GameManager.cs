@@ -57,13 +57,15 @@ public partial class GameManager : Node
     private int _buildRotation; // 0-3 representing 0/90/180/270 degrees
 
     // Build placement mode (commander / weapon placement during build phase)
-    private enum PlacementMode { Block, Commander, Weapon }
+    private enum PlacementMode { Block, Commander, Weapon, Troop }
     private PlacementMode _placementMode = PlacementMode.Block;
     private WeaponType _selectedWeaponType = WeaponType.Cannon;
+    private TroopType _selectedTroopType = TroopType.Infantry;
 
     // Cached preview meshes for ghost preview (generated once per weapon type)
     private readonly Dictionary<string, ArrayMesh> _weaponPreviewMeshes = new();
     private ArrayMesh? _commanderPreviewMesh;
+    private readonly Dictionary<TroopType, ArrayMesh> _troopPreviewMeshes = new();
 
     // Combat phase interaction state
     private int _selectedWeaponIndex = -1; // -1 means no weapon selected
@@ -936,11 +938,14 @@ public partial class GameManager : Node
 
         int newIndex = weaponIndex % weaponList.Count;
 
-        // If already in targeting mode, just swap the weapon without resetting
-        // the camera or target so the player's aim is preserved.
-        if (_isAiming && _weaponConfirmed)
+        // If already in targeting/aiming mode, just swap the weapon without
+        // resetting the camera or target so the player's aim is preserved.
+        // Check _isAiming OR _hasTarget: covers all paths into targeting
+        // (weapon-click, fire-button, etc.) regardless of _weaponConfirmed state.
+        if (_isAiming || _hasTarget)
         {
             _selectedWeaponIndex = newIndex;
+            _weaponConfirmed = true;
             UpdateWeaponHighlight();
 
             // If there's an active target, recalculate the trajectory preview
@@ -963,7 +968,6 @@ public partial class GameManager : Node
         }
 
         _selectedWeaponIndex = newIndex;
-        _weaponConfirmed = true;
 
         // Highlight the confirmed weapon in the 3D world
         UpdateWeaponHighlight();
@@ -976,6 +980,8 @@ public partial class GameManager : Node
             GD.Print($"[Combat] Weapon {_selectedWeaponIndex} cycled (highlight only).");
             return;
         }
+
+        _weaponConfirmed = true;
 
         GD.Print($"[Combat] Weapon {_selectedWeaponIndex} confirmed. Entering targeting mode.");
 
@@ -1362,6 +1368,7 @@ public partial class GameManager : Node
         _placementMode = PlacementMode.Block;
         _weaponPreviewMeshes.Clear();
         _commanderPreviewMesh = null;
+        _troopPreviewMeshes.Clear();
         Input.MouseMode = Input.MouseModeEnum.Visible;
 
         // Hide ghost preview
@@ -2155,6 +2162,15 @@ public partial class GameManager : Node
                 float yaw = _buildRotation * Mathf.Pi * 0.5f;
                 _ghostPreview.SetModelPreview(previewMesh, worldPos, yaw, _buildCursorValid);
             }
+            else if (_placementMode == PlacementMode.Troop && _ghostPreview != null)
+            {
+                // Troop preview: show the troop model at the cursor position
+                ArrayMesh previewMesh = GetOrCreateTroopPreviewMesh(_selectedTroopType);
+                Vector3I microBase = MathHelpers.BuildToMicrovoxel(_buildCursorBuildUnit);
+                Vector3 worldPos = MathHelpers.MicrovoxelToWorld(microBase)
+                    + new Vector3(GameConfig.BuildUnitMeters * 0.5f, 0f, GameConfig.BuildUnitMeters * 0.5f);
+                _ghostPreview.SetModelPreview(previewMesh, worldPos, 0f, _buildCursorValid);
+            }
             else if (_placementMode == PlacementMode.Commander && _ghostPreview != null)
             {
                 // Commander preview: show the actual commander model mesh
@@ -2233,6 +2249,9 @@ public partial class GameManager : Node
                     break;
                 case PlacementMode.Weapon:
                     TryPlaceWeaponAtCursor();
+                    break;
+                case PlacementMode.Troop:
+                    TryPlaceTroopAtCursor();
                     break;
             }
             GetViewport().SetInputAsHandled();
@@ -2775,6 +2794,132 @@ public partial class GameManager : Node
         Art.CommanderBodyParts parts = Art.CommanderModelGenerator.Generate(teamColor);
         _commanderPreviewMesh = parts.FullMesh;
         return _commanderPreviewMesh;
+    }
+
+    private ArrayMesh GetOrCreateTroopPreviewMesh(TroopType type)
+    {
+        if (_troopPreviewMeshes.TryGetValue(type, out ArrayMesh? cached))
+            return cached;
+
+        // Simple humanoid-shaped preview: a box roughly troop-sized
+        float w = 0.3f;
+        float h = type == TroopType.Demolisher ? 0.5f : 0.45f;
+        float d = 0.3f;
+        BoxMesh box = new BoxMesh { Size = new Vector3(w, h, d) };
+        ArrayMesh mesh = new ArrayMesh();
+        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, box.GetMeshArrays());
+        _troopPreviewMeshes[type] = mesh;
+        return mesh;
+    }
+
+    private void TryPlaceTroopAtCursor()
+    {
+        if (_armyManager == null || _voxelWorld == null) return;
+        if (!_players.TryGetValue(_activeBuilder, out PlayerData? player)) return;
+        if (!_buildZones.TryGetValue(_activeBuilder, out BuildZone zone)) return;
+
+        // Validate position is on ground inside build zone
+        Vector3I buildUnit = _buildCursorBuildUnit;
+        Vector3I microBase = MathHelpers.BuildToMicrovoxel(buildUnit);
+
+        // Check build zone bounds
+        Vector3I zoneMin = zone.OriginMicrovoxels;
+        Vector3I zoneMax = zone.OriginMicrovoxels + zone.SizeMicrovoxels;
+        if (microBase.X < zoneMin.X || microBase.X >= zoneMax.X ||
+            microBase.Z < zoneMin.Z || microBase.Z >= zoneMax.Z)
+        {
+            GD.Print("[Army] Troop must be placed inside your build zone.");
+            return;
+        }
+
+        // Find ground level at this position — look down from top for first solid block
+        int groundY = -1;
+        for (int y = zoneMax.Y + 4; y >= zoneMin.Y - 2; y--)
+        {
+            if (_voxelWorld.GetVoxel(new Vector3I(microBase.X, y, microBase.Z)).IsSolid)
+            {
+                groundY = y + 1; // spawn on top of the solid block
+                break;
+            }
+        }
+
+        if (groundY < 0)
+        {
+            GD.Print("[Army] No ground to place troop on.");
+            return;
+        }
+
+        // Need 2 blocks of clearance above ground for troop to stand
+        Vector3I spawnPos = new Vector3I(microBase.X, groundY, microBase.Z);
+        if (_voxelWorld.GetVoxel(spawnPos).IsSolid ||
+            _voxelWorld.GetVoxel(spawnPos + Vector3I.Up).IsSolid)
+        {
+            GD.Print("[Army] Not enough clearance to place troop here.");
+            return;
+        }
+
+        // Try to buy and place
+        if (_armyManager.TryBuyAndPlaceTroop(_activeBuilder, _selectedTroopType, player, spawnPos))
+        {
+            TroopStats stats = TroopDefinitions.Get(_selectedTroopType);
+            GD.Print($"[Army] {_activeBuilder}: Placed {stats.Name} at {spawnPos}. Budget: ${player.Budget}.");
+
+            // Spawn a visual marker so the player sees where their troops are
+            SpawnTroopMarker(spawnPos, _selectedTroopType);
+
+            // Update BuildUI troop counts
+            UpdateBuildUITroopCounts();
+
+            EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(_activeBuilder, player.Budget, -stats.Cost));
+
+            AudioDirector.Instance?.PlaySFX("ui_click");
+        }
+        else
+        {
+            TroopStats stats = TroopDefinitions.Get(_selectedTroopType);
+            GD.Print($"[Army] {_activeBuilder}: Can't place {stats.Name}.");
+        }
+    }
+
+    private void SpawnTroopMarker(Vector3I microPos, TroopType type)
+    {
+        Color teamColor = _players.TryGetValue(_activeBuilder, out PlayerData? p)
+            ? p.PlayerColor : new Color(0.2f, 0.6f, 1.0f);
+
+        // Create a small visible character model at the placement position
+        Art.CharacterDefinition charDef = type switch
+        {
+            TroopType.Infantry => Art.TroopModelGenerator.GenerateInfantry(teamColor),
+            TroopType.Demolisher => Art.TroopModelGenerator.GenerateDemolisher(teamColor),
+            _ => Art.TroopModelGenerator.GenerateInfantry(teamColor),
+        };
+
+        Node3D model = Art.VoxelCharacterBuilder.Build(charDef);
+        Art.VoxelCharacterBuilder.ApplyToonMaterial(model, teamColor);
+        model.Name = $"TroopMarker_{_activeBuilder}_{microPos}";
+        model.AddToGroup("TroopMarkers");
+
+        float microMeters = GameConfig.MicrovoxelMeters;
+        model.GlobalPosition = new Vector3(
+            microPos.X * microMeters + microMeters * 0.5f,
+            microPos.Y * microMeters,
+            microPos.Z * microMeters + microMeters * 0.5f);
+
+        AddChild(model);
+    }
+
+    private void UpdateBuildUITroopCounts()
+    {
+        BuildUI? buildUI = GetNodeOrNull<BuildUI>("BuildHUD")
+            ?? GetNodeOrNull<BuildUI>("%BuildUI")
+            ?? GetTree().Root.FindChild("BuildHUD", true, false) as BuildUI;
+        if (buildUI != null && _armyManager != null)
+        {
+            foreach (TroopType tt in TroopDefinitions.AllTypes)
+            {
+                buildUI.UpdateTroopCount(tt, _armyManager.TroopCount(_activeBuilder, tt));
+            }
+        }
     }
 
     /// <summary>
@@ -4191,6 +4336,12 @@ public partial class GameManager : Node
         if (_armyManager == null)
         {
             return;
+        }
+
+        // Remove build-phase troop markers before deploying real troops
+        foreach (Node marker in GetTree().GetNodesInGroup("TroopMarkers"))
+        {
+            marker.QueueFree();
         }
 
         PlayerSlot[] activePlayers = _players.Keys.ToArray();
@@ -6176,41 +6327,11 @@ public partial class GameManager : Node
             return;
         }
 
-        if (_armyManager == null)
-        {
-            return;
-        }
-
-        if (!_players.TryGetValue(_activeBuilder, out PlayerData? player))
-        {
-            return;
-        }
-
-        if (_armyManager.TryBuyTroop(_activeBuilder, type, player))
-        {
-            TroopStats stats = TroopDefinitions.Get(type);
-            GD.Print($"[Army] {_activeBuilder}: Bought {stats.Name} for ${stats.Cost}. Budget: ${player.Budget}.");
-
-            // Update BuildUI troop counts
-            BuildUI? buildUI = GetNodeOrNull<BuildUI>("BuildHUD")
-                ?? GetNodeOrNull<BuildUI>("%BuildUI")
-                ?? GetTree().Root.FindChild("BuildHUD", true, false) as BuildUI;
-            if (buildUI != null)
-            {
-                foreach (TroopType tt in TroopDefinitions.AllTypes)
-                {
-                    buildUI.UpdateTroopCount(tt, _armyManager.TroopCount(_activeBuilder, tt));
-                }
-            }
-
-            // Emit budget changed so UI updates the budget display
-            EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(_activeBuilder, player.Budget, -stats.Cost));
-        }
-        else
-        {
-            TroopStats stats = TroopDefinitions.Get(type);
-            GD.Print($"[Army] {_activeBuilder}: Can't buy {stats.Name} (${stats.Cost}, budget: ${player.Budget}, troops: {_armyManager.TroopCount(_activeBuilder, type)}/{GameConfig.MaxTroopsPerPlayer}).");
-        }
+        // Enter troop placement mode — the troop is bought when actually placed
+        _selectedTroopType = type;
+        _placementMode = PlacementMode.Troop;
+        TroopStats stats = TroopDefinitions.Get(type);
+        GD.Print($"[Army] Entering {stats.Name} placement mode. Click to place.");
     }
 
     private void OnTroopSellRequested(TroopType type)
@@ -6235,21 +6356,29 @@ public partial class GameManager : Node
             TroopStats stats = TroopDefinitions.Get(type);
             GD.Print($"[Army] {_activeBuilder}: Sold {stats.Name} for ${stats.Cost} refund. Budget: ${player.Budget}.");
 
-            // Update BuildUI troop counts
-            BuildUI? buildUI = GetNodeOrNull<BuildUI>("BuildHUD")
-                ?? GetNodeOrNull<BuildUI>("%BuildUI")
-                ?? GetTree().Root.FindChild("BuildHUD", true, false) as BuildUI;
-            if (buildUI != null)
-            {
-                foreach (TroopType tt in TroopDefinitions.AllTypes)
-                {
-                    buildUI.UpdateTroopCount(tt, _armyManager.TroopCount(_activeBuilder, tt));
-                }
-            }
+            // Remove the last placed troop marker of this type
+            RemoveLastTroopMarker(type);
+
+            UpdateBuildUITroopCounts();
 
             // Emit budget changed so UI updates the budget display
             EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(_activeBuilder, player.Budget, stats.Cost));
         }
+    }
+
+    private void RemoveLastTroopMarker(TroopType type)
+    {
+        string prefix = $"TroopMarker_{_activeBuilder}_";
+        // Find and remove the last matching troop marker
+        Node? lastMarker = null;
+        foreach (Node child in GetChildren())
+        {
+            if (child.Name.ToString().StartsWith(prefix) && child.IsInGroup("TroopMarkers"))
+            {
+                lastMarker = child;
+            }
+        }
+        lastMarker?.QueueFree();
     }
 
     private void OnWeaponSellRequested(WeaponType type)

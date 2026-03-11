@@ -9,7 +9,7 @@ namespace VoxelSiege.Army;
 
 public partial class ArmyManager : Node
 {
-    private readonly Dictionary<PlayerSlot, List<TroopType>> _purchasedTroops = new();
+    private readonly Dictionary<PlayerSlot, List<(TroopType Type, Vector3I? PlacedPosition)>> _purchasedTroops = new();
     private readonly Dictionary<PlayerSlot, List<TroopEntity>> _deployedTroops = new();
     private readonly DoorRegistry _doorRegistry = new();
     private readonly TroopPathfinder _pathfinder = new();
@@ -37,7 +37,7 @@ public partial class ArmyManager : Node
     {
         var stats = TroopDefinitions.Get(type);
         if (!_purchasedTroops.ContainsKey(player))
-            _purchasedTroops[player] = new List<TroopType>();
+            _purchasedTroops[player] = new();
 
         if (_purchasedTroops[player].Count >= GameConfig.MaxTroopsPerPlayer)
             return false;
@@ -45,14 +45,38 @@ public partial class ArmyManager : Node
         if (!playerData.TrySpend(stats.Cost))
             return false;
 
-        _purchasedTroops[player].Add(type);
+        _purchasedTroops[player].Add((type, null));
+        return true;
+    }
+
+    /// <summary>
+    /// Buys a troop AND records its placement position (for manual placement in build phase).
+    /// </summary>
+    public bool TryBuyAndPlaceTroop(PlayerSlot player, TroopType type, PlayerData playerData, Vector3I position)
+    {
+        var stats = TroopDefinitions.Get(type);
+        if (!_purchasedTroops.ContainsKey(player))
+            _purchasedTroops[player] = new();
+
+        if (_purchasedTroops[player].Count >= GameConfig.MaxTroopsPerPlayer)
+            return false;
+
+        if (!playerData.TrySpend(stats.Cost))
+            return false;
+
+        _purchasedTroops[player].Add((type, position));
         return true;
     }
 
     public bool TrySellTroop(PlayerSlot player, TroopType type, PlayerData playerData)
     {
         if (!_purchasedTroops.TryGetValue(player, out var list)) return false;
-        int idx = list.IndexOf(type);
+        // Find last troop of this type (most recently placed)
+        int idx = -1;
+        for (int i = list.Count - 1; i >= 0; i--)
+        {
+            if (list[i].Type == type) { idx = i; break; }
+        }
         if (idx < 0) return false;
 
         list.RemoveAt(idx);
@@ -64,21 +88,21 @@ public partial class ArmyManager : Node
     {
         if (!_purchasedTroops.TryGetValue(player, out var list)) return 0;
         int count = 0;
-        foreach (var t in list) if (t == type) count++;
+        foreach (var t in list) if (t.Type == type) count++;
         return count;
     }
 
-    public IReadOnlyList<TroopType> GetPurchasedTroops(PlayerSlot player)
+    public IReadOnlyList<(TroopType Type, Vector3I? PlacedPosition)> GetPurchasedTroops(PlayerSlot player)
     {
         return _purchasedTroops.TryGetValue(player, out var list)
             ? list
-            : System.Array.Empty<TroopType>();
+            : System.Array.Empty<(TroopType, Vector3I?)>();
     }
 
     // === Combat Phase ===
     /// <summary>
-    /// Deploys troops INSIDE the player's base. Troops will use doors to exit.
-    /// Spawn positions are spread across the interior of the build zone floor.
+    /// Deploys troops. Uses manually placed positions when available,
+    /// otherwise falls back to auto-finding interior positions.
     /// </summary>
     public bool DeployTroops(PlayerSlot player, PlayerSlot targetEnemy, Node sceneRoot)
     {
@@ -91,21 +115,40 @@ public partial class ArmyManager : Node
         if (!_deployedTroops.ContainsKey(player))
             _deployedTroops[player] = new List<TroopEntity>();
 
-        // Find spawn positions inside the base
-        List<Vector3I> spawnPositions = FindInteriorSpawnPositions(player, troops.Count);
+        // Count troops that need auto-placement (no manual position)
+        int autoCount = 0;
+        foreach (var t in troops)
+            if (!t.PlacedPosition.HasValue) autoCount++;
+
+        List<Vector3I> autoPositions = autoCount > 0
+            ? FindInteriorSpawnPositions(player, autoCount)
+            : new List<Vector3I>();
+        int autoIdx = 0;
 
         for (int i = 0; i < troops.Count; i++)
         {
-            Vector3I spawnPos = i < spawnPositions.Count
-                ? spawnPositions[i]
-                : spawnPositions.Count > 0
-                    ? spawnPositions[i % spawnPositions.Count]
-                    : GetFallbackSpawnPos(player);
+            Vector3I spawnPos;
+            Vector3I? placed = troops[i].PlacedPosition;
+            if (placed.HasValue)
+            {
+                // Use the manually placed position
+                spawnPos = placed.Value;
+            }
+            else
+            {
+                // Fall back to auto-found interior position
+                spawnPos = autoIdx < autoPositions.Count
+                    ? autoPositions[autoIdx]
+                    : autoPositions.Count > 0
+                        ? autoPositions[autoIdx % autoPositions.Count]
+                        : GetFallbackSpawnPos(player);
+                autoIdx++;
+            }
 
             TroopEntity entity = new TroopEntity();
-            entity.Name = $"{player}_{troops[i]}_{i}";
+            entity.Name = $"{player}_{troops[i].Type}_{i}";
             sceneRoot.AddChild(entity);
-            entity.Initialize(troops[i], player, spawnPos, teamColor);
+            entity.Initialize(troops[i].Type, player, spawnPos, teamColor);
             entity.TargetEnemy = targetEnemy;
             // Start idle — TroopAI will transition to ExitingBase on first tick
             entity.SetAIState(TroopAIState.Idle);

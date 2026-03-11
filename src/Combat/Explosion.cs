@@ -188,6 +188,11 @@ public partial class Explosion : Node3D
 
             float commanderDistance = commander.GlobalPosition.DistanceTo(worldPosition) / GameConfig.MicrovoxelMeters;
             int commanderDamage = DamageCalculator.CalculateCommanderDamage(baseDamage, radiusMicrovoxels, commanderDistance);
+
+            // Cap commander damage so high-damage weapons (drills, etc.) don't
+            // one-shot commanders. Max 8 per explosion = 2-shot kill (HP=15).
+            commanderDamage = Mathf.Min(commanderDamage, GameConfig.MaxExplosionCommanderDamage);
+
             if (commanderDamage > 0)
             {
                 // Exposed commanders take extra damage — they have no cover

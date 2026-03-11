@@ -281,7 +281,7 @@ public partial class HelpScreen : Control
         AddParagraph(parent,
             "You have 5 minutes and a budget of $15,000 to construct your fortress. " +
             "Place blocks of various materials, mount weapons on your structure, " +
-            "and buy troops. Your commander is automatically placed inside your " +
+            "and place troops inside your base. Your commander is automatically placed inside your " +
             "build zone -- surround them with strong materials to protect them!");
         AddBullet(parent, "Click blocks to place them within your build zone");
         AddBullet(parent, "Use the material palette to pick block types");
@@ -424,7 +424,7 @@ public partial class HelpScreen : Control
             new[] { "WEAPON", "COST", "DMG", "BLAST", "SPECIAL" },
             new[] { "Cannon", "$500", "30", "4", "Ballistic arc. Bread-and-butter weapon. Fast, reliable." },
             new[] { "Mortar", "$600", "30", "6", "High arc -- lobs shells OVER walls. Larger blast radius." },
-            new[] { "Drill", "$550", "80", "5", "Bunker buster! Bores through 5 blocks, then detonates inside." },
+            new[] { "Drill", "$550", "70", "4", "Bunker buster! Bores through 5 blocks, then detonates inside." },
             new[] { "Railgun", "$800", "50", "-", "Hitscan beam. Pierces 5 blocks. 3-shot kill on commanders." },
             new[] { "Missile", "$850", "50", "8", "Guided homing missile. Huge blast radius. Slow but devastating." },
         };
@@ -447,8 +447,8 @@ public partial class HelpScreen : Control
         AddSubHeader(parent, "Drill (Bunker Buster)", 11, AccentGreen);
         AddParagraph(parent,
             "The anti-fortress specialist. Fires a drill bit that bores a 3x3 tunnel " +
-            "through up to 5 solid blocks, then detonates with a blast radius of 5 inside " +
-            "the enemy structure. Higher damage (80) cracks tough materials. Foundation blocks stop it. " +
+            "through up to 5 solid blocks, then detonates with a blast radius of 4 inside " +
+            "the enemy structure. Higher damage (70) cracks tough materials. Foundation blocks stop it. " +
             "No gravity -- flies straight. Speed: 14.");
 
         AddSubHeader(parent, "Railgun", 11, AccentCyan);
@@ -475,9 +475,10 @@ public partial class HelpScreen : Control
     {
         AddSectionHeader(parent, "TROOPS");
         AddParagraph(parent,
-            "Recruit troops during the build phase to add ground forces to your army. " +
-            "Troops move automatically during combat, pathfinding through doors and " +
-            "gaps to reach enemy commanders. Max 10 troops per player.");
+            "Recruit and PLACE troops during the build phase. Click a troop type, then " +
+            "click inside your base to position them. Troops deploy at their placed positions " +
+            "when combat starts and move automatically, pathfinding through doors and " +
+            "gaps to reach enemy commanders. Max 10 troops per player. Right-click to sell.");
 
         string[][] troopData = new string[][]
         {

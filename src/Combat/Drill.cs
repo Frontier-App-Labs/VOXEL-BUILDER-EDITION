@@ -28,8 +28,8 @@ public partial class Drill : WeaponBase
     {
         WeaponId = "drill";
         Cost = 550;
-        BaseDamage = 80;
-        BlastRadiusMicrovoxels = 5f;
+        BaseDamage = 70;
+        BlastRadiusMicrovoxels = 4f;
         ProjectileSpeed = 14f;
         CooldownTurns = 0;
     }

@@ -44,7 +44,8 @@ public static class TerrainDecorator
     {
         if (_grassMultiMesh == null) return;
 
-        // Zero-scale transform to hide instances (can't remove from MultiMesh, but scale=0 hides them)
+        // Hide instances by moving offscreen AND setting alpha=0 so the shader discards them.
+        // Belt-and-suspenders: zero-scale transform + transparent color + shader discard.
         Transform3D hidden = new Transform3D(Basis.Identity.Scaled(Vector3.Zero), new Vector3(0, -1000, 0));
 
         foreach (Vector3I pos in destroyedPositions)
@@ -55,6 +56,7 @@ public static class TerrainDecorator
                 foreach (int idx in instanceIndices)
                 {
                     _grassMultiMesh.SetInstanceTransform(idx, hidden);
+                    _grassMultiMesh.SetInstanceColor(idx, new Color(0, 0, 0, 0));
                 }
                 _grassPositionMap.Remove(key);
             }
@@ -71,10 +73,13 @@ public static class TerrainDecorator
 
         float microMeters = GameConfig.MicrovoxelMeters;
         int radiusMicro = Mathf.CeilToInt(radiusMeters / microMeters) + 1;
+        // Use FloorToInt for consistent mapping back to microvoxel grid
+        // (RoundToInt can land on the wrong cell at boundary values).
+        float inv = 1.0f / microMeters;
         Vector3I center = new Vector3I(
-            Mathf.RoundToInt(worldCenter.X / microMeters),
+            Mathf.FloorToInt(worldCenter.X * inv),
             0,
-            Mathf.RoundToInt(worldCenter.Z / microMeters));
+            Mathf.FloorToInt(worldCenter.Z * inv));
 
         Transform3D hidden = new Transform3D(Basis.Identity.Scaled(Vector3.Zero), new Vector3(0, -1000, 0));
 
@@ -88,6 +93,7 @@ public static class TerrainDecorator
                     foreach (int idx in instanceIndices)
                     {
                         _grassMultiMesh.SetInstanceTransform(idx, hidden);
+                        _grassMultiMesh.SetInstanceColor(idx, new Color(0, 0, 0, 0));
                     }
                     _grassPositionMap.Remove(key);
                 }
@@ -678,6 +684,10 @@ void vertex() {
 }
 
 void fragment() {
+    // Discard hidden instances (alpha set to 0 when grass is removed).
+    // This is the guaranteed kill switch — even if the zero-scale transform
+    // trick fails on some GPUs, the fragment is discarded.
+    if (COLOR.a < 0.5) discard;
     ALBEDO = COLOR.rgb;
 }
 ";
