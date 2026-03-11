@@ -21,6 +21,7 @@ public enum PlayerSlot
 public enum BuildToolMode
 {
     Single,
+    HalfBlock,
     Line,
     Wall,
     Box,

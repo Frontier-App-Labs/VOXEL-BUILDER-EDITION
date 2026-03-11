@@ -494,9 +494,11 @@ public partial class CombatUI : Control
         powerupBar.OffsetRight = -210;
         powerupBar.OffsetTop = -100;
         powerupBar.OffsetBottom = -14;
-        powerupBar.CustomMinimumSize = new Vector2(230, 86);
+        // Size dynamically — no fixed height so all powerups are visible without scrolling.
+        // The panel grows upward from the bottom anchor as powerups are added.
+        powerupBar.CustomMinimumSize = new Vector2(230, 0);
         powerupBar.MouseFilter = MouseFilterEnum.Stop;
-        powerupBar.ClipContents = true;
+        powerupBar.ClipContents = false;
         AddChild(powerupBar);
         _powerupBarPanel = powerupBar;
 
@@ -522,20 +524,12 @@ public partial class CombatUI : Control
         pwrHeader.MouseFilter = MouseFilterEnum.Ignore;
         outerColumn.AddChild(pwrHeader);
 
-        // ScrollContainer so the list can scroll when there are many powerups
-        ScrollContainer scrollContainer = new ScrollContainer();
-        scrollContainer.HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled;
-        scrollContainer.VerticalScrollMode = ScrollContainer.ScrollMode.ShowNever;
-        scrollContainer.SizeFlagsVertical = SizeFlags.ExpandFill;
-        scrollContainer.CustomMinimumSize = new Vector2(0, 0);
-        scrollContainer.MouseFilter = MouseFilterEnum.Pass;
-        outerColumn.AddChild(scrollContainer);
-
+        // No scroll — all powerups are always visible
         _powerupContainer = new VBoxContainer();
         _powerupContainer.AddThemeConstantOverride("separation", 2);
         _powerupContainer.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         _powerupContainer.MouseFilter = MouseFilterEnum.Ignore;
-        scrollContainer.AddChild(_powerupContainer);
+        outerColumn.AddChild(_powerupContainer);
 
         // Powerup slots are populated dynamically based on inventory
         // Initial empty state

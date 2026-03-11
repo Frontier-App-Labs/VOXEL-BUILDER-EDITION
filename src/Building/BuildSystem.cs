@@ -42,6 +42,12 @@ public partial class BuildSystem : Node
     public bool HollowBoxMode { get; set; }
 
     /// <summary>
+    /// When in HalfBlock mode, stores the exact microvoxel position
+    /// the cursor is targeting. Set by GameManager each frame.
+    /// </summary>
+    public Vector3I HalfBlockMicrovoxel { get; set; }
+
+    /// <summary>
     /// Returns symmetry-mirrored microvoxels for ghost preview display.
     /// </summary>
     public List<Vector3I> GetSymmetryMirroredMicrovoxels(BuildZone zone, Vector3I buildUnit)
@@ -288,11 +294,20 @@ public partial class BuildSystem : Node
     {
         HashSet<Vector3I> buildUnits = _symmetryTool.Apply(zone, GenerateBuildUnitCells(CurrentToolMode, startBuildUnit, endBuildUnit, HollowBoxMode));
         HashSet<Vector3I> microvoxels = new HashSet<Vector3I>();
-        foreach (Vector3I buildUnit in buildUnits)
+
+        if (CurrentToolMode == BuildToolMode.HalfBlock)
         {
-            foreach (Vector3I micro in ExpandBuildUnit(buildUnit, CurrentToolMode, startBuildUnit, endBuildUnit))
+            // HalfBlock: place exactly one microvoxel at the cursor position
+            microvoxels.Add(HalfBlockMicrovoxel);
+        }
+        else
+        {
+            foreach (Vector3I buildUnit in buildUnits)
             {
-                microvoxels.Add(micro);
+                foreach (Vector3I micro in ExpandBuildUnit(buildUnit, CurrentToolMode, startBuildUnit, endBuildUnit))
+                {
+                    microvoxels.Add(micro);
+                }
             }
         }
 
@@ -403,6 +418,7 @@ public partial class BuildSystem : Node
         {
             case BuildToolMode.Single:
             case BuildToolMode.Eraser:
+            case BuildToolMode.HalfBlock:
                 yield return start;
                 break;
             case BuildToolMode.Line:
@@ -574,6 +590,11 @@ public partial class BuildSystem : Node
                     yield return micro;
                 }
 
+                yield break;
+            case BuildToolMode.HalfBlock:
+                // HalfBlock yields just a single microvoxel (the base corner).
+                // The actual microvoxel position is resolved in CreateStamp.
+                yield return buildUnit * GameConfig.MicrovoxelsPerBuildUnit;
                 yield break;
             default:
                 foreach (Vector3I micro in ExpandUniformBuildUnit(buildUnit))

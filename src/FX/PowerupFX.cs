@@ -30,18 +30,20 @@ public static class PowerupFX
         Node3D root = new Node3D();
         root.Name = "SmokeScreenFX";
         parent.AddChild(root);
-        root.GlobalPosition = center;
+        // Lower the smoke center to sit closer to the ground — shift down by 40% of zone height
+        Vector3 zoneSize = MathHelpers.MicrovoxelToWorld(zone.SizeMicrovoxels);
+        float groundOffset = zoneSize.Y * 0.35f;
+        root.GlobalPosition = center - new Vector3(0, groundOffset, 0);
 
         // Calculate zone world extents
-        Vector3 zoneSize = MathHelpers.MicrovoxelToWorld(zone.SizeMicrovoxels);
-        float halfX = zoneSize.X * 0.5f;
-        float halfZ = zoneSize.Z * 0.5f;
-        float height = zoneSize.Y * 0.6f;
+        float halfX = zoneSize.X * 0.55f;  // slightly wider than zone for coverage
+        float halfZ = zoneSize.Z * 0.55f;
+        float height = zoneSize.Y * 0.45f; // lower, denser cloud
 
         // Dense smoke cloud particles — thick, slow-moving cloud that obscures the base
         GpuParticles3D smoke = new GpuParticles3D();
         smoke.Name = "SmokeCloud";
-        smoke.Amount = 200;
+        smoke.Amount = 250;
         smoke.Lifetime = 10.0f;
         smoke.Explosiveness = 0.0f;
         smoke.OneShot = false;
@@ -49,17 +51,17 @@ public static class PowerupFX
         smoke.DrawOrder = GpuParticles3D.DrawOrderEnum.ViewDepth;
 
         ParticleProcessMaterial smokeMat = new ParticleProcessMaterial();
-        smokeMat.Direction = new Vector3(0, 0.1f, 0);
+        smokeMat.Direction = new Vector3(0, 0.05f, 0);
         smokeMat.Spread = 180f;
-        smokeMat.InitialVelocityMin = 0.01f;
-        smokeMat.InitialVelocityMax = 0.06f;
-        smokeMat.Gravity = new Vector3(0, 0.02f, 0); // barely perceptible upward drift
-        smokeMat.ScaleMin = 6.0f;
-        smokeMat.ScaleMax = 14.0f;
+        smokeMat.InitialVelocityMin = 0.005f;
+        smokeMat.InitialVelocityMax = 0.03f;
+        smokeMat.Gravity = new Vector3(0, -0.01f, 0); // slight downward pull — hugs the ground
+        smokeMat.ScaleMin = 7.0f;
+        smokeMat.ScaleMax = 16.0f;
         smokeMat.EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Box;
         smokeMat.EmissionBoxExtents = new Vector3(halfX, height * 0.5f, halfZ);
-        smokeMat.DampingMin = 8f;
-        smokeMat.DampingMax = 12f;
+        smokeMat.DampingMin = 10f;
+        smokeMat.DampingMax = 15f;
 
         // Color ramp: thick, opaque grey smoke that lingers and fades slowly at edges
         Gradient colorGrad = new Gradient();
@@ -244,8 +246,9 @@ public static class PowerupFX
     // ─────────────────────────────────────────────────
 
     /// <summary>
-    /// Spawns a translucent blue hex-grid bubble (approximated with a sphere)
-    /// at the shield center position.
+    /// Spawns a blue shimmer effect on everything in the shielded zone.
+    /// Rising sparkle particles + blue tint light instead of an opaque bubble.
+    /// Visible to all players so enemies can see the shield is active.
     /// </summary>
     public static void SpawnShieldBubble(Node parent, Vector3 center, float radiusMeters)
     {
@@ -254,70 +257,100 @@ public static class PowerupFX
         parent.AddChild(root);
         root.GlobalPosition = center;
 
-        // Shield sphere
-        MeshInstance3D bubble = new MeshInstance3D();
-        bubble.Name = "ShieldSphere";
-        SphereMesh shieldMesh = new SphereMesh();
-        shieldMesh.Radius = radiusMeters;
-        shieldMesh.Height = radiusMeters * 2f;
-        shieldMesh.RadialSegments = 16;
-        shieldMesh.Rings = 8;
-        bubble.Mesh = shieldMesh;
+        // Shimmer particles — small rising blue sparkles throughout the zone
+        GpuParticles3D shimmer = new GpuParticles3D();
+        shimmer.Name = "ShieldShimmer";
+        shimmer.Amount = 80;
+        shimmer.Lifetime = 2.5f;
+        shimmer.Explosiveness = 0f;
+        shimmer.OneShot = false;
+        shimmer.FixedFps = 30;
 
-        StandardMaterial3D shieldMat = new StandardMaterial3D();
-        shieldMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-        shieldMat.AlbedoColor = new Color(0.2f, 0.5f, 1f, 0.15f);
-        shieldMat.EmissionEnabled = true;
-        shieldMat.Emission = new Color(0.3f, 0.6f, 1f);
-        shieldMat.EmissionEnergyMultiplier = 1.5f;
-        shieldMat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
-        shieldMat.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
-        shieldMat.RimEnabled = true;
-        shieldMat.Rim = 0.8f;
-        shieldMat.RimTint = 0.5f;
-        bubble.MaterialOverride = shieldMat;
-        root.AddChild(bubble);
+        ParticleProcessMaterial shimmerMat = new ParticleProcessMaterial();
+        shimmerMat.Direction = new Vector3(0, 1f, 0);
+        shimmerMat.Spread = 30f;
+        shimmerMat.InitialVelocityMin = 0.3f;
+        shimmerMat.InitialVelocityMax = 0.8f;
+        shimmerMat.Gravity = new Vector3(0, -0.05f, 0);
+        shimmerMat.ScaleMin = 0.02f;
+        shimmerMat.ScaleMax = 0.08f;
+        shimmerMat.EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Box;
+        shimmerMat.EmissionBoxExtents = new Vector3(radiusMeters * 0.9f, radiusMeters * 0.5f, radiusMeters * 0.9f);
 
-        // Inner glow particles
-        GpuParticles3D glow = new GpuParticles3D();
-        glow.Name = "ShieldGlow";
-        glow.Amount = 20;
-        glow.Lifetime = 2f;
-        glow.Explosiveness = 0f;
-        glow.OneShot = false;
-        glow.FixedFps = 30;
+        // Sparkle color ramp: fade in blue, pulse bright, fade out
+        Gradient shimmerGrad = new Gradient();
+        shimmerGrad.SetColor(0, new Color(0.3f, 0.6f, 1f, 0f));
+        shimmerGrad.SetColor(1, new Color(0.2f, 0.5f, 1f, 0f));
+        shimmerGrad.AddPoint(0.15f, new Color(0.4f, 0.7f, 1f, 0.9f));
+        shimmerGrad.AddPoint(0.5f, new Color(0.5f, 0.8f, 1f, 1f));
+        shimmerGrad.AddPoint(0.85f, new Color(0.3f, 0.6f, 1f, 0.6f));
+        GradientTexture1D shimmerTex = new GradientTexture1D();
+        shimmerTex.Gradient = shimmerGrad;
+        shimmerMat.ColorRamp = shimmerTex;
 
-        ParticleProcessMaterial glowMat = new ParticleProcessMaterial();
-        glowMat.Direction = new Vector3(0, 0.5f, 0);
-        glowMat.Spread = 180f;
-        glowMat.InitialVelocityMin = 0.2f;
-        glowMat.InitialVelocityMax = 0.5f;
-        glowMat.Gravity = Vector3.Zero;
-        glowMat.ScaleMin = 0.05f;
-        glowMat.ScaleMax = 0.15f;
-        glowMat.EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Sphere;
-        glowMat.EmissionSphereRadius = radiusMeters * 0.8f;
-        glowMat.Color = new Color(0.3f, 0.6f, 1f, 0.5f);
-        glow.ProcessMaterial = glowMat;
+        shimmer.ProcessMaterial = shimmerMat;
 
-        BoxMesh glowBox = new BoxMesh();
-        glowBox.Size = new Vector3(0.08f, 0.08f, 0.08f);
-        StandardMaterial3D glowVisual = new StandardMaterial3D();
-        glowVisual.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-        glowVisual.AlbedoColor = new Color(0.3f, 0.7f, 1f, 0.7f);
-        glowVisual.EmissionEnabled = true;
-        glowVisual.Emission = new Color(0.3f, 0.7f, 1f);
-        glowVisual.EmissionEnergyMultiplier = 3f;
-        glowVisual.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
-        glowBox.Material = glowVisual;
-        glow.DrawPass1 = glowBox;
-        root.AddChild(glow);
+        // Small diamond-shaped sparkle meshes
+        BoxMesh sparkleMesh = new BoxMesh();
+        sparkleMesh.Size = new Vector3(0.06f, 0.06f, 0.06f);
+        StandardMaterial3D sparkleVisual = new StandardMaterial3D();
+        sparkleVisual.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+        sparkleVisual.AlbedoColor = new Color(0.5f, 0.8f, 1f, 0.9f);
+        sparkleVisual.EmissionEnabled = true;
+        sparkleVisual.Emission = new Color(0.4f, 0.7f, 1f);
+        sparkleVisual.EmissionEnergyMultiplier = 4f;
+        sparkleVisual.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
+        sparkleVisual.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
+        sparkleMesh.Material = sparkleVisual;
+        shimmer.DrawPass1 = sparkleMesh;
+        root.AddChild(shimmer);
 
-        // Blue point light inside bubble
+        // Surface shimmer — larger, slower particles that cling to surfaces
+        GpuParticles3D surfaceGlow = new GpuParticles3D();
+        surfaceGlow.Name = "SurfaceShimmer";
+        surfaceGlow.Amount = 40;
+        surfaceGlow.Lifetime = 3f;
+        surfaceGlow.Explosiveness = 0f;
+        surfaceGlow.OneShot = false;
+        surfaceGlow.FixedFps = 30;
+
+        ParticleProcessMaterial surfaceMat = new ParticleProcessMaterial();
+        surfaceMat.Direction = new Vector3(0, 0.2f, 0);
+        surfaceMat.Spread = 180f;
+        surfaceMat.InitialVelocityMin = 0.01f;
+        surfaceMat.InitialVelocityMax = 0.05f;
+        surfaceMat.Gravity = Vector3.Zero;
+        surfaceMat.ScaleMin = 0.15f;
+        surfaceMat.ScaleMax = 0.4f;
+        surfaceMat.EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Box;
+        surfaceMat.EmissionBoxExtents = new Vector3(radiusMeters * 0.85f, radiusMeters * 0.4f, radiusMeters * 0.85f);
+        surfaceMat.DampingMin = 5f;
+        surfaceMat.DampingMax = 10f;
+        surfaceMat.Color = new Color(0.3f, 0.6f, 1f, 0.35f);
+        surfaceGlow.ProcessMaterial = surfaceMat;
+
+        SphereMesh glowSphere = new SphereMesh();
+        glowSphere.Radius = 0.3f;
+        glowSphere.Height = 0.6f;
+        glowSphere.RadialSegments = 8;
+        glowSphere.Rings = 4;
+        StandardMaterial3D surfaceVisual = new StandardMaterial3D();
+        surfaceVisual.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+        surfaceVisual.AlbedoColor = new Color(0.3f, 0.6f, 1f, 0.25f);
+        surfaceVisual.EmissionEnabled = true;
+        surfaceVisual.Emission = new Color(0.3f, 0.6f, 1f);
+        surfaceVisual.EmissionEnergyMultiplier = 2f;
+        surfaceVisual.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
+        surfaceVisual.BillboardMode = BaseMaterial3D.BillboardModeEnum.Particles;
+        glowSphere.Material = surfaceVisual;
+        surfaceGlow.DrawPass1 = glowSphere;
+        root.AddChild(surfaceGlow);
+
+        // Blue ambient light to tint the whole zone
         OmniLight3D light = new OmniLight3D();
         light.LightColor = new Color(0.3f, 0.6f, 1f);
-        light.LightEnergy = 2f;
-        light.OmniRange = radiusMeters * 1.5f;
+        light.LightEnergy = 1.5f;
+        light.OmniRange = radiusMeters * 1.2f;
         root.AddChild(light);
 
         // Cleanup after 130 seconds (shield lasts 2 turns max)

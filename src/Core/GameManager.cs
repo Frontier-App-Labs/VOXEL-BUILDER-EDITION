@@ -48,6 +48,7 @@ public partial class GameManager : Node
 
     // Build phase interaction state
     private Vector3I _buildCursorBuildUnit;
+    private Vector3I _buildCursorMicrovoxel; // exact microvoxel for HalfBlock mode
     private bool _buildCursorValid;
     private bool _hasBuildCursor;
 
@@ -2057,6 +2058,11 @@ public partial class GameManager : Node
 
             // Convert to build unit
             _buildCursorBuildUnit = MathHelpers.MicrovoxelToBuild(targetMicrovoxel);
+            _buildCursorMicrovoxel = targetMicrovoxel;
+
+            // Keep BuildSystem in sync for HalfBlock placement
+            if (_buildSystem != null)
+                _buildSystem.HalfBlockMicrovoxel = targetMicrovoxel;
 
             // Validate placement within build zone
             if (_placementMode == PlacementMode.Weapon)
@@ -2181,6 +2187,11 @@ public partial class GameManager : Node
                 // Use manual rotation from R key (90° increments)
                 float yaw = _buildRotation * Mathf.Pi * 0.5f;
                 _ghostPreview.SetModelPreview(previewMesh, worldPos, yaw, _buildCursorValid);
+            }
+            else if (_buildSystem?.CurrentToolMode == BuildToolMode.HalfBlock && _ghostPreview != null)
+            {
+                // HalfBlock preview: show a single microvoxel at the exact cursor position
+                _ghostPreview.SetPreview(new[] { _buildCursorMicrovoxel }, _buildCursorValid);
             }
             else
             {

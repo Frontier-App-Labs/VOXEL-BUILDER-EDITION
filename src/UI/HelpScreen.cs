@@ -353,7 +353,8 @@ public partial class HelpScreen : Control
             "4-player mode). You cannot build outside your zone.");
 
         AddSubHeader(parent, "BUILDING TOOLS");
-        AddBullet(parent, "Single Block: place one block at a time");
+        AddBullet(parent, "Single Block: place one 2x2x2 block at a time");
+        AddBullet(parent, "Half Block: place one microvoxel at a time (fine detail)");
         AddBullet(parent, "Box Tool: drag to fill a rectangular area");
         AddBullet(parent, "Hollow Box: create walls without filling the interior");
         AddBullet(parent, "Symmetry: mirror your builds (X-axis, Z-axis, or both)");

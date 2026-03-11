@@ -30,6 +30,7 @@ public partial class BuildUI : Control
     private static readonly (string Name, string Icon, BuildToolMode Mode)[] Tools =
     {
         ("Single", "\u25a0", BuildToolMode.Single),
+        ("Half", "\u25aa", BuildToolMode.HalfBlock),
         ("Line", "\u2500", BuildToolMode.Line),
         ("Wall", "\u2588", BuildToolMode.Wall),
         ("Box", "\u25a1", BuildToolMode.Box),
