@@ -1879,9 +1879,14 @@ public partial class GameManager : Node
                 break;
 
             case GamePhase.Combat:
-                BuildPrototypeFortresses();
-                DeployAllTroops();
-                _turnManager?.Configure(_players.Keys, Settings.TurnTimeSeconds);
+                // Only run fortress/troop setup if the countdown overlay hasn't
+                // already done it (PerformCombatSetupBehindOverlay).
+                if (!_combatSetupDone)
+                {
+                    BuildPrototypeFortresses();
+                    DeployAllTroops();
+                    _turnManager?.Configure(_players.Keys, Settings.TurnTimeSeconds);
+                }
                 _selectedWeaponIndex = -1; // No weapon selected until player clicks one
                 _isAiming = false;
                 _hasTarget = false;
@@ -2702,27 +2707,25 @@ public partial class GameManager : Node
             return;
         }
 
-        // Convert build cursor to microvoxel at the ground level of the build unit
-        Vector3I baseMicro = MathHelpers.BuildToMicrovoxel(_buildCursorBuildUnit);
-
-        // Door needs to be placed at ground level — find the lowest solid block in this column
-        // within the zone so the door starts at floor level
+        // Use the actual clicked microvoxel as the door base.
+        // The raycast hit a solid block face — the door starts at that hit position.
         Vector3I zoneMin = zone.OriginMicrovoxels;
         Vector3I zoneMax = zone.MaxMicrovoxelsInclusive;
 
-        // Start from the zone floor and look for the first solid voxel at this XZ
-        int doorY = baseMicro.Y;
-        for (int y = zoneMin.Y; y <= zoneMax.Y - DoorRegistry.DoorHeight + 1; y++)
+        // The cursor targets the air voxel adjacent to the surface.
+        // For doors we want the solid block itself, so step back by the hit normal.
+        // Re-raycast to get the actual solid block position.
+        Vector2 mousePos = GetViewport().GetMousePosition();
+        Vector3 rayOrigin = _camera!.ProjectRayOrigin(mousePos);
+        Vector3 rayDir = _camera.ProjectRayNormal(mousePos);
+
+        if (!_voxelWorld.RaycastVoxel(rayOrigin, rayDir, MaxRaycastDistance, out Vector3I hitPos, out Vector3I _))
         {
-            Vector3I check = new Vector3I(baseMicro.X, y, baseMicro.Z);
-            if (_voxelWorld.GetVoxel(check).IsSolid)
-            {
-                doorY = y;
-                break;
-            }
+            return;
         }
 
-        Vector3I doorBase = new Vector3I(baseMicro.X, doorY, baseMicro.Z);
+        // Door base is the hit solid block position (bottom of the 1x4 opening)
+        Vector3I doorBase = hitPos;
 
         bool success = _armyManager.Doors.TryPlaceDoor(
             _voxelWorld, doorBase, _activeBuilder, zoneMin, zoneMax, out string failReason);
@@ -2730,6 +2733,7 @@ public partial class GameManager : Node
         if (success)
         {
             GD.Print($"[Build] Door placed for {_activeBuilder} at {doorBase}.");
+            AudioDirector.Instance?.PlaySFX("ui_click");
         }
         else
         {
@@ -2911,9 +2915,11 @@ public partial class GameManager : Node
         model.AddToGroup("TroopMarkers");
 
         float microMeters = GameConfig.MicrovoxelMeters;
+        // Offset Y upward by leg depth so feet sit on ground (same as TroopEntity)
+        const float legOffset = 4f * 0.06f; // 4 voxels * troop voxelSize
         model.GlobalPosition = new Vector3(
             microPos.X * microMeters + microMeters * 0.5f,
-            microPos.Y * microMeters,
+            microPos.Y * microMeters + legOffset,
             microPos.Z * microMeters + microMeters * 0.5f);
 
         AddChild(model);
@@ -6394,19 +6400,24 @@ public partial class GameManager : Node
 
     private void OnWeaponSellRequested(WeaponType type)
     {
+        GD.Print($"[Build] Weapon sell requested: {type} for {_activeBuilder} (phase={CurrentPhase})");
+
         if (CurrentPhase != GamePhase.Building)
         {
+            GD.Print($"[Build] Sell rejected: wrong phase ({CurrentPhase})");
             return;
         }
 
         if (!_players.TryGetValue(_activeBuilder, out PlayerData? player))
         {
+            GD.Print($"[Build] Sell rejected: no player data for {_activeBuilder}");
             return;
         }
 
         if (!_weapons.TryGetValue(_activeBuilder, out List<WeaponBase>? weaponList) || weaponList.Count == 0)
         {
-            GD.Print($"[Build] {_activeBuilder}: No weapons to sell.");
+            GD.Print($"[Build] {_activeBuilder}: No weapons to sell (list empty or missing).");
+            ShowBuildWarning($"No {GetWeaponDisplayName(type)} to sell!");
             return;
         }
 

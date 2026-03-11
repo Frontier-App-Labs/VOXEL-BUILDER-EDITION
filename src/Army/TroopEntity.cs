@@ -200,11 +200,20 @@ public partial class TroopEntity : Node3D
         _healthBar.Texture = tex;
     }
 
+    /// <summary>
+    /// Converts microvoxel coords to world position with a vertical offset so
+    /// the character model's feet rest on the ground surface. The skeleton's
+    /// legs extend below the root node, so we push the root up by the leg
+    /// depth (thigh attach + shin attach = 4 voxels at troop voxelSize).
+    /// </summary>
     private static Vector3 MicrovoxelToWorld(Vector3I mv)
     {
+        const float legOffsetVoxels = 4f; // thigh(2) + shin(2) below hips
+        const float troopVoxelSize = 0.06f;
+        float legOffset = legOffsetVoxels * troopVoxelSize; // 0.24m
         return new Vector3(
             mv.X * GameConfig.MicrovoxelMeters + GameConfig.MicrovoxelMeters * 0.5f,
-            mv.Y * GameConfig.MicrovoxelMeters,
+            mv.Y * GameConfig.MicrovoxelMeters + legOffset,
             mv.Z * GameConfig.MicrovoxelMeters + GameConfig.MicrovoxelMeters * 0.5f);
     }
 }

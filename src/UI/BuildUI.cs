@@ -714,21 +714,29 @@ public partial class BuildUI : Control
             weapCost.MouseFilter = MouseFilterEnum.Ignore;
             weapInfo.AddChild(weapCost);
 
-            Button weapClickArea = new Button();
-            weapClickArea.Flat = true;
+            // Use a plain Control overlay so both left- and right-click are handled
+            // via GuiInput (Button nodes can swallow right-clicks on some platforms).
+            Control weapClickArea = new Control();
             weapClickArea.MouseFilter = MouseFilterEnum.Stop;
-            weapClickArea.Modulate = new Color(1, 1, 1, 0);
-            weapClickArea.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); SelectWeaponType(capturedIndex); };
+            int capturedWeapIdx = i;
             weapClickArea.GuiInput += (InputEvent @event) =>
             {
-                if (@event is InputEventMouseButton mb && mb.ButtonIndex == MouseButton.Right && mb.Pressed)
+                if (@event is InputEventMouseButton mb && mb.Pressed)
                 {
-                    AudioDirector.Instance?.PlaySFX("ui_click");
-                    WeaponSellRequested?.Invoke(WeaponOptions[capturedIndex].Type);
-                    weapClickArea.AcceptEvent();
+                    if (mb.ButtonIndex == MouseButton.Left)
+                    {
+                        AudioDirector.Instance?.PlaySFX("ui_click");
+                        SelectWeaponType(capturedIndex);
+                        weapClickArea.AcceptEvent();
+                    }
+                    else if (mb.ButtonIndex == MouseButton.Right)
+                    {
+                        AudioDirector.Instance?.PlaySFX("ui_click");
+                        WeaponSellRequested?.Invoke(WeaponOptions[capturedIndex].Type);
+                        weapClickArea.AcceptEvent();
+                    }
                 }
             };
-            int capturedWeapIdx = i;
             weapClickArea.MouseEntered += () => { AudioDirector.Instance?.PlaySFX("ui_hover"); ShowWeaponTooltip(capturedWeapIdx); };
             weapClickArea.MouseExited += HideBuildTooltip;
             weapBtn.AddChild(weapClickArea);
@@ -940,18 +948,24 @@ public partial class BuildUI : Control
             _troopCountLabels.Add(troopCountLabel);
 
             TroopType capturedTroopType = tType;
-            Button troopClickArea = new Button();
-            troopClickArea.Flat = true;
+            Control troopClickArea = new Control();
             troopClickArea.MouseFilter = MouseFilterEnum.Stop;
-            troopClickArea.Modulate = new Color(1, 1, 1, 0);
-            troopClickArea.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); OnTroopBuyClicked(capturedTroopType); };
             troopClickArea.GuiInput += (InputEvent @event) =>
             {
-                if (@event is InputEventMouseButton mb && mb.ButtonIndex == MouseButton.Right && mb.Pressed)
+                if (@event is InputEventMouseButton mb && mb.Pressed)
                 {
-                    AudioDirector.Instance?.PlaySFX("ui_click");
-                    OnTroopSellClicked(capturedTroopType);
-                    troopClickArea.AcceptEvent();
+                    if (mb.ButtonIndex == MouseButton.Left)
+                    {
+                        AudioDirector.Instance?.PlaySFX("ui_click");
+                        OnTroopBuyClicked(capturedTroopType);
+                        troopClickArea.AcceptEvent();
+                    }
+                    else if (mb.ButtonIndex == MouseButton.Right)
+                    {
+                        AudioDirector.Instance?.PlaySFX("ui_click");
+                        OnTroopSellClicked(capturedTroopType);
+                        troopClickArea.AcceptEvent();
+                    }
                 }
             };
             troopClickArea.MouseEntered += () => { AudioDirector.Instance?.PlaySFX("ui_hover"); ShowTroopTooltip(capturedTroopType); };

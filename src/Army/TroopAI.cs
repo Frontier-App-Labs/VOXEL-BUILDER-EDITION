@@ -124,7 +124,7 @@ public static class TroopAI
         // Pathfind from current position to door exterior (through own door)
         if (troop.CurrentPath == null || troop.PathIndex >= troop.CurrentPath.Count)
         {
-            Func<Vector3I, bool> doorCheck = pos => doorRegistry.IsDoorVoxelAnyPlayer(pos);
+            Func<Vector3I, bool> doorCheck = pos => doorRegistry.IsDoorVoxel(pos, troop.OwnerSlot);
             troop.CurrentPath = pathfinder.FindPath(world, troop.CurrentMicrovoxel, doorExterior, doorCheck);
             troop.PathIndex = 0;
 
@@ -196,8 +196,8 @@ public static class TroopAI
         // Pathfind toward enemy commander
         if (troop.CurrentPath == null || troop.PathIndex >= troop.CurrentPath.Count)
         {
-            // Allow walking through any player's doors during marching
-            Func<Vector3I, bool> doorCheck = pos => doorRegistry.IsDoorVoxelAnyPlayer(pos);
+            // Only walk through own doors — enemy doors block passage
+            Func<Vector3I, bool> doorCheck = pos => doorRegistry.IsDoorVoxel(pos, troop.OwnerSlot);
 
             // Try to pathfind to the enemy commander's position
             troop.CurrentPath = pathfinder.FindPath(world, troop.CurrentMicrovoxel, cmdMicrovoxel, doorCheck);
@@ -338,7 +338,7 @@ public static class TroopAI
         // Pathfind back to the door exterior
         if (troop.CurrentPath == null || troop.PathIndex >= troop.CurrentPath.Count)
         {
-            Func<Vector3I, bool> doorCheck = pos => doorRegistry.IsDoorVoxelAnyPlayer(pos);
+            Func<Vector3I, bool> doorCheck = pos => doorRegistry.IsDoorVoxel(pos, troop.OwnerSlot);
             troop.CurrentPath = pathfinder.FindPath(world, troop.CurrentMicrovoxel, doorExterior, doorCheck);
             troop.PathIndex = 0;
 
@@ -393,7 +393,7 @@ public static class TroopAI
         // Pathfind from current position (door area) to home inside the base
         if (troop.CurrentPath == null || troop.PathIndex >= troop.CurrentPath.Count)
         {
-            Func<Vector3I, bool> doorCheck = pos => doorRegistry.IsDoorVoxelAnyPlayer(pos);
+            Func<Vector3I, bool> doorCheck = pos => doorRegistry.IsDoorVoxel(pos, troop.OwnerSlot);
             troop.CurrentPath = pathfinder.FindPath(world, troop.CurrentMicrovoxel, troop.HomeMicrovoxel, doorCheck);
             troop.PathIndex = 0;
 
