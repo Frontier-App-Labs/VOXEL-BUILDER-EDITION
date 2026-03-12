@@ -42,14 +42,14 @@ public sealed class PowerupInventory
     /// </summary>
     public bool TryBuy(PowerupType type, PlayerData player)
     {
-        // Check match usage cap
+        // Check per-type purchase cap (e.g. Smoke = 2, others default 5)
+        PowerupDefinition def = PowerupDefinitions.Get(type);
         int totalUsed = _usedThisMatch.GetValueOrDefault(type, 0) + CountOf(type);
-        if (totalUsed >= MaxUsesPerMatch)
+        if (totalUsed >= def.MaxPurchase)
         {
             return false;
         }
 
-        PowerupDefinition def = PowerupDefinitions.Get(type);
         if (!player.TrySpend(def.Cost))
         {
             return false;
@@ -194,7 +194,8 @@ public sealed class PowerupInventory
     /// </summary>
     public bool IsAtMaxUses(PowerupType type)
     {
-        return _usedThisMatch.GetValueOrDefault(type, 0) + CountOf(type) >= MaxUsesPerMatch;
+        int max = PowerupDefinitions.Get(type).MaxPurchase;
+        return _usedThisMatch.GetValueOrDefault(type, 0) + CountOf(type) >= max;
     }
 
     /// <summary>

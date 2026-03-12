@@ -254,21 +254,19 @@ public partial class VoxelChunk : Node3D
         _opaqueMeshInstance!.Mesh = _pendingResult.OpaqueMesh;
         _transparentMeshInstance!.Mesh = _pendingResult.TransparentMesh;
 
-        // Defer collision shape creation to next frame via _Process to avoid blocking
-        _collisionSourceMesh = _pendingResult.OpaqueMesh;
-        // Fix #5: Also use transparent mesh for collision
-        _transparentCollisionSourceMesh = _pendingResult.TransparentMesh;
-        _collisionPending = _collisionSourceMesh != null || _transparentCollisionSourceMesh != null;
-        if (!_collisionPending)
-        {
-            _collisionShape!.Shape = null;
-            _transparentCollisionShape!.Shape = null;
-        }
+        // Apply collision shapes immediately (same frame as visual mesh) to prevent
+        // ghost faces with stale collision that persist for 1+ frames when deferred.
+        if (_pendingResult.OpaqueMesh != null)
+            _collisionShape!.Shape = _pendingResult.OpaqueMesh.CreateTrimeshShape();
         else
-        {
-            // Fix #8: Enable _Process only when collision work is pending
-            SetProcess(true);
-        }
+            _collisionShape!.Shape = null;
+
+        if (_pendingResult.TransparentMesh != null)
+            _transparentCollisionShape!.Shape = _pendingResult.TransparentMesh.CreateTrimeshShape();
+        else
+            _transparentCollisionShape!.Shape = null;
+
+        _collisionPending = false;
 
         _pendingResult = null;
 

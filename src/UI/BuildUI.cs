@@ -87,6 +87,7 @@ public partial class BuildUI : Control
     private readonly List<PanelContainer> _troopButtons = new List<PanelContainer>();
     private readonly List<Label> _troopCountLabels = new List<Label>();
     private readonly List<PanelContainer> _blueprintButtons = new List<PanelContainer>();
+    private readonly List<Label> _blueprintCostLabels = new List<Label>();
     private readonly List<Button> _symmetryButtons = new List<Button>();
     private int _selectedBlueprintIndex = -1;
     private TooltipSystem? _tooltipSystem;
@@ -621,6 +622,16 @@ public partial class BuildUI : Control
             bpDesc.AutowrapMode = TextServer.AutowrapMode.WordSmart;
             bpDesc.MouseFilter = MouseFilterEnum.Ignore;
             bpInfo.AddChild(bpDesc);
+
+            Label bpCost = new Label();
+            VoxelMaterialDefinition initMat = VoxelMaterials.GetDefinition(BuildMaterials[_selectedMaterialIndex]);
+            bpCost.Text = $"${bp.BlockCount * initMat.Cost}";
+            bpCost.AddThemeFontOverride("font", PixelFont);
+            bpCost.AddThemeFontSizeOverride("font_size", 10);
+            bpCost.AddThemeColorOverride("font_color", AccentGold);
+            bpCost.MouseFilter = MouseFilterEnum.Ignore;
+            bpInfo.AddChild(bpCost);
+            _blueprintCostLabels.Add(bpCost);
 
             Button bpClickArea = new Button();
             bpClickArea.Flat = true;
@@ -1353,6 +1364,7 @@ public partial class BuildUI : Control
             Color bg = i == index ? new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.15f) : new Color(0, 0, 0, 0);
             _materialButtons[i].AddThemeStyleboxOverride("panel", CreateFlatStyle(bg, 0));
         }
+        UpdateBlueprintCosts();
         MaterialSelected?.Invoke(BuildMaterials[index]);
     }
 
@@ -1373,8 +1385,19 @@ public partial class BuildUI : Control
                     Color bg = j == i ? new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.15f) : new Color(0, 0, 0, 0);
                     _materialButtons[j].AddThemeStyleboxOverride("panel", CreateFlatStyle(bg, 0));
                 }
+                UpdateBlueprintCosts();
                 return;
             }
+        }
+    }
+
+    private void UpdateBlueprintCosts()
+    {
+        BlueprintDefinition[] blueprints = BuildBlueprints.All;
+        VoxelMaterialDefinition matDef = VoxelMaterials.GetDefinition(BuildMaterials[_selectedMaterialIndex]);
+        for (int i = 0; i < _blueprintCostLabels.Count && i < blueprints.Length; i++)
+        {
+            _blueprintCostLabels[i].Text = $"${blueprints[i].BlockCount * matDef.Cost}";
         }
     }
 

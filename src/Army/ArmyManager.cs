@@ -179,7 +179,7 @@ public partial class ArmyManager : Node
         {
             foreach (var troop in troops)
             {
-                if (!IsInstanceValid(troop) || troop.CurrentHP <= 0) continue;
+                if (!IsInstanceValid(troop) || troop.CurrentHP <= 0 || troop.IsSurrendered) continue;
 
                 // If troop has a MoveTarget but no current path, find one
                 if (troop.MoveTarget.HasValue && troop.CurrentPath == null)
@@ -193,8 +193,17 @@ public partial class ArmyManager : Node
 
                     if (troop.CurrentPath == null)
                     {
-                        // Can't reach target — clear it
-                        troop.MoveTarget = null;
+                        // Can't reach spread target — try original click position as fallback
+                        if (troop.MoveTargetFallback.HasValue)
+                        {
+                            troop.MoveTarget = troop.MoveTargetFallback.Value;
+                            troop.MoveTargetFallback = null;
+                            // Path will be computed next frame
+                        }
+                        else
+                        {
+                            troop.MoveTarget = null;
+                        }
                     }
                 }
             }
@@ -379,6 +388,7 @@ public partial class ArmyManager : Node
 
             claimed.Add(candidate);
             troop.MoveTarget = candidate;
+            troop.MoveTargetFallback = candidate != targetMicrovoxel ? targetMicrovoxel : null;
             troop.CurrentPath = null;
             troop.PathIndex = 0;
             idx++;
@@ -454,6 +464,24 @@ public partial class ArmyManager : Node
     }
 
     /// <summary>
+    /// Makes all of a player's troops surrender (hands up, stop fighting).
+    /// Called when their commander dies.
+    /// </summary>
+    public void SurrenderTroops(PlayerSlot player)
+    {
+        if (!_deployedTroops.TryGetValue(player, out var troops)) return;
+        foreach (var troop in troops)
+        {
+            if (!IsInstanceValid(troop) || troop.CurrentHP <= 0) continue;
+            troop.MoveTarget = null;
+            troop.MoveTargetFallback = null;
+            troop.CurrentPath = null;
+            troop.Surrender();
+        }
+        GD.Print($"[Army] {player}: troops surrendered (commander killed)");
+    }
+
+    /// <summary>
     /// Returns a list of (troop, attack target) pairs for troops that can attack this turn.
     /// Used by the troop attack camera sequence. Checks all target types in priority order:
     /// Enemy Troops > Commander > Weapons > Voxels.
@@ -469,7 +497,7 @@ public partial class ArmyManager : Node
 
         foreach (var troop in troops)
         {
-            if (!IsInstanceValid(troop) || troop.CurrentHP <= 0) continue;
+            if (!IsInstanceValid(troop) || troop.CurrentHP <= 0 || troop.IsSurrendered) continue;
             TroopAttackTarget? target = TroopAI.FindBestTarget(
                 troop, _voxelWorld, _buildZones,
                 _deployedTroops, commanders, weapons, alivePlayers);

@@ -11,12 +11,15 @@ namespace VoxelSiege.Art;
 /// </summary>
 public partial class VoxelAnimator : Node
 {
-    public enum AnimState { Idle, Walk, Attack, Shoot, Flinch, Panic, Celebrate, Dead }
+    public enum AnimState { Idle, Walk, Attack, Shoot, Flinch, Panic, Celebrate, Dead, Surrender }
 
     private AnimState _state = AnimState.Idle;
     private float _stateTime;
     private float _blendAlpha = 1f;
     private float _walkSpeed = 1f;
+
+    /// <summary>When true, the right arm holds a gun aimed forward in idle/walk poses.</summary>
+    public bool HasGun { get; set; }
 
     // Joint references (populated by scanning the character hierarchy)
     private Node3D? _hips;
@@ -73,7 +76,10 @@ public partial class VoxelAnimator : Node
 
     public void SetState(AnimState state, float walkSpeed = 1f)
     {
-        if (_state == state) return;
+        // Action states (Attack/Shoot) must be re-triggerable so each troop's
+        // attack plays its full animation even if called back-to-back.
+        if (_state == state && state != AnimState.Attack && state != AnimState.Shoot)
+            return;
         _state = state;
         _stateTime = 0f;
         _blendAlpha = 0f;
@@ -96,6 +102,7 @@ public partial class VoxelAnimator : Node
             case AnimState.Panic: AnimatePanic(dt); break;
             case AnimState.Celebrate: AnimateCelebrate(dt); break;
             case AnimState.Dead: break; // ragdoll takes over
+            case AnimState.Surrender: AnimateSurrender(dt); break;
         }
     }
 
@@ -113,11 +120,20 @@ public partial class VoxelAnimator : Node
         // Spine breathing
         SetRotation(_spine, new Vector3(Mathf.Sin(t * 1.5f) * Deg(2), 0, Mathf.Sin(t * 0.7f) * Deg(1)));
 
-        // Subtle arm sway
+        // Subtle arm sway (right arm holds gun forward if HasGun)
         SetRotation(_leftShoulder, new Vector3(0, 0, Mathf.Sin(t * 1.0f) * Deg(3)));
-        SetRotation(_rightShoulder, new Vector3(0, 0, -Mathf.Sin(t * 1.0f) * Deg(3)));
+        if (HasGun)
+        {
+            // Right arm raised: shoulder pitched forward ~90° so gun barrel points ahead
+            SetRotation(_rightShoulder, new Vector3(Deg(90) + Mathf.Sin(t * 1.2f) * Deg(2), 0, 0));
+            SetRotation(_rightElbow, new Vector3(Deg(-15), 0, 0));
+        }
+        else
+        {
+            SetRotation(_rightShoulder, new Vector3(0, 0, -Mathf.Sin(t * 1.0f) * Deg(3)));
+            SetRotation(_rightElbow, new Vector3(Deg(10), 0, 0));
+        }
         SetRotation(_leftElbow, new Vector3(Deg(10), 0, 0));
-        SetRotation(_rightElbow, new Vector3(Deg(10), 0, 0));
 
         // Head look (slow random-ish via sin with irrational frequency)
         SetRotation(_neck, new Vector3(0, Mathf.Sin(t * 0.37f) * Deg(25), 0));
@@ -157,16 +173,25 @@ public partial class VoxelAnimator : Node
         SetRotation(_leftKnee, new Vector3(leftKneeBend, 0, 0));
         SetRotation(_rightKnee, new Vector3(rightKneeBend, 0, 0));
 
-        // Arm swing (opposite to legs)
+        // Arm swing (opposite to legs) — right arm holds gun forward if HasGun
         float armSwing = Deg(25);
         SetRotation(_leftShoulder, new Vector3(-Mathf.Sin(cycle) * armSwing, 0, 0));
-        SetRotation(_rightShoulder, new Vector3(Mathf.Sin(cycle) * armSwing, 0, 0));
+        if (HasGun)
+        {
+            // Right arm stays raised with gun aimed forward, slight bob from walking
+            SetRotation(_rightShoulder, new Vector3(Deg(85) + Mathf.Sin(cycle) * Deg(5), 0, 0));
+            SetRotation(_rightElbow, new Vector3(Deg(-15), 0, 0));
+        }
+        else
+        {
+            SetRotation(_rightShoulder, new Vector3(Mathf.Sin(cycle) * armSwing, 0, 0));
+            float rightElbowBend = Deg(15) + Mathf.Max(0, -Mathf.Sin(cycle)) * Deg(25);
+            SetRotation(_rightElbow, new Vector3(rightElbowBend, 0, 0));
+        }
 
-        // Elbow bend during swing
+        // Elbow bend during swing (left arm only when HasGun, both otherwise)
         float leftElbowBend = Deg(15) + Mathf.Max(0, Mathf.Sin(cycle)) * Deg(25);
-        float rightElbowBend = Deg(15) + Mathf.Max(0, -Mathf.Sin(cycle)) * Deg(25);
         SetRotation(_leftElbow, new Vector3(leftElbowBend, 0, 0));
-        SetRotation(_rightElbow, new Vector3(rightElbowBend, 0, 0));
 
         // Head stays mostly forward with slight bounce
         SetRotation(_neck, new Vector3(Mathf.Sin(cycle * 2) * Deg(3), 0, 0));
@@ -186,27 +211,27 @@ public partial class VoxelAnimator : Node
         float spineX;
         if (t < 0.25f)
         {
-            // Wind up
+            // Wind up (arm swings back)
             float p = t / 0.25f;
             shoulderX = Mathf.Lerp(0, Deg(-60), p);
             elbowX = Mathf.Lerp(Deg(10), Deg(30), p);
-            spineX = Mathf.Lerp(0, Deg(5), p);
+            spineX = Mathf.Lerp(0, Deg(-5), p);
         }
         else if (t < 0.5f)
         {
-            // Thrust
+            // Thrust forward (arm swings forward to throw)
             float p = (t - 0.25f) / 0.25f;
-            shoulderX = Mathf.Lerp(Deg(-60), Deg(-90), p);
-            elbowX = Mathf.Lerp(Deg(30), Deg(5), p);
-            spineX = Mathf.Lerp(Deg(5), Deg(-8), p);
+            shoulderX = Mathf.Lerp(Deg(-60), Deg(90), p);
+            elbowX = Mathf.Lerp(Deg(30), Deg(-5), p);
+            spineX = Mathf.Lerp(Deg(-5), Deg(8), p);
         }
         else
         {
-            // Recoil and return
+            // Follow-through and return
             float p = (t - 0.5f) / 0.5f;
-            shoulderX = Mathf.Lerp(Deg(-90), 0, p * p);
-            elbowX = Mathf.Lerp(Deg(5), Deg(10), p);
-            spineX = Mathf.Lerp(Deg(-8), 0, p);
+            shoulderX = Mathf.Lerp(Deg(90), 0, p * p);
+            elbowX = Mathf.Lerp(Deg(-5), Deg(10), p);
+            spineX = Mathf.Lerp(Deg(8), 0, p);
         }
 
         SetRotation(_rightShoulder, new Vector3(shoulderX, 0, 0));
@@ -234,44 +259,44 @@ public partial class VoxelAnimator : Node
         float spineX;
         if (t < 0.15f)
         {
-            // Raise arm to aiming pose
+            // Raise arm to aiming pose (forward)
             float p = t / 0.15f;
-            shoulderX = Mathf.Lerp(0, Deg(-75), p);
+            shoulderX = Mathf.Lerp(0, Deg(75), p);
             elbowX = Mathf.Lerp(Deg(10), Deg(0), p);
-            spineX = Mathf.Lerp(0, Deg(-3), p);
+            spineX = Mathf.Lerp(0, Deg(3), p);
         }
         else if (t < 0.25f)
         {
             // Brief hold on target before firing
-            shoulderX = Deg(-75);
+            shoulderX = Deg(75);
             elbowX = Deg(0);
-            spineX = Deg(-3);
+            spineX = Deg(3);
         }
         else if (t < 0.35f)
         {
-            // FIRE — sharp recoil kick: arm jerks up, spine rocks back
+            // FIRE — sharp recoil kick: barrel kicks UP, spine rocks BACK
             float p = (t - 0.25f) / 0.1f; // fast 0→1 over 10% of anim
             float kick = Mathf.Sin(p * Mathf.Pi); // spike up then back down
-            shoulderX = Deg(-75) + kick * Deg(25); // arm kicks up hard
+            shoulderX = Deg(75) + kick * Deg(25); // arm kicks up from recoil
             elbowX = kick * Deg(12); // elbow flexes from recoil
-            spineX = Deg(-3) - kick * Deg(6); // spine rocks backward
+            spineX = Deg(3) + kick * Deg(6); // spine rocks backward
         }
         else if (t < 0.50f)
         {
-            // Recoil settle — arm drifts back to aim
+            // Recoil settle — arm drifts back to aim from overshoot
             float p = (t - 0.35f) / 0.15f;
-            shoulderX = Mathf.Lerp(Deg(-75) + Deg(8), Deg(-75), p); // slight overshoot
+            shoulderX = Mathf.Lerp(Deg(75) + Deg(8), Deg(75), p); // settling from overshoot
             elbowX = Mathf.Lerp(Deg(5), Deg(0), p);
-            spineX = Mathf.Lerp(Deg(-5), Deg(-3), p);
+            spineX = Mathf.Lerp(Deg(5), Deg(3), p);
         }
         else
         {
             // Return to idle
             float p = (t - 0.50f) / 0.50f;
             float ease = p * p;
-            shoulderX = Mathf.Lerp(Deg(-75), 0, ease);
+            shoulderX = Mathf.Lerp(Deg(75), 0, ease);
             elbowX = Mathf.Lerp(Deg(0), Deg(10), ease);
-            spineX = Mathf.Lerp(Deg(-3), 0, ease);
+            spineX = Mathf.Lerp(Deg(3), 0, ease);
         }
 
         SetRotation(_rightShoulder, new Vector3(shoulderX, 0, 0));
@@ -343,6 +368,38 @@ public partial class VoxelAnimator : Node
         SetRotation(_rightShoulder, new Vector3(0, 0, Deg(90) * rightPump));
         SetRotation(_leftElbow, new Vector3(Deg(20), 0, 0));
         SetRotation(_rightElbow, new Vector3(Deg(20), 0, 0));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  SURRENDER - hands up, trembling
+    // ═══════════════════════════════════════════════════════════════
+
+    private void AnimateSurrender(float dt)
+    {
+        float t = _stateTime;
+
+        // Trembling body
+        float tremble = Mathf.Sin(t * 12f) * Deg(2);
+        SetPositionOffset(_hips, new Vector3(Mathf.Sin(t * 10f) * 0.003f, 0, 0));
+        SetRotation(_spine, new Vector3(Deg(5), tremble, 0));
+
+        // Both arms raised high (surrender pose)
+        float armRaise = Mathf.Min(_stateTime * 4f, 1f); // raise over 0.25s
+        SetRotation(_leftShoulder, new Vector3(0, 0, Mathf.Lerp(0, Deg(-150), armRaise) + Mathf.Sin(t * 8f) * Deg(3)));
+        SetRotation(_rightShoulder, new Vector3(0, 0, Mathf.Lerp(0, Deg(150), armRaise) + Mathf.Sin(t * 8f + 1f) * Deg(3)));
+
+        // Elbows bent (hands above head)
+        SetRotation(_leftElbow, new Vector3(Deg(40) + Mathf.Sin(t * 9f) * Deg(5), 0, 0));
+        SetRotation(_rightElbow, new Vector3(Deg(40) + Mathf.Sin(t * 9f + 0.5f) * Deg(5), 0, 0));
+
+        // Head looking down, shaking
+        SetRotation(_neck, new Vector3(Deg(15), Mathf.Sin(t * 6f) * Deg(10), 0));
+
+        // Legs slightly bent (cowering)
+        SetRotation(_leftHip, new Vector3(Deg(10), 0, 0));
+        SetRotation(_rightHip, new Vector3(Deg(10), 0, 0));
+        SetRotation(_leftKnee, new Vector3(Deg(15), 0, 0));
+        SetRotation(_rightKnee, new Vector3(Deg(15), 0, 0));
     }
 
     // ═══════════════════════════════════════════════════════════════

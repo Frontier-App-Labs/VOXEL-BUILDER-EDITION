@@ -162,6 +162,8 @@ public partial class GameManager : Node
 
     // Deferred game-over: when the final kill happens, let the kill cam play first
     private bool _pendingGameOver;
+    // Skip powerup tick on the next turn change caused by a player death removal
+    private bool _skipNextPowerupTick;
     private PlayerSlot? _pendingWinner;
 
     // Sandbox mode: build freely with no opponents, save/load builds
@@ -2190,6 +2192,17 @@ public partial class GameManager : Node
                 List<Vector3I> rotatedOffsets = _buildSystem.ActiveBlueprint.GetRotatedOffsets(_buildRotation);
                 List<Vector3I> allMicrovoxels = BuildSystem.GenerateBlueprintMicrovoxels(_buildCursorBuildUnit, rotatedOffsets);
                 bool allValid = _buildCursorValid && BuildSystem.ValidateBlueprintInZone(zone, _buildCursorBuildUnit, rotatedOffsets);
+
+                // Add symmetry-mirrored blocks for the blueprint preview
+                if (_buildSystem.SymmetryMode != BuildSymmetryMode.None)
+                {
+                    foreach (Vector3I offset in rotatedOffsets)
+                    {
+                        Vector3I buildUnit = _buildCursorBuildUnit + offset;
+                        allMicrovoxels.AddRange(_buildSystem.GetSymmetryMirroredMicrovoxels(zone, buildUnit));
+                    }
+                }
+
                 _ghostPreview.SetPreview(allMicrovoxels, allValid);
                 _buildCursorValid = allValid;
             }
@@ -5074,6 +5087,14 @@ public partial class GameManager : Node
             killer.Stats.CommanderKills++;
         }
 
+        // Troops whose commander died surrender — hands up, stop fighting
+        _armyManager?.SurrenderTroops(payload.Victim);
+
+        // Force-expire all active powerup effects for the dead player so smoke/shield/EMP
+        // don't persist forever (dead players are removed from turn order and never tick)
+        if (player != null && _powerupExecutor != null)
+            _powerupExecutor.ExpireAllEffects(player, _players);
+
         // Activate kill cam: orbit the death location.
         // Self-kills (killer == victim) use an overhead impact view instead of
         // the standard orbit cam, which glitches when there's no distinct killer.
@@ -5091,7 +5112,18 @@ public partial class GameManager : Node
             }
         }
 
+        // RemovePlayer may emit TurnChanged if the dead player was the current player.
+        // Skip the powerup tick in that handler so surviving players' effects don't
+        // expire prematurely from the death-triggered turn change.
+        _skipNextPowerupTick = true;
         _turnManager?.RemovePlayer(payload.Victim, Settings.TurnTimeSeconds);
+        _skipNextPowerupTick = false;
+
+        // Re-enforce any remaining smoke screens — the turn order change and powerup
+        // expiry above may have touched the shader state, so re-sync to ensure any
+        // surviving player's smoke dissolve is still applied.
+        _powerupExecutor?.ReenforceSmokeScreens(_players, _commanders);
+
         int aliveCount = 0;
         PlayerSlot? winner = null;
         foreach ((PlayerSlot slot, PlayerData playerData) in _players)
@@ -5136,11 +5168,14 @@ public partial class GameManager : Node
         _hitRecordedThisRound.Clear();
 
         // Tick active powerup effects for the current player only (so durations
-        // count in that player's turns, not every player's turns)
-        _powerupExecutor?.TickAllPlayerEffects(_players, payload.CurrentPlayer);
+        // count in that player's turns, not every player's turns).
+        // Skip if this turn change was triggered by a player death removal —
+        // otherwise surviving players' smoke/shield/EMP tick down prematurely.
+        if (!_skipNextPowerupTick)
+            _powerupExecutor?.TickAllPlayerEffects(_players, payload.CurrentPlayer);
 
         // Re-enforce smoke screen chunk hiding (chunks may have been remeshed by explosions)
-        _powerupExecutor?.ReenforceSmokeScreens(_players);
+        _powerupExecutor?.ReenforceSmokeScreens(_players, _commanders);
 
         // Tick army troops — all players' attacks are deferred to the visual troop
         // attack sequence that plays after their weapon fires. Skip attacks for the
@@ -5801,7 +5836,7 @@ public partial class GameManager : Node
         {
             if (_powerupExecutor.ActivateSmokeScreen(botData, alivePlayerCount))
             {
-                _powerupExecutor.ReenforceSmokeScreens(_players);
+                _powerupExecutor.ReenforceSmokeScreens(_players, _commanders);
                 GD.Print($"[Bot] {botSlot} used Smoke Screen");
             }
             return;
@@ -5918,7 +5953,7 @@ public partial class GameManager : Node
         // Re-enforce smoke screen chunk hiding after voxel destruction causes remesh
         if (payload.AfterData == 0 && payload.BeforeData != 0)
         {
-            _powerupExecutor?.ReenforceSmokeScreens(_players);
+            _powerupExecutor?.ReenforceSmokeScreens(_players, _commanders);
         }
 
         // Only count voxel destruction (solid -> air), not placement or damage
@@ -6803,6 +6838,9 @@ public partial class GameManager : Node
             return;
         }
 
+        // Clear stale ghost preview from previous placement mode (troop/commander)
+        _ghostPreview?.Hide();
+
         _placementMode = PlacementMode.Weapon;
         _isDragBuilding = false;
 
@@ -6829,6 +6867,9 @@ public partial class GameManager : Node
         {
             return;
         }
+
+        // Clear stale ghost preview from previous placement mode (weapon/troop)
+        _ghostPreview?.Hide();
 
         _placementMode = PlacementMode.Commander;
         _isDragBuilding = false;
@@ -7241,6 +7282,9 @@ public partial class GameManager : Node
             return;
         }
 
+        // Clear stale ghost preview from previous placement mode (weapon/commander)
+        _ghostPreview?.Hide();
+
         // Enter troop placement mode — the troop is bought when actually placed
         _selectedTroopType = type;
         _placementMode = PlacementMode.Troop;
@@ -7527,7 +7571,7 @@ public partial class GameManager : Node
         {
             case PowerupType.SmokeScreen:
                 success = _powerupExecutor.ActivateSmokeScreen(player, alivePlayerCount);
-                if (success) _powerupExecutor.ReenforceSmokeScreens(_players);
+                if (success) _powerupExecutor.ReenforceSmokeScreens(_players, _commanders);
                 break;
 
             case PowerupType.Medkit:

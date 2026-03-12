@@ -8,6 +8,7 @@ using VoxelSiege.FX;
 using VoxelSiege.Utility;
 using VoxelSiege.Voxel;
 using VoxelValue = VoxelSiege.Voxel.Voxel;
+using CommanderActor = VoxelSiege.Commander.Commander;
 
 namespace VoxelSiege.Combat;
 
@@ -18,6 +19,7 @@ namespace VoxelSiege.Combat;
 public partial class PowerupExecutor : Node
 {
     private VoxelWorld? _voxelWorld;
+    private Dictionary<PlayerSlot, CommanderActor>? _cachedCommanders;
 
     /// <summary>
     /// Raised when a powerup effect is activated, so UI / FX systems can respond.
@@ -77,10 +79,10 @@ public partial class PowerupExecutor : Node
         {
             Zone = zone,
             TotalPlayers = totalPlayersAlive,
-            TurnsRemaining = totalPlayersAlive,
+            TurnsRemaining = 1,
         };
 
-        player.Powerups.AddActiveEffect(PowerupType.SmokeScreen, player.Slot, totalPlayersAlive, data);
+        player.Powerups.AddActiveEffect(PowerupType.SmokeScreen, player.Slot, 1, data);
 
         // Spawn visual smoke cloud
         PowerupFX.SpawnSmokeScreen(GetTree().Root, center, zone);
@@ -89,7 +91,7 @@ public partial class PowerupExecutor : Node
         // so that ALL active smoke zones (from multiple players) are set at once.
 
         PowerupActivated?.Invoke(PowerupType.SmokeScreen, player.Slot, center);
-        GD.Print($"[Powerup] {player.Slot}: Smoke Screen deployed — fortress invisible for {totalPlayersAlive} turns.");
+        GD.Print($"[Powerup] {player.Slot}: Smoke Screen deployed — fortress invisible for 1 round.");
         return true;
     }
 
@@ -166,10 +168,16 @@ public partial class PowerupExecutor : Node
     /// The shader-based dissolve survives chunk remeshing automatically,
     /// but this is still called on turn change as a safety net.
     /// </summary>
-    public void ReenforceSmokeScreens(IReadOnlyDictionary<PlayerSlot, PlayerData> allPlayers)
+    public void ReenforceSmokeScreens(
+        IReadOnlyDictionary<PlayerSlot, PlayerData> allPlayers,
+        Dictionary<PlayerSlot, CommanderActor>? commanders = null)
     {
-        // Collect all active smoke zones across all players
+        // Cache commanders reference for internal calls (e.g. smoke expiration)
+        if (commanders != null) _cachedCommanders = commanders;
+
+        // Collect all active smoke zones and which players have smoke active
         List<BuildZone> activeZones = new();
+        HashSet<PlayerSlot> smokedPlayers = new();
         foreach (PlayerData player in allPlayers.Values)
         {
             foreach (ActivePowerup effect in player.Powerups.GetActiveEffects(PowerupType.SmokeScreen))
@@ -177,6 +185,7 @@ public partial class PowerupExecutor : Node
                 if (effect.TargetData is SmokeScreenData smokeData)
                 {
                     activeZones.Add(smokeData.Zone);
+                    smokedPlayers.Add(player.Slot);
                 }
             }
         }
@@ -185,6 +194,17 @@ public partial class PowerupExecutor : Node
             SetAllSmokeZones(activeZones, 0.92f);
         else
             ClearSmokeZoneDissolve();
+
+        // Hide/show commanders based on smoke status
+        var cmds = commanders ?? _cachedCommanders;
+        if (cmds != null)
+        {
+            foreach (var (slot, cmd) in cmds)
+            {
+                if (!GodotObject.IsInstanceValid(cmd) || cmd.IsDead) continue;
+                cmd.Visible = !smokedPlayers.Contains(slot);
+            }
+        }
     }
 
     /// <summary>
@@ -309,8 +329,8 @@ public partial class PowerupExecutor : Node
             return false;
         }
 
-        // Duration = number of alive players (full rotation)
-        player.Powerups.AddActiveEffect(PowerupType.ShieldGenerator, player.Slot, totalPlayersAlive, null);
+        // Duration = 1 round (expires after one full turn rotation)
+        player.Powerups.AddActiveEffect(PowerupType.ShieldGenerator, player.Slot, 1, null);
 
         BuildZone zone = player.AssignedBuildZone;
         Vector3 worldCenter = MathHelpers.MicrovoxelToWorld(
@@ -675,6 +695,30 @@ public partial class PowerupExecutor : Node
             ReenforceSmokeScreens(allPlayers);
 
         return allExpired;
+    }
+
+    /// <summary>
+    /// Force-expires all active powerup effects for a player (called when their commander dies).
+    /// Prevents orphaned effects that never tick down because the dead player is removed from turn order.
+    /// </summary>
+    public void ExpireAllEffects(PlayerData player, IReadOnlyDictionary<PlayerSlot, PlayerData> allPlayers)
+    {
+        // Force all remaining turns to 0 and tick to expire them
+        foreach (ActivePowerup effect in player.Powerups.ActiveEffects)
+            effect.RemainingTurns = 0;
+
+        List<ActivePowerup> expired = player.Powerups.TickAndExpire();
+        bool smokeExpired = false;
+        foreach (ActivePowerup e in expired)
+        {
+            if (e.Type == PowerupType.SmokeScreen) smokeExpired = true;
+            CleanupExpiredEffect(e);
+            PowerupExpired?.Invoke(e.Type, e.Owner);
+            GD.Print($"[Powerup] {e.Owner}: {e.Type} force-expired (commander killed).");
+        }
+
+        if (smokeExpired)
+            ReenforceSmokeScreens(allPlayers);
     }
 
     /// <summary>

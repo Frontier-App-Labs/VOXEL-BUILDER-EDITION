@@ -12,7 +12,8 @@ public readonly record struct PowerupDefinition(
     string Description,
     int DurationTurns,
     string IconGlyph,
-    Color AccentColor);
+    Color AccentColor,
+    int MaxPurchase = 5);
 
 /// <summary>
 /// Central registry of all powerup definitions.
@@ -24,10 +25,11 @@ public static class PowerupDefinitions
         [PowerupType.SmokeScreen] = new PowerupDefinition(
             "Smoke Screen",
             300,
-            "Deploys thick smoke over your fortress, making it invisible for a full rotation of turns. Enemies fire blind. Debris from hits is still visible.",
+            "Deploys thick smoke over your fortress, making it invisible for 1 round. Enemies fire blind. Debris from hits is still visible.",
             0, // duration managed by rotation tracking, not simple turn count
             "\u2601", // cloud
-            new Color("8b949e")),
+            new Color("8b949e"),
+            MaxPurchase: 2),
 
         [PowerupType.Medkit] = new PowerupDefinition(
             "Medkit",

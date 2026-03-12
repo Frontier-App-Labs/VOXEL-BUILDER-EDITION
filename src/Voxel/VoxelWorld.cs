@@ -110,9 +110,13 @@ public partial class VoxelWorld : Node3D
             {
                 Vector3I chunkCoords = _dirtyChunkQueue.Dequeue();
                 _dirtyChunkSet.Remove(chunkCoords);
-                if (_chunks.TryGetValue(chunkCoords, out VoxelChunk? chunk) && chunk.IsDirty)
+                // Don't check chunk.IsDirty — neighbor chunks queued for boundary
+                // remesh have no direct voxel writes, so IsDirty is false, but they
+                // still need remeshing because their padded snapshot reads changed
+                // boundary data from adjacent chunks. QueueRemeshAsync's own
+                // _meshingInProgress/_meshQueued guard prevents redundant work.
+                if (_chunks.TryGetValue(chunkCoords, out VoxelChunk? chunk))
                 {
-                    // Fire-and-forget: QueueRemeshAsync handles its own re-entrancy guard
                     _ = chunk.QueueRemeshAsync(TextureAtlas);
                 }
             }

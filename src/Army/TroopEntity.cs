@@ -22,6 +22,8 @@ public partial class TroopEntity : Node3D
     public int PathIndex { get; set; }
     /// <summary>Click-to-move destination set by player or bot AI.</summary>
     public Vector3I? MoveTarget { get; set; }
+    /// <summary>Original click target before spread offset, used as fallback if spread target is unreachable.</summary>
+    public Vector3I? MoveTargetFallback { get; set; }
 
     /// <summary>Total damage this troop has dealt so far. Dies when it reaches MaxDamageDealt.</summary>
     public int DamageDealt { get; private set; }
@@ -62,6 +64,7 @@ public partial class TroopEntity : Node3D
 
         _animator = new VoxelAnimator();
         _animator.Name = $"{type}Animator";
+        _animator.HasGun = type == TroopType.Infantry;
         _modelRoot.AddChild(_animator);
         _animator.Initialize(_modelRoot);
 
@@ -180,6 +183,15 @@ public partial class TroopEntity : Node3D
     /// <summary>
     /// Pauses walking for the given duration (e.g., after an attack animation).
     /// </summary>
+    public bool IsSurrendered { get; private set; }
+
+    public void Surrender()
+    {
+        IsSurrendered = true;
+        AIState = TroopAIState.Idle;
+        _animator?.SetState(VoxelAnimator.AnimState.Surrender);
+    }
+
     public void PauseForAttack(float duration = 0.5f)
     {
         _attackPauseTimer = duration;
@@ -187,10 +199,15 @@ public partial class TroopEntity : Node3D
 
     public override void _Process(double delta)
     {
+        // Surrendered troops don't move or fight
+        if (IsSurrendered) return;
+
         // Attack pause — play attack anim before resuming walk
         if (_attackPauseTimer > 0f)
         {
             _attackPauseTimer -= (float)delta;
+            if (_attackPauseTimer <= 0f && AIState == TroopAIState.Attacking)
+                SetAIState(TroopAIState.Idle);
             return;
         }
 
@@ -232,6 +249,7 @@ public partial class TroopEntity : Node3D
         {
             // Path exhausted — arrived at destination
             MoveTarget = null;
+            MoveTargetFallback = null;
             CurrentPath = null;
             PathIndex = 0;
             if (AIState == TroopAIState.Moving)
@@ -599,8 +617,10 @@ public partial class TroopEntity : Node3D
     }
 
     /// <summary>
-    /// Checks if another troop (from any player) currently occupies the given microvoxel cell.
-    /// Uses the Godot "Troops" group to find all alive troops without needing a back-reference.
+    /// Checks if a stationary troop occupies the given microvoxel cell.
+    /// Only blocks on troops that are at rest (idle/attacking) — troops that are
+    /// actively walking or have a path will vacate the cell soon, so we let
+    /// movement continue to prevent deadlocks when everyone moves at once.
     /// </summary>
     private bool IsCellOccupiedByOtherTroop(Vector3I cell)
     {
@@ -608,7 +628,14 @@ public partial class TroopEntity : Node3D
         {
             if (node == this || node is not TroopEntity other) continue;
             if (!IsInstanceValid(other) || other.CurrentHP <= 0) continue;
-            if (other.CurrentMicrovoxel == cell) return true;
+            if (other.CurrentMicrovoxel != cell) continue;
+
+            // Only block if the other troop is stationary — if they're moving
+            // or have a path queued, they'll clear this cell soon
+            bool isStationary = other.AIState != TroopAIState.Moving
+                && other.CurrentPath == null
+                && !other.MoveTarget.HasValue;
+            if (isStationary) return true;
         }
         return false;
     }
