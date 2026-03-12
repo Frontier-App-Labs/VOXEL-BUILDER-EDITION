@@ -53,7 +53,7 @@ public static class GameConfig
     public const int BotBudgetMedium = 18000;
     public const int BotBudgetHard = 35000;
     public const int MaxBlueprintSlots = 20;
-    public const int SandboxBudget = 10000;
+    public const int SandboxBudget = 15000;
     public const int SandboxSlotCost = 50000;
     public const int MaxUndoActions = 100;
     public const int MaxObsidianBlocks = 20;
@@ -76,11 +76,10 @@ public static class GameConfig
     public const int MaxWeaponSelectionsPerTurn = 4;
 
     // Troop system
-    public const int MaxTroopsPerPlayer = 10;
+    public const int MaxTroopsPerPlayer = 20;
     public const float TroopMeleeRange = 2f;       // microvoxels
     public const float TroopMoveLerpDuration = 0.3f; // seconds for smooth movement
     public const int MaxDoorsPerPlayer = 4;
-    public const int TroopLifespanTicks = 6;        // ticks before a deployed troop dies automatically
 
     public const int CommanderHP = 15;
     public const int MinBlocksAroundCommander = 6;

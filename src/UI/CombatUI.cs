@@ -21,7 +21,7 @@ public partial class CombatUI : Control
     private static readonly Color PanelBg = new Color(0.086f, 0.106f, 0.133f, 0.92f);
 
     // --- Impact crosshair color ---
-    private static readonly Color ImpactCrosshairColor = new Color(1f, 0.45f, 0.15f, 0.85f);
+    private static readonly Color ImpactCrosshairColor = new Color(1f, 0.1f, 0.1f, 0.9f);
 
     // --- Pixel Font (lazy to avoid loading before Godot's resource system is ready) ---
     private static Font? _pixelFont;
@@ -52,6 +52,7 @@ public partial class CombatUI : Control
     public event Action? FireRequested;
     public event Action<PowerupType>? PowerupActivateRequested;
     public event Action? DeployRequested;
+    public event Action? TroopMoveRequested;
 
     /// <summary>
     /// Raised when the player selects an enemy target from the airstrike picker.
@@ -95,10 +96,10 @@ public partial class CombatUI : Control
 
     private readonly List<PanelContainer> _powerupSlots = new List<PanelContainer>();
     private readonly List<Label> _powerupCountLabels = new List<Label>();
-    private VBoxContainer? _powerupContainer;
+    private GridContainer? _powerupContainer;
 
     // --- Weapon/Powerup bar visibility (hidden during bot turns) ---
-    private PanelContainer? _weaponBarPanel;
+    private Panel? _weaponBarPanel;
     private PanelContainer? _powerupBarPanel;
 
     // --- "SELECT WEAPON" flashing prompt ---
@@ -110,12 +111,21 @@ public partial class CombatUI : Control
     private Button? _deployBtn;
     private Label? _deployWarningLabel;
 
+    // --- Troops button (combat phase) ---
+    private PanelContainer? _troopsPanel;
+    private Button? _troopsBtn;
+    private bool _troopsModeActive;
+
     // --- Impact crosshair state ---
     private Vector2 _impactScreenPos;
     private bool _impactCrosshairVisible;
 
     // --- Center reticle (for weapon POV) ---
     private Control? _centerCrosshairContainer;
+
+    // --- Turn banner (centered name announcement on turn change) ---
+    private Label? _turnBannerLabel;
+    private Tween? _turnBannerTween;
 
     public override void _Ready()
     {
@@ -126,8 +136,10 @@ public partial class CombatUI : Control
         BuildWeaponBar();
         BuildPowerupPanel();
         BuildDeployPanel();
+        BuildTroopsButton();
         // Power meter and fire button removed — click-to-target auto-calculates trajectory
         BuildCrosshair();
+        BuildTurnBanner();
 
         if (EventBus.Instance != null)
         {
@@ -437,18 +449,38 @@ public partial class CombatUI : Control
     // ========== WEAPON BAR (bottom center) ==========
     private void BuildWeaponBar()
     {
-        PanelContainer weaponBar = CreateBeveledPanel(PanelBg, AccentGold);
-        weaponBar.SetAnchorsPreset(LayoutPreset.CenterBottom);
-        weaponBar.OffsetLeft = -200;
-        weaponBar.OffsetRight = 200;
+        // Use a Panel (NOT PanelContainer) so it never auto-resizes to children.
+        // PanelContainer was causing the bar to shrink when buttons were rebuilt.
+        Panel weaponBar = new Panel();
+        StyleBoxFlat wbStyle = new StyleBoxFlat();
+        wbStyle.BgColor = PanelBg;
+        wbStyle.CornerRadiusTopLeft = 0;
+        wbStyle.CornerRadiusTopRight = 0;
+        wbStyle.CornerRadiusBottomLeft = 0;
+        wbStyle.CornerRadiusBottomRight = 0;
+        wbStyle.BorderWidthLeft = 4;
+        wbStyle.BorderWidthBottom = 4;
+        wbStyle.BorderWidthTop = 2;
+        wbStyle.BorderWidthRight = 2;
+        wbStyle.BorderColor = AccentGold;
+        weaponBar.AddThemeStyleboxOverride("panel", wbStyle);
+        weaponBar.AnchorLeft = 0.5f;
+        weaponBar.AnchorRight = 0.5f;
+        weaponBar.AnchorTop = 1;
+        weaponBar.AnchorBottom = 1;
+        weaponBar.GrowHorizontal = GrowDirection.Both;
+        weaponBar.GrowVertical = GrowDirection.Begin;
+        weaponBar.OffsetLeft = -260;
+        weaponBar.OffsetRight = 260;
         weaponBar.OffsetTop = -100;
         weaponBar.OffsetBottom = -14;
-        weaponBar.CustomMinimumSize = new Vector2(400, 86);
         weaponBar.MouseFilter = MouseFilterEnum.Stop;
+        weaponBar.ClipContents = false;
         AddChild(weaponBar);
         _weaponBarPanel = weaponBar;
 
         MarginContainer weapMargin = new MarginContainer();
+        weapMargin.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         weapMargin.AddThemeConstantOverride("margin_left", 12);
         weapMargin.AddThemeConstantOverride("margin_right", 12);
         weapMargin.AddThemeConstantOverride("margin_top", 12);
@@ -459,6 +491,8 @@ public partial class CombatUI : Control
         _weaponRow = new HBoxContainer();
         _weaponRow.AddThemeConstantOverride("separation", 8);
         _weaponRow.MouseFilter = MouseFilterEnum.Ignore;
+        _weaponRow.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _weaponRow.SizeFlagsVertical = SizeFlags.ExpandFill;
         weapMargin.AddChild(_weaponRow);
 
         // "SELECT WEAPON" flashing prompt above the weapon bar
@@ -485,18 +519,17 @@ public partial class CombatUI : Control
     private void BuildPowerupPanel()
     {
         PanelContainer powerupBar = CreateBeveledPanel(PanelBg, new Color("3e96ff"));
-        // Anchor to bottom-left so the panel grows upward as powerups are added
+        // Anchor to bottom-center and grow upward. Explicit anchors avoid
+        // preset quirks that caused the panel to drift off-screen.
         powerupBar.AnchorLeft = 0.5f;
         powerupBar.AnchorRight = 0.5f;
-        powerupBar.AnchorTop = 1;
-        powerupBar.AnchorBottom = 1;
-        powerupBar.OffsetLeft = -440;
-        powerupBar.OffsetRight = -210;
-        powerupBar.OffsetTop = -100;
+        powerupBar.AnchorTop = 1f;
+        powerupBar.AnchorBottom = 1f;
+        powerupBar.OffsetLeft = -520;
+        powerupBar.OffsetRight = -270;
+        powerupBar.OffsetTop = -14;   // initial; DeferredPowerupResize sets final position
         powerupBar.OffsetBottom = -14;
-        // Size dynamically — no fixed height so all powerups are visible without scrolling.
-        // The panel grows upward from the bottom anchor as powerups are added.
-        powerupBar.CustomMinimumSize = new Vector2(230, 0);
+        powerupBar.CustomMinimumSize = new Vector2(250, 0);
         powerupBar.MouseFilter = MouseFilterEnum.Stop;
         powerupBar.ClipContents = false;
         AddChild(powerupBar);
@@ -524,9 +557,11 @@ public partial class CombatUI : Control
         pwrHeader.MouseFilter = MouseFilterEnum.Ignore;
         outerColumn.AddChild(pwrHeader);
 
-        // No scroll — all powerups are always visible
-        _powerupContainer = new VBoxContainer();
-        _powerupContainer.AddThemeConstantOverride("separation", 2);
+        // Single-column list so powerup names are fully readable
+        _powerupContainer = new GridContainer();
+        _powerupContainer.Columns = 1;
+        _powerupContainer.AddThemeConstantOverride("h_separation", 4);
+        _powerupContainer.AddThemeConstantOverride("v_separation", 2);
         _powerupContainer.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         _powerupContainer.MouseFilter = MouseFilterEnum.Ignore;
         outerColumn.AddChild(_powerupContainer);
@@ -554,10 +589,13 @@ public partial class CombatUI : Control
             return;
         }
 
-        // Remove old slot buttons (header is now outside _powerupContainer)
+        // Remove old slot buttons immediately (not QueueFree) so the PanelContainer
+        // recalculates its size correctly before the new children are added.
         for (int i = _powerupContainer.GetChildCount() - 1; i >= 0; i--)
         {
-            _powerupContainer.GetChild(i).QueueFree();
+            Node child = _powerupContainer.GetChild(i);
+            _powerupContainer.RemoveChild(child);
+            child.QueueFree();
         }
         _powerupSlots.Clear();
         _powerupCountLabels.Clear();
@@ -616,7 +654,7 @@ public partial class CombatUI : Control
             nameLabel.AddThemeColorOverride("font_color", TextPrimary);
             nameLabel.SizeFlagsVertical = SizeFlags.ShrinkCenter;
             nameLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-            nameLabel.ClipText = true;
+            nameLabel.ClipText = false;
             nameLabel.MouseFilter = MouseFilterEnum.Ignore;
             slotRow.AddChild(nameLabel);
 
@@ -659,6 +697,29 @@ public partial class CombatUI : Control
             clickArea.OffsetBottom = 0;
 
             _powerupContainer.AddChild(slot);
+        }
+
+        // Defer positioning to next frame so children have computed their minimum sizes.
+        // We do NOT call ResetSize() — it uses GrowDirection internally which is broken
+        // for our bottom-anchored panel and overwrites OffsetBottom, pushing content off-screen.
+        if (_powerupBarPanel != null)
+        {
+            CallDeferred(nameof(DeferredPowerupResize));
+        }
+    }
+
+    private void DeferredPowerupResize()
+    {
+        if (_powerupBarPanel != null && IsInstanceValid(_powerupBarPanel))
+        {
+            // Manually position the panel above the bottom of the screen.
+            // OffsetBottom = -14 (14px above screen bottom, fixed).
+            // OffsetTop = -14 - contentHeight (panel extends upward).
+            // This bypasses GrowDirection entirely.
+            float contentHeight = _powerupBarPanel.GetCombinedMinimumSize().Y;
+            if (contentHeight < 10f) contentHeight = 60f; // safety fallback
+            _powerupBarPanel.OffsetBottom = -14f;
+            _powerupBarPanel.OffsetTop = -14f - contentHeight;
         }
     }
 
@@ -750,6 +811,139 @@ public partial class CombatUI : Control
             _deployBtn.AddThemeColorOverride("font_color", TextSecondary);
             _deployWarningLabel.Visible = true;
         }
+    }
+
+    // ========== TROOPS BUTTON (bottom right, combat phase) ==========
+    private void BuildTroopsButton()
+    {
+        _troopsPanel = CreateBeveledPanel(PanelBg, AccentGreen);
+        // Same right-side position as deploy panel — they never overlap
+        // (deploy is build-phase only, troops is combat-phase only)
+        _troopsPanel.AnchorLeft = 0.5f;
+        _troopsPanel.AnchorRight = 0.5f;
+        _troopsPanel.AnchorTop = 1;
+        _troopsPanel.AnchorBottom = 1;
+        _troopsPanel.OffsetLeft = 270;
+        _troopsPanel.OffsetRight = 400;
+        _troopsPanel.OffsetTop = -68;
+        _troopsPanel.OffsetBottom = -14;
+        _troopsPanel.CustomMinimumSize = new Vector2(130, 54);
+        _troopsPanel.MouseFilter = MouseFilterEnum.Stop;
+        _troopsPanel.Visible = false;
+        AddChild(_troopsPanel);
+
+        MarginContainer troopMargin = new MarginContainer();
+        troopMargin.AddThemeConstantOverride("margin_left", 10);
+        troopMargin.AddThemeConstantOverride("margin_right", 10);
+        troopMargin.AddThemeConstantOverride("margin_top", 6);
+        troopMargin.AddThemeConstantOverride("margin_bottom", 6);
+        troopMargin.MouseFilter = MouseFilterEnum.Ignore;
+        _troopsPanel.AddChild(troopMargin);
+
+        VBoxContainer troopCol = new VBoxContainer();
+        troopCol.AddThemeConstantOverride("separation", 2);
+        troopCol.MouseFilter = MouseFilterEnum.Ignore;
+        troopCol.Alignment = BoxContainer.AlignmentMode.Center;
+        troopMargin.AddChild(troopCol);
+
+        _troopsBtn = new Button();
+        _troopsBtn.Text = "TROOPS";
+        _troopsBtn.Flat = true;
+        _troopsBtn.AddThemeFontOverride("font", PixelFont);
+        _troopsBtn.AddThemeFontSizeOverride("font_size", 11);
+        _troopsBtn.AddThemeColorOverride("font_color", AccentGreen);
+        _troopsBtn.AddThemeColorOverride("font_hover_color", TextPrimary);
+        _troopsBtn.MouseFilter = MouseFilterEnum.Stop;
+        _troopsBtn.Pressed += () =>
+        {
+            AudioDirector.Instance?.PlaySFX("ui_click");
+            _troopsModeActive = !_troopsModeActive;
+            UpdateTroopsButtonHighlight();
+            TroopMoveRequested?.Invoke();
+        };
+        troopCol.AddChild(_troopsBtn);
+
+        Label hint = new Label();
+        hint.Text = "[T]";
+        hint.HorizontalAlignment = HorizontalAlignment.Center;
+        hint.AddThemeFontOverride("font", PixelFont);
+        hint.AddThemeFontSizeOverride("font_size", 8);
+        hint.AddThemeColorOverride("font_color", TextSecondary);
+        hint.MouseFilter = MouseFilterEnum.Ignore;
+        troopCol.AddChild(hint);
+    }
+
+    /// <summary>
+    /// Shows/hides the TROOPS button. Only visible during combat when the player has alive troops.
+    /// </summary>
+    public void SetTroopsButtonVisible(bool visible)
+    {
+        if (_troopsPanel != null)
+        {
+            _troopsPanel.Visible = visible;
+        }
+        if (!visible)
+        {
+            _troopsModeActive = false;
+            UpdateTroopsButtonHighlight();
+        }
+    }
+
+    /// <summary>
+    /// Resets the TROOPS button state (e.g. when troop move completes or turn changes).
+    /// </summary>
+    public void SetTroopsModeActive(bool active)
+    {
+        _troopsModeActive = active;
+        UpdateTroopsButtonHighlight();
+    }
+
+    private void UpdateTroopsButtonHighlight()
+    {
+        if (_troopsBtn == null) return;
+        _troopsBtn.AddThemeColorOverride("font_color", _troopsModeActive ? TextPrimary : AccentGreen);
+        // Tint the panel background when active
+        if (_troopsPanel != null)
+        {
+            StyleBoxFlat style = CreateFlatStyle(
+                _troopsModeActive
+                    ? new Color(AccentGreen.R, AccentGreen.G, AccentGreen.B, 0.25f)
+                    : PanelBg,
+                2);
+            style.BorderColor = AccentGreen;
+            style.BorderWidthBottom = 1;
+            style.BorderWidthTop = 1;
+            style.BorderWidthLeft = 1;
+            style.BorderWidthRight = 1;
+            _troopsPanel.AddThemeStyleboxOverride("panel", style);
+        }
+    }
+
+    /// <summary>
+    /// Hides the weapon bar, powerup panel, and troops button.
+    /// Called after the player fires so the UI is clean during projectile/impact cam.
+    /// </summary>
+    public void HideAttackUI()
+    {
+        if (_weaponBarPanel != null) _weaponBarPanel.Visible = false;
+        if (_powerupBarPanel != null) _powerupBarPanel.Visible = false;
+        if (_troopsPanel != null) _troopsPanel.Visible = false;
+    }
+
+    /// <summary>
+    /// Shows the weapon bar, powerup panel, and troops button.
+    /// Called when the human player's turn starts.
+    /// </summary>
+    public void ShowAttackUI()
+    {
+        if (_weaponBarPanel != null) _weaponBarPanel.Visible = true;
+        if (_powerupBarPanel != null)
+        {
+            _powerupBarPanel.Visible = true;
+            // Reposition after becoming visible — layout may not have updated while hidden
+            CallDeferred(nameof(DeferredPowerupResize));
+        }
+        // Troops button visibility is controlled separately via SetTroopsButtonVisible
     }
 
     // ========== POWER METER (right side vertical bar) ==========
@@ -866,6 +1060,51 @@ public partial class CombatUI : Control
         centerDot.Color = AccentRed;
         centerDot.MouseFilter = MouseFilterEnum.Ignore;
         _centerCrosshairContainer.AddChild(centerDot);
+    }
+
+    // ========== TURN BANNER (centered name on turn change) ==========
+    private void BuildTurnBanner()
+    {
+        _turnBannerLabel = new Label();
+        _turnBannerLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        _turnBannerLabel.VerticalAlignment = VerticalAlignment.Center;
+        _turnBannerLabel.AddThemeFontOverride("font", PixelFont);
+        _turnBannerLabel.AddThemeFontSizeOverride("font_size", 22);
+        _turnBannerLabel.AddThemeColorOverride("font_color", AccentGold);
+        _turnBannerLabel.SetAnchorsPreset(LayoutPreset.CenterTop);
+        _turnBannerLabel.OffsetLeft = -300;
+        _turnBannerLabel.OffsetRight = 300;
+        _turnBannerLabel.OffsetTop = 80;
+        _turnBannerLabel.OffsetBottom = 120;
+        _turnBannerLabel.MouseFilter = MouseFilterEnum.Ignore;
+        _turnBannerLabel.Visible = false;
+        AddChild(_turnBannerLabel);
+    }
+
+    /// <summary>
+    /// Shows a centered commander name banner that fades out after ~2 seconds.
+    /// Called on turn change so the player sees whose turn it is during the camera pan.
+    /// </summary>
+    public void ShowTurnBanner(string commanderName, Color playerColor)
+    {
+        if (_turnBannerLabel == null) return;
+
+        _turnBannerLabel.Text = commanderName.ToUpper();
+        _turnBannerLabel.AddThemeColorOverride("font_color", playerColor);
+        _turnBannerLabel.Visible = true;
+        _turnBannerLabel.Modulate = new Color(1, 1, 1, 1);
+
+        _turnBannerTween?.Kill();
+        _turnBannerTween = CreateTween();
+        // Hold visible for 1.5s, then fade out over 0.8s
+        _turnBannerTween.TweenInterval(1.5);
+        _turnBannerTween.TweenProperty(_turnBannerLabel, "modulate:a", 0f, 0.8f)
+            .SetTrans(Tween.TransitionType.Sine)
+            .SetEase(Tween.EaseType.In);
+        _turnBannerTween.TweenCallback(Callable.From(() =>
+        {
+            if (_turnBannerLabel != null) _turnBannerLabel.Visible = false;
+        }));
     }
 
     // ========== FIRE BUTTON ==========
@@ -1220,17 +1459,12 @@ public partial class CombatUI : Control
             return;
         }
 
-        // Clear existing buttons
-        foreach (PanelContainer btn in _weaponButtons)
-        {
-            btn.QueueFree();
-        }
+        // Free existing buttons immediately
         _weaponButtons.Clear();
-
-        // Remove any leftover children (e.g. placeholder labels)
-        foreach (Node child in _weaponRow.GetChildren())
+        var oldChildren = _weaponRow.GetChildren();
+        for (int i = oldChildren.Count - 1; i >= 0; i--)
         {
-            child.QueueFree();
+            oldChildren[i].Free();
         }
 
         if (_weaponGroups.Count == 0)
@@ -1297,6 +1531,7 @@ public partial class CombatUI : Control
             weapName.AddThemeFontSizeOverride("font_size", 9);
             weapName.AddThemeColorOverride("font_color", isSelected ? AccentGreen : TextSecondary);
             weapName.MouseFilter = MouseFilterEnum.Ignore;
+            weapName.ClipText = false;
             weapContent.AddChild(weapName);
 
             // Count badge in the top-right corner (only if more than 1)
@@ -1329,15 +1564,33 @@ public partial class CombatUI : Control
             weapClickArea.OffsetTop = 0;
             weapClickArea.OffsetBottom = 0;
 
-            // Right-click handler to cycle instances
+            // Right-click handler to cycle instances.
+            // Consume both press AND release to prevent the release from leaking
+            // through to CombatCamera._UnhandledInput and cancelling targeting.
             weapClickArea.GuiInput += (InputEvent @event) =>
             {
-                if (@event is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Right)
+                if (@event is InputEventMouseButton mb && mb.ButtonIndex == MouseButton.Right)
                 {
-                    CycleWeaponInstance(capturedGroup);
+                    if (mb.Pressed)
+                    {
+                        CycleWeaponInstance(capturedGroup);
+                    }
                     weapClickArea.GetViewport().SetInputAsHandled();
                 }
             };
+        }
+
+        // Dynamically size the weapon bar based on actual weapon count.
+        // Panel doesn't auto-resize, so we set the width explicitly.
+        if (_weaponBarPanel != null)
+        {
+            int btnCount = System.Math.Max(_weaponGroups.Count, 1);
+            int barWidth = btnCount * 96 + 24; // 90px button + 8px gap each, plus margins
+            int halfWidth = barWidth / 2;
+            _weaponBarPanel.OffsetLeft = -halfWidth;
+            _weaponBarPanel.OffsetRight = halfWidth;
+            _weaponBarPanel.OffsetTop = -100;
+            _weaponBarPanel.OffsetBottom = -14;
         }
     }
 
@@ -1411,8 +1664,10 @@ public partial class CombatUI : Control
         // transitioning to targeting mode. The green glow shows in base view.
         gm?.OnWeaponSelectedFromUI(flatIndex, cycleOnly: true);
 
-        // Rebuild to update the "1/3" label
-        RebuildWeaponButtons();
+        // Defer rebuild so the button that received the right-click isn't destroyed
+        // while it still has mouse capture. Immediate destruction would cause Godot to
+        // lose track of the mouse-focus control and leak the release event to _UnhandledInput.
+        Callable.From(RebuildWeaponButtons).CallDeferred();
     }
 
     /// <summary>
@@ -1460,12 +1715,106 @@ public partial class CombatUI : Control
     /// <summary>
     /// Hides the flashing "SELECT WEAPON" prompt (called when a weapon is selected).
     /// </summary>
-    private void HideSelectWeaponPrompt()
+    public void HideSelectWeaponPrompt()
     {
         _selectWeaponTween?.Kill();
         _selectWeaponTween = null;
         if (_selectWeaponLabel != null)
             _selectWeaponLabel.Visible = false;
+    }
+
+    /// <summary>
+    /// Shows "CLICK TO AIM" prompt above the weapon bar.
+    /// Called after a weapon is selected and targeting mode is active.
+    /// </summary>
+    public void ShowAimPrompt()
+    {
+        if (_selectWeaponLabel == null) return;
+        _selectWeaponLabel.Text = "CLICK TO AIM";
+        _selectWeaponLabel.Visible = true;
+        _selectWeaponLabel.Modulate = new Color(1, 1, 1, 1);
+        _selectWeaponTween?.Kill();
+        _selectWeaponTween = CreateTween();
+        _selectWeaponTween.SetLoops();
+        _selectWeaponTween.TweenProperty(_selectWeaponLabel, "modulate:a", 0.3f, 0.6f)
+            .SetTrans(Tween.TransitionType.Sine)
+            .SetEase(Tween.EaseType.InOut);
+        _selectWeaponTween.TweenProperty(_selectWeaponLabel, "modulate:a", 1.0f, 0.6f)
+            .SetTrans(Tween.TransitionType.Sine)
+            .SetEase(Tween.EaseType.InOut);
+    }
+
+    /// <summary>
+    /// Shows "CLICK TO FIRE" prompt (target is set, ready to fire).
+    /// </summary>
+    public void ShowFirePrompt()
+    {
+        if (_selectWeaponLabel == null) return;
+        _selectWeaponLabel.Text = "CLICK TO FIRE";
+        _selectWeaponLabel.AddThemeColorOverride("font_color", AccentGold);
+        _selectWeaponLabel.Visible = true;
+        _selectWeaponLabel.Modulate = new Color(1, 1, 1, 1);
+        _selectWeaponTween?.Kill();
+        _selectWeaponTween = CreateTween();
+        _selectWeaponTween.SetLoops();
+        _selectWeaponTween.TweenProperty(_selectWeaponLabel, "modulate:a", 0.3f, 0.6f)
+            .SetTrans(Tween.TransitionType.Sine)
+            .SetEase(Tween.EaseType.InOut);
+        _selectWeaponTween.TweenProperty(_selectWeaponLabel, "modulate:a", 1.0f, 0.6f)
+            .SetTrans(Tween.TransitionType.Sine)
+            .SetEase(Tween.EaseType.InOut);
+    }
+
+    /// <summary>
+    /// Shows "PRESS T — CLICK TO MOVE TROOPS" prompt.
+    /// </summary>
+    public void ShowTroopMovePrompt()
+    {
+        if (_selectWeaponLabel == null) return;
+        _selectWeaponLabel.Text = "CLICK TERRAIN TO MOVE TROOPS";
+        _selectWeaponLabel.AddThemeColorOverride("font_color", AccentGreen);
+        _selectWeaponLabel.Visible = true;
+        _selectWeaponLabel.Modulate = new Color(1, 1, 1, 1);
+        _selectWeaponTween?.Kill();
+        _selectWeaponTween = CreateTween();
+        _selectWeaponTween.SetLoops();
+        _selectWeaponTween.TweenProperty(_selectWeaponLabel, "modulate:a", 0.3f, 0.6f)
+            .SetTrans(Tween.TransitionType.Sine)
+            .SetEase(Tween.EaseType.InOut);
+        _selectWeaponTween.TweenProperty(_selectWeaponLabel, "modulate:a", 1.0f, 0.6f)
+            .SetTrans(Tween.TransitionType.Sine)
+            .SetEase(Tween.EaseType.InOut);
+    }
+
+    /// <summary>
+    /// Resets the prompt label text and color back to "SELECT WEAPON" for the next turn.
+    /// </summary>
+    public void ResetPromptText()
+    {
+        if (_selectWeaponLabel == null) return;
+        _selectWeaponLabel.Text = "SELECT WEAPON";
+        _selectWeaponLabel.AddThemeColorOverride("font_color", AccentRed);
+    }
+
+    /// <summary>
+    /// Shows "CLICK TO SET TARGET" prompt (after right-click clears crosshair).
+    /// </summary>
+    public void ShowTargetPrompt()
+    {
+        if (_selectWeaponLabel == null) return;
+        _selectWeaponLabel.Text = "CLICK TO SET TARGET";
+        _selectWeaponLabel.AddThemeColorOverride("font_color", AccentGold);
+        _selectWeaponLabel.Visible = true;
+        _selectWeaponLabel.Modulate = new Color(1, 1, 1, 1);
+        _selectWeaponTween?.Kill();
+        _selectWeaponTween = CreateTween();
+        _selectWeaponTween.SetLoops();
+        _selectWeaponTween.TweenProperty(_selectWeaponLabel, "modulate:a", 0.3f, 0.6f)
+            .SetTrans(Tween.TransitionType.Sine)
+            .SetEase(Tween.EaseType.InOut);
+        _selectWeaponTween.TweenProperty(_selectWeaponLabel, "modulate:a", 1.0f, 0.6f)
+            .SetTrans(Tween.TransitionType.Sine)
+            .SetEase(Tween.EaseType.InOut);
     }
 
     private void OnFirePressed()
@@ -1483,10 +1832,17 @@ public partial class CombatUI : Control
 
         if (_turnPlayerLabel != null)
         {
-            _turnPlayerLabel.Text = payload.CurrentPlayer.ToString().ToUpper();
+            // Show display name if available, fall back to slot name
+            GameManager? gm = GetTree().Root.GetNodeOrNull<GameManager>("Main");
+            string displayName = payload.CurrentPlayer.ToString().ToUpper();
+            if (gm != null && gm.Players.TryGetValue(payload.CurrentPlayer, out var pData))
+                displayName = pData.DisplayName.ToUpper();
+            bool isLocal = payload.CurrentPlayer == PlayerSlot.Player1;
+            _turnPlayerLabel.Text = isLocal ? $"\u25b6 YOUR TURN" : $"\u25b6 {displayName}'S TURN";
+            _turnPlayerLabel.AddThemeFontSizeOverride("font_size", 14);
             int idx = (int)payload.CurrentPlayer;
             Color playerColor = idx < GameConfig.PlayerColors.Length ? GameConfig.PlayerColors[idx] : Colors.White;
-            _turnPlayerLabel.AddThemeColorOverride("font_color", playerColor);
+            _turnPlayerLabel.AddThemeColorOverride("font_color", isLocal ? AccentGold : playerColor);
         }
 
         if (_roundLabel != null)
@@ -1498,7 +1854,14 @@ public partial class CombatUI : Control
         // During bot turns these should be hidden since the human can't use them.
         bool isLocalTurn = payload.CurrentPlayer == PlayerSlot.Player1;
         if (_weaponBarPanel != null) _weaponBarPanel.Visible = isLocalTurn;
-        if (_powerupBarPanel != null) _powerupBarPanel.Visible = isLocalTurn;
+        if (_powerupBarPanel != null)
+        {
+            _powerupBarPanel.Visible = isLocalTurn;
+            if (isLocalTurn)
+            {
+                CallDeferred(nameof(DeferredPowerupResize));
+            }
+        }
 
         // Reset weapon selection for the new turn — no weapon pre-selected
         _selectedWeaponIndex = -1;

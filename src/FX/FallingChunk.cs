@@ -108,6 +108,41 @@ public partial class FallingChunk : RigidBody3D
         }
     }
 
+    /// <summary>
+    /// Makes all active FallingChunks semi-transparent (for kill cam) or restores them.
+    /// Uses alpha transparency so debris doesn't obscure the commander death.
+    /// </summary>
+    public static void SetKillCamAlpha(float alpha)
+    {
+        foreach (FallingChunk chunk in ActiveChunks)
+        {
+            if (!IsInstanceValid(chunk)) continue;
+            foreach (Node child in chunk.GetChildren())
+            {
+                if (child is MeshInstance3D meshInst)
+                {
+                    Material? surfMat = meshInst.MaterialOverride ?? meshInst.GetSurfaceOverrideMaterial(0);
+                    if (surfMat is StandardMaterial3D stdMat)
+                    {
+                        if (alpha < 0.99f)
+                        {
+                            stdMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                            Color c = stdMat.AlbedoColor;
+                            stdMat.AlbedoColor = new Color(c.R, c.G, c.B, alpha);
+                        }
+                        else
+                        {
+                            // Restore full opacity
+                            stdMat.Transparency = BaseMaterial3D.TransparencyEnum.Disabled;
+                            Color c = stdMat.AlbedoColor;
+                            stdMat.AlbedoColor = new Color(c.R, c.G, c.B, 1f);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ── Creation ────────────────────────────────────────────────────────
 
     /// <summary>
@@ -1105,7 +1140,7 @@ public partial class FallingChunk : RigidBody3D
         {
             if (child is MeshInstance3D meshInst)
             {
-                Material? surfMat = meshInst.GetSurfaceOverrideMaterial(0);
+                Material? surfMat = meshInst.MaterialOverride ?? meshInst.GetSurfaceOverrideMaterial(0);
                 if (surfMat is ShaderMaterial shaderMat)
                 {
                     // For shader materials, just clean up — we can't easily fade them

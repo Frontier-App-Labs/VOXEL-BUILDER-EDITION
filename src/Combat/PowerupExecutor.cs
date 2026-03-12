@@ -85,8 +85,8 @@ public partial class PowerupExecutor : Node
         // Spawn visual smoke cloud
         PowerupFX.SpawnSmokeScreen(GetTree().Root, center, zone);
 
-        // Hide all voxel chunks within the zone
-        HideZoneChunks(zone, true);
+        // Shader dissolve is applied by the caller via ReenforceSmokeScreens()
+        // so that ALL active smoke zones (from multiple players) are set at once.
 
         PowerupActivated?.Invoke(PowerupType.SmokeScreen, player.Slot, center);
         GD.Print($"[Powerup] {player.Slot}: Smoke Screen deployed — fortress invisible for {totalPlayersAlive} turns.");
@@ -112,16 +112,37 @@ public partial class PowerupExecutor : Node
     /// When hidden, the fortress becomes invisible but debris from hits is still
     /// spawned normally (debris is created as independent RigidBody3D nodes).
     /// </summary>
+    /// <summary>
+    /// Floor division that rounds toward negative infinity (not toward zero like C#'s / operator).
+    /// Required because microvoxel coordinates can be negative, and truncation toward zero
+    /// maps e.g. -60/16 to -3 instead of the correct chunk index -4.
+    /// </summary>
+    private static int FloorDiv(int a, int b)
+    {
+        return a / b - (a % b != 0 && (a ^ b) < 0 ? 1 : 0);
+    }
+
     private void HideZoneChunks(BuildZone zone, bool hide)
     {
         if (_voxelWorld == null)
         {
+            GD.Print($"[Smoke] HideZoneChunks: _voxelWorld is null!");
             return;
         }
 
-        Vector3I minChunk = zone.OriginMicrovoxels / GameConfig.ChunkSize;
-        Vector3I maxChunk = zone.MaxMicrovoxelsInclusive / GameConfig.ChunkSize;
+        // Use floor division for min (negative coords truncate wrong with C# /)
+        // and ceiling-style for max (positive coords are fine with normal /)
+        int cs = GameConfig.ChunkSize;
+        Vector3I minChunk = new Vector3I(
+            FloorDiv(zone.OriginMicrovoxels.X, cs),
+            FloorDiv(zone.OriginMicrovoxels.Y, cs),
+            FloorDiv(zone.OriginMicrovoxels.Z, cs));
+        Vector3I maxChunk = new Vector3I(
+            FloorDiv(zone.MaxMicrovoxelsInclusive.X, cs),
+            FloorDiv(zone.MaxMicrovoxelsInclusive.Y, cs),
+            FloorDiv(zone.MaxMicrovoxelsInclusive.Z, cs));
 
+        int chunkCount = 0;
         for (int z = minChunk.Z; z <= maxChunk.Z; z++)
         {
             for (int y = minChunk.Y; y <= maxChunk.Y; y++)
@@ -132,10 +153,38 @@ public partial class PowerupExecutor : Node
                     if (chunk != null)
                     {
                         chunk.Visible = !hide;
+                        chunkCount++;
                     }
                 }
             }
         }
+        GD.Print($"[Smoke] HideZoneChunks(hide={hide}): zone {zone.OriginMicrovoxels}→{zone.MaxMicrovoxelsInclusive}, chunks {minChunk}→{maxChunk}, toggled {chunkCount} chunks");
+    }
+
+    /// <summary>
+    /// Re-applies smoke dissolve shader for all active smoke screens.
+    /// The shader-based dissolve survives chunk remeshing automatically,
+    /// but this is still called on turn change as a safety net.
+    /// </summary>
+    public void ReenforceSmokeScreens(IReadOnlyDictionary<PlayerSlot, PlayerData> allPlayers)
+    {
+        // Collect all active smoke zones across all players
+        List<BuildZone> activeZones = new();
+        foreach (PlayerData player in allPlayers.Values)
+        {
+            foreach (ActivePowerup effect in player.Powerups.GetActiveEffects(PowerupType.SmokeScreen))
+            {
+                if (effect.TargetData is SmokeScreenData smokeData)
+                {
+                    activeZones.Add(smokeData.Zone);
+                }
+            }
+        }
+
+        if (activeZones.Count > 0)
+            SetAllSmokeZones(activeZones, 0.92f);
+        else
+            ClearSmokeZoneDissolve();
     }
 
     /// <summary>
@@ -317,8 +366,6 @@ public partial class PowerupExecutor : Node
         Vector3 targetWorld = MathHelpers.MicrovoxelToWorld(
             MathHelpers.BuildToMicrovoxel(targetBuildUnit));
 
-        PowerupFX.SpawnAirstrikeTargeting(GetTree().Root, targetWorld);
-
         RandomNumberGenerator rng = new();
         rng.Randomize();
 
@@ -338,6 +385,7 @@ public partial class PowerupExecutor : Node
         VoxelWorld capturedWorld = _voxelWorld;
         PlayerSlot capturedInstigator = player.Slot;
         SceneTree capturedTree = GetTree();
+        Node capturedRoot = GetTree().Root;
 
         AirstrikeFlyover.Spawn(
             GetTree().Root,
@@ -346,6 +394,8 @@ public partial class PowerupExecutor : Node
             planeCount,
             onBombDrop: () =>
             {
+                // Spawn falling bomb meshes that drop from plane altitude to impact
+                float dropAltitude = targetWorld.Y + 20f; // matches AirstrikeFlyover.FlyoverAltitude
                 for (int shell = 0; shell < 3; shell++)
                 {
                     float delay = shell * 0.3f;
@@ -354,8 +404,9 @@ public partial class PowerupExecutor : Node
 
                     capturedTree.CreateTimer(delay).Timeout += () =>
                     {
-                        Explosion.Trigger(capturedTree.Root, capturedWorld, capturedImpact, 40, 4f, capturedInstigator);
-                        GD.Print($"[Powerup] Airstrike bomb {capturedShell + 1}/3 hit at {capturedImpact}.");
+                        SpawnFallingBomb(capturedRoot, capturedWorld,
+                            capturedImpact with { Y = dropAltitude },
+                            capturedImpact, capturedInstigator, capturedShell);
                     };
                 }
             });
@@ -363,6 +414,67 @@ public partial class PowerupExecutor : Node
         PowerupActivated?.Invoke(PowerupType.AirstrikeBeacon, player.Slot, targetWorld);
         GD.Print($"[Powerup] {player.Slot}: Airstrike called on {targetBuildUnit} targeting {targetEnemy}.");
         return true;
+    }
+
+    /// <summary>
+    /// Spawns a dark bomb mesh that falls from dropStart to impactPos over ~0.8s,
+    /// then triggers an explosion on arrival.
+    /// </summary>
+    private static void SpawnFallingBomb(Node parent, VoxelWorld world,
+        Vector3 dropStart, Vector3 impactPos, PlayerSlot instigator, int bombIndex)
+    {
+        Node3D bomb = new Node3D();
+        bomb.Name = $"AirstrikeBomb_{bombIndex}";
+        parent.AddChild(bomb);
+        bomb.GlobalPosition = dropStart;
+
+        // Bomb body — dark cylinder
+        MeshInstance3D body = new MeshInstance3D();
+        CylinderMesh bodyMesh = new CylinderMesh();
+        bodyMesh.TopRadius = 0.15f;
+        bodyMesh.BottomRadius = 0.15f;
+        bodyMesh.Height = 0.6f;
+        bodyMesh.RadialSegments = 6;
+        body.Mesh = bodyMesh;
+        StandardMaterial3D bombMat = new StandardMaterial3D();
+        bombMat.AlbedoColor = new Color(0.15f, 0.15f, 0.15f);
+        bombMat.Metallic = 0.6f;
+        body.MaterialOverride = bombMat;
+        bomb.AddChild(body);
+
+        // Nose cone
+        MeshInstance3D nose = new MeshInstance3D();
+        CylinderMesh noseMesh = new CylinderMesh();
+        noseMesh.TopRadius = 0f;
+        noseMesh.BottomRadius = 0.15f;
+        noseMesh.Height = 0.2f;
+        noseMesh.RadialSegments = 6;
+        nose.Mesh = noseMesh;
+        nose.MaterialOverride = bombMat;
+        nose.Position = new Vector3(0, -0.4f, 0); // below body
+        bomb.AddChild(nose);
+
+        // Tail fins (small box)
+        MeshInstance3D fins = new MeshInstance3D();
+        BoxMesh finMesh = new BoxMesh();
+        finMesh.Size = new Vector3(0.35f, 0.08f, 0.35f);
+        fins.Mesh = finMesh;
+        fins.MaterialOverride = bombMat;
+        fins.Position = new Vector3(0, 0.3f, 0); // top of body
+        bomb.AddChild(fins);
+
+        // Animate the fall using a Tween (accelerating, simulates gravity)
+        float fallDuration = 0.8f;
+        Tween tween = bomb.CreateTween();
+        tween.SetTrans(Tween.TransitionType.Quad);
+        tween.SetEase(Tween.EaseType.In); // accelerates like gravity
+        tween.TweenProperty(bomb, "global_position", impactPos, fallDuration);
+        tween.TweenCallback(Callable.From(() =>
+        {
+            Explosion.Trigger(parent, world, impactPos, 40, 4f, instigator);
+            GD.Print($"[Powerup] Airstrike bomb {bombIndex + 1}/3 hit at {impactPos}.");
+            bomb.QueueFree();
+        }));
     }
 
     private int FindSurfaceY(int microX, int microZ)
@@ -548,13 +660,19 @@ public partial class PowerupExecutor : Node
         }
 
         List<ActivePowerup> expired = currentPlayerData.Powerups.TickAndExpire();
+        bool smokeExpired = false;
         foreach (ActivePowerup e in expired)
         {
+            if (e.Type == PowerupType.SmokeScreen) smokeExpired = true;
             CleanupExpiredEffect(e);
             PowerupExpired?.Invoke(e.Type, e.Owner);
             GD.Print($"[Powerup] {e.Owner}: {e.Type} expired.");
         }
         allExpired.AddRange(expired);
+
+        // When a smoke expires, re-sync shader with any remaining active smoke zones
+        if (smokeExpired)
+            ReenforceSmokeScreens(allPlayers);
 
         return allExpired;
     }
@@ -564,11 +682,8 @@ public partial class PowerupExecutor : Node
     /// </summary>
     private void CleanupExpiredEffect(ActivePowerup effect)
     {
-        // Re-show zone chunks if smoke screen expired
-        if (effect.Type == PowerupType.SmokeScreen && effect.TargetData is SmokeScreenData smokeData)
-        {
-            HideZoneChunks(smokeData.Zone, false);
-        }
+        // Smoke dissolve cleanup is handled by ReenforceSmokeScreens in TickAllPlayerEffects
+        // (it re-syncs remaining active zones after any smoke expires)
 
         string fxName = effect.Type switch
         {
@@ -588,8 +703,92 @@ public partial class PowerupExecutor : Node
         {
             if (child.Name == fxName && GodotObject.IsInstanceValid(child))
             {
-                child.QueueFree();
+                if (effect.Type == PowerupType.SmokeScreen && child is Node3D smokeRoot)
+                {
+                    // Fade the smoke cloud out over 0.5s so it disappears at the same
+                    // time as the dissolve shader clears (no visible gap).
+                    // Stop emitting immediately, then tween alpha to 0 and free.
+                    foreach (Node sub in smokeRoot.GetChildren())
+                    {
+                        if (sub is GpuParticles3D particles)
+                            particles.Emitting = false;
+                    }
+                    Tween tween = smokeRoot.CreateTween();
+                    tween.TweenProperty(smokeRoot, "modulate:a", 0f, 0.5f);
+                    tween.TweenCallback(Callable.From(() =>
+                    {
+                        if (GodotObject.IsInstanceValid(smokeRoot))
+                            smokeRoot.QueueFree();
+                    }));
+                }
+                else
+                {
+                    child.QueueFree();
+                }
                 break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sets ALL active smoke zones on the shared voxel shader at once.
+    /// Supports up to 4 simultaneous zones (one per player).
+    /// </summary>
+    private static void SetAllSmokeZones(List<BuildZone> zones, float dissolve)
+    {
+        ShaderMaterial mat = VoxelChunk.GetSharedOpaqueShaderMaterial();
+        mat.SetShaderParameter("smoke_dissolve", dissolve);
+        mat.SetShaderParameter("smoke_zone_count", zones.Count);
+
+        Vector3 noZone = new Vector3(-99999f, -99999f, -99999f);
+        for (int i = 0; i < 4; i++)
+        {
+            Vector3 minWorld = noZone;
+            Vector3 maxWorld = noZone;
+            if (i < zones.Count)
+            {
+                minWorld = MathHelpers.MicrovoxelToWorld(zones[i].OriginMicrovoxels);
+                maxWorld = MathHelpers.MicrovoxelToWorld(zones[i].MaxMicrovoxelsInclusive + Vector3I.One);
+                // Raise the Y minimum so the ground/foundation layer is NOT dissolved
+                minWorld.Y += GameConfig.MicrovoxelMeters * 0.5f;
+            }
+            mat.SetShaderParameter($"smoke_zone_min_{i}", minWorld);
+            mat.SetShaderParameter($"smoke_zone_max_{i}", maxWorld);
+        }
+        GD.Print($"[Smoke] SetAllSmokeZones: {zones.Count} active zones");
+    }
+
+    /// <summary>
+    /// Clears the smoke dissolve shader — restores all blocks to fully visible.
+    /// </summary>
+    private static void ClearSmokeZoneDissolve()
+    {
+        ShaderMaterial mat = VoxelChunk.GetSharedOpaqueShaderMaterial();
+        mat.SetShaderParameter("smoke_dissolve", 0f);
+        mat.SetShaderParameter("smoke_zone_count", 0);
+        Vector3 noZone = new Vector3(-99999f, -99999f, -99999f);
+        for (int i = 0; i < 4; i++)
+        {
+            mat.SetShaderParameter($"smoke_zone_min_{i}", noZone);
+            mat.SetShaderParameter($"smoke_zone_max_{i}", noZone);
+        }
+    }
+
+    /// <summary>
+    /// Cleans up ALL powerup FX nodes from the scene tree.
+    /// Called on game end / return to menu to prevent FX persisting to the menu.
+    /// </summary>
+    public void CleanupAllFX()
+    {
+        ClearSmokeZoneDissolve();
+
+        string[] fxNames = { "SmokeScreenFX", "ShieldBubbleFX", "EmpFX" };
+        Node root = GetTree().Root;
+        foreach (Node child in root.GetChildren())
+        {
+            if (GodotObject.IsInstanceValid(child) && fxNames.Contains(child.Name.ToString()))
+            {
+                child.QueueFree();
             }
         }
     }

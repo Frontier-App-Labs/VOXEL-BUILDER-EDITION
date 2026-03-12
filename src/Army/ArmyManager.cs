@@ -1,9 +1,12 @@
 using Godot;
+using System;
 using System.Collections.Generic;
 using VoxelSiege.Building;
+using VoxelSiege.Combat;
 using VoxelSiege.Core;
 using VoxelSiege.Utility;
 using VoxelSiege.Voxel;
+using CommanderActor = VoxelSiege.Commander.Commander;
 
 namespace VoxelSiege.Army;
 
@@ -104,7 +107,7 @@ public partial class ArmyManager : Node
     /// Deploys troops. Uses manually placed positions when available,
     /// otherwise falls back to auto-finding interior positions.
     /// </summary>
-    public bool DeployTroops(PlayerSlot player, PlayerSlot targetEnemy, Node sceneRoot)
+    public bool DeployTroops(PlayerSlot player, Node sceneRoot)
     {
         if (_voxelWorld == null) return false;
         if (!_purchasedTroops.TryGetValue(player, out var troops) || troops.Count == 0)
@@ -131,8 +134,15 @@ public partial class ArmyManager : Node
             Vector3I? placed = troops[i].PlacedPosition;
             if (placed.HasValue)
             {
-                // Use the manually placed position
+                // Use the manually placed position, but validate it's still walkable
                 spawnPos = placed.Value;
+                if (!_pathfinder.IsWalkable(_voxelWorld, spawnPos))
+                {
+                    // Position is now blocked — find nearest air position
+                    Vector3I adjusted = FindNearbyWalkable(spawnPos, 6);
+                    GD.Print($"[Army] {player} troop {i} placed pos {spawnPos} now blocked, adjusted to {adjusted}");
+                    spawnPos = adjusted;
+                }
             }
             else
             {
@@ -149,34 +159,71 @@ public partial class ArmyManager : Node
             entity.Name = $"{player}_{troops[i].Type}_{i}";
             sceneRoot.AddChild(entity);
             entity.Initialize(troops[i].Type, player, spawnPos, teamColor);
-            entity.TargetEnemy = targetEnemy;
-            // Start idle — TroopAI will transition to ExitingBase on first tick
+            // Start idle at placed position — troops stay visible where player put them
             entity.SetAIState(TroopAIState.Idle);
             _deployedTroops[player].Add(entity);
+            GD.Print($"[Army] {player} deployed {troops[i].Type} #{i} at microvoxel {spawnPos} (world: {entity.GlobalPosition})");
         }
 
         troops.Clear(); // purchased troops are now deployed
-        GD.Print($"[Army] {player} deployed {_deployedTroops[player].Count} troops inside base against {targetEnemy}");
+        GD.Print($"[Army] {player} deployed {_deployedTroops[player].Count} troops at placed positions");
         return true;
     }
 
-    // === Tick (called on turn change — only ticks the current player's troops) ===
-    public void TickTroops(PlayerSlot currentPlayer, Node sceneRoot)
+    // === Continuous movement: pathfinding runs every frame for troops that need it ===
+    public override void _Process(double delta)
     {
         if (_voxelWorld == null) return;
 
-        if (!_deployedTroops.TryGetValue(currentPlayer, out var troops)) return;
-
-        // Remove dead troops
-        troops.RemoveAll(t => !IsInstanceValid(t) || t.CurrentHP <= 0);
-
-        foreach (var troop in troops)
+        foreach (var (player, troops) in _deployedTroops)
         {
-            // Decrement lifespan — skip AI tick if the troop just expired
-            if (troop.TickLifespan())
-                continue;
+            foreach (var troop in troops)
+            {
+                if (!IsInstanceValid(troop) || troop.CurrentHP <= 0) continue;
 
-            TroopAI.ExecuteTick(troop, _voxelWorld, _pathfinder, _doorRegistry, _buildZones, sceneRoot);
+                // If troop has a MoveTarget but no current path, find one
+                if (troop.MoveTarget.HasValue && troop.CurrentPath == null)
+                {
+                    Func<Vector3I, bool> doorCheck = pos =>
+                        _doorRegistry.IsDoorVoxel(pos, troop.OwnerSlot);
+
+                    troop.CurrentPath = _pathfinder.FindPath(
+                        _voxelWorld, troop.CurrentMicrovoxel, troop.MoveTarget.Value, doorCheck);
+                    troop.PathIndex = 0;
+
+                    if (troop.CurrentPath == null)
+                    {
+                        // Can't reach target — clear it
+                        troop.MoveTarget = null;
+                    }
+                }
+            }
+        }
+    }
+
+    // === Tick (called on turn change) ===
+    /// <summary>
+    /// Ticks ALL players' troops. Attack checks only — movement is continuous in _Process.
+    /// If skipAttacksFor is set, that player's troops won't attack (handled by visual sequence).
+    /// </summary>
+    public void TickAllTroops(PlayerSlot currentPlayer, Node sceneRoot, PlayerSlot? skipAttacksFor = null,
+        HashSet<PlayerSlot>? alivePlayers = null,
+        Dictionary<PlayerSlot, CommanderActor>? commanders = null,
+        Dictionary<PlayerSlot, List<WeaponBase>>? weapons = null)
+    {
+        if (_voxelWorld == null) return;
+
+        foreach (var (player, troops) in _deployedTroops)
+        {
+            // Remove dead troops
+            troops.RemoveAll(t => !IsInstanceValid(t) || t.CurrentHP <= 0);
+
+            bool canAttack = player == currentPlayer && player != skipAttacksFor;
+            foreach (var troop in troops)
+            {
+                TroopAI.ExecuteTick(troop, _voxelWorld, _pathfinder, _doorRegistry, _buildZones, sceneRoot,
+                    canAttack, alivePlayers, _deployedTroops, commanders, weapons);
+            }
         }
     }
 
@@ -193,7 +240,7 @@ public partial class ArmyManager : Node
                 float falloff = 1f - Mathf.Clamp(dist / radiusMicrovoxels, 0f, 1f);
                 int damage = Mathf.CeilToInt(baseDamage * falloff);
                 if (damage > 0)
-                    troop.ApplyDamage(damage, instigator);
+                    troop.ApplyDamage(damage, instigator, worldPos);
             }
         }
     }
@@ -255,6 +302,222 @@ public partial class ArmyManager : Node
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// Scans outward from a position to find the nearest walkable microvoxel.
+    /// Used when a placed troop position is now blocked by built blocks.
+    /// </summary>
+    private Vector3I FindNearbyWalkable(Vector3I center, int searchRadius)
+    {
+        if (_voxelWorld == null) return center;
+
+        for (int r = 1; r <= searchRadius; r++)
+        {
+            for (int dx = -r; dx <= r; dx++)
+            {
+                for (int dz = -r; dz <= r; dz++)
+                {
+                    for (int dy = -2; dy <= 4; dy++)
+                    {
+                        Vector3I candidate = center + new Vector3I(dx, dy, dz);
+                        if (_pathfinder.IsWalkable(_voxelWorld, candidate))
+                            return candidate;
+                    }
+                }
+            }
+        }
+
+        return center; // couldn't find one, use original
+    }
+
+    /// <summary>
+    /// Sets a move target for all of a player's alive troops. Used by both human click-to-move
+    /// and bot AI. Applies per-troop offset to prevent stacking.
+    /// </summary>
+    public void MoveTroopsToward(PlayerSlot player, Vector3I targetMicrovoxel)
+    {
+        if (!_deployedTroops.TryGetValue(player, out var troops)) return;
+
+        int alive = 0;
+        foreach (var t in troops)
+            if (IsInstanceValid(t) && t.CurrentHP > 0) alive++;
+
+        // Track claimed destinations so no two troops get the same target
+        HashSet<Vector3I> claimed = new();
+        int idx = 0;
+        foreach (var troop in troops)
+        {
+            if (!IsInstanceValid(troop) || troop.CurrentHP <= 0) continue;
+
+            // Offset each troop slightly to prevent stacking
+            int spreadX = (idx % 3) - 1; // -1, 0, 1
+            int spreadZ = (idx / 3) - 1;
+            Vector3I candidate = targetMicrovoxel + new Vector3I(spreadX * 2, 0, spreadZ * 2);
+
+            // If this position is already claimed, spiral outward to find an open one
+            if (claimed.Contains(candidate))
+            {
+                bool found = false;
+                for (int r = 1; r <= 4 && !found; r++)
+                {
+                    for (int dx = -r; dx <= r && !found; dx++)
+                    {
+                        for (int dz = -r; dz <= r && !found; dz++)
+                        {
+                            if (System.Math.Abs(dx) != r && System.Math.Abs(dz) != r) continue;
+                            Vector3I alt = targetMicrovoxel + new Vector3I(dx * 2, 0, dz * 2);
+                            if (!claimed.Contains(alt))
+                            {
+                                candidate = alt;
+                                found = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            claimed.Add(candidate);
+            troop.MoveTarget = candidate;
+            troop.CurrentPath = null;
+            troop.PathIndex = 0;
+            idx++;
+        }
+
+        GD.Print($"[Army] {player}: {alive} troops moving toward {targetMicrovoxel}");
+    }
+
+    /// <summary>
+    /// Bot AI: auto-move troops toward nearest enemy base.
+    /// </summary>
+    public void BotMoveTroops(PlayerSlot botPlayer)
+    {
+        if (!_deployedTroops.TryGetValue(botPlayer, out var troops)) return;
+
+        HashSet<Vector3I> claimed = new();
+        int idx = 0;
+        int total = troops.Count;
+        foreach (var troop in troops)
+        {
+            if (!IsInstanceValid(troop) || troop.CurrentHP <= 0) continue;
+
+            Vector3I? target = TroopAI.ComputeBotMoveTarget(troop, _buildZones, idx, total);
+            if (target.HasValue)
+            {
+                Vector3I candidate = target.Value;
+                // Prevent overlap — find a unique position if claimed
+                if (claimed.Contains(candidate))
+                {
+                    bool found = false;
+                    for (int r = 1; r <= 4 && !found; r++)
+                    {
+                        for (int dx = -r; dx <= r && !found; dx++)
+                        {
+                            for (int dz = -r; dz <= r && !found; dz++)
+                            {
+                                if (System.Math.Abs(dx) != r && System.Math.Abs(dz) != r) continue;
+                                Vector3I alt = candidate + new Vector3I(dx, 0, dz);
+                                if (!claimed.Contains(alt))
+                                {
+                                    candidate = alt;
+                                    found = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                claimed.Add(candidate);
+                troop.MoveTarget = candidate;
+                troop.CurrentPath = null;
+                troop.PathIndex = 0;
+            }
+            idx++;
+        }
+    }
+
+    /// <summary>Returns the list of alive deployed troops for a player.</summary>
+    public List<TroopEntity> GetDeployedTroops(PlayerSlot player)
+    {
+        if (!_deployedTroops.TryGetValue(player, out var troops))
+            return new List<TroopEntity>();
+        troops.RemoveAll(t => !IsInstanceValid(t) || t.CurrentHP <= 0);
+        return troops;
+    }
+
+    /// <summary>Returns true if the player has at least one alive deployed troop.</summary>
+    public bool HasAliveTroops(PlayerSlot player)
+    {
+        if (!_deployedTroops.TryGetValue(player, out var troops)) return false;
+        foreach (var t in troops)
+            if (IsInstanceValid(t) && t.CurrentHP > 0) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Returns a list of (troop, attack target) pairs for troops that can attack this turn.
+    /// Used by the troop attack camera sequence. Checks all target types in priority order:
+    /// Enemy Troops > Commander > Weapons > Voxels.
+    /// </summary>
+    public List<(TroopEntity Troop, TroopAttackTarget Target)> GetTroopsWithAttackTargets(
+        PlayerSlot player,
+        Dictionary<PlayerSlot, CommanderActor>? commanders = null,
+        Dictionary<PlayerSlot, List<WeaponBase>>? weapons = null,
+        HashSet<PlayerSlot>? alivePlayers = null)
+    {
+        var result = new List<(TroopEntity, TroopAttackTarget)>();
+        if (_voxelWorld == null || !_deployedTroops.TryGetValue(player, out var troops)) return result;
+
+        foreach (var troop in troops)
+        {
+            if (!IsInstanceValid(troop) || troop.CurrentHP <= 0) continue;
+            TroopAttackTarget? target = TroopAI.FindBestTarget(
+                troop, _voxelWorld, _buildZones,
+                _deployedTroops, commanders, weapons, alivePlayers);
+            if (target.HasValue)
+            {
+                result.Add((troop, target.Value));
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Returns the world-space center of a player's alive deployed troops.
+    /// </summary>
+    public Vector3 GetTroopClusterCenter(PlayerSlot player)
+    {
+        if (!_deployedTroops.TryGetValue(player, out var troops)) return Vector3.Zero;
+        Vector3 sum = Vector3.Zero;
+        int count = 0;
+        foreach (var t in troops)
+        {
+            if (!IsInstanceValid(t) || t.CurrentHP <= 0) continue;
+            sum += t.GlobalPosition;
+            count++;
+        }
+        return count > 0 ? sum / count : Vector3.Zero;
+    }
+
+    /// <summary>
+    /// Prints a diagnostic summary of all deployed troops (position, HP, AI state, visibility).
+    /// Called by pressing a debug key during combat.
+    /// </summary>
+    public void PrintTroopDebug()
+    {
+        GD.Print("[Army] === TROOP DEBUG ===");
+        foreach (var (player, troops) in _deployedTroops)
+        {
+            GD.Print($"  {player}: {troops.Count} deployed");
+            foreach (var troop in troops)
+            {
+                if (!IsInstanceValid(troop)) { GD.Print("    (freed)"); continue; }
+                GD.Print($"    {troop.Name} HP={troop.CurrentHP} State={troop.AIState} Pos={troop.GlobalPosition} Visible={troop.Visible}");
+            }
+        }
+        int purchased = 0;
+        foreach (var (player, list) in _purchasedTroops) purchased += list.Count;
+        GD.Print($"  Purchased (undeployed): {purchased}");
+        GD.Print("[Army] === END DEBUG ===");
     }
 
     private Vector3I GetFallbackSpawnPos(PlayerSlot player)

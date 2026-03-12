@@ -11,7 +11,7 @@ namespace VoxelSiege.Art;
 /// </summary>
 public partial class VoxelAnimator : Node
 {
-    public enum AnimState { Idle, Walk, Attack, Flinch, Panic, Celebrate, Dead }
+    public enum AnimState { Idle, Walk, Attack, Shoot, Flinch, Panic, Celebrate, Dead }
 
     private AnimState _state = AnimState.Idle;
     private float _stateTime;
@@ -91,6 +91,7 @@ public partial class VoxelAnimator : Node
             case AnimState.Idle: AnimateIdle(dt); break;
             case AnimState.Walk: AnimateWalk(dt); break;
             case AnimState.Attack: AnimateAttack(dt); break;
+            case AnimState.Shoot: AnimateShoot(dt); break;
             case AnimState.Flinch: AnimateFlinch(dt); break;
             case AnimState.Panic: AnimatePanic(dt); break;
             case AnimState.Celebrate: AnimateCelebrate(dt); break;
@@ -217,6 +218,70 @@ public partial class VoxelAnimator : Node
         SetRotation(_leftElbow, new Vector3(Deg(15), 0, 0));
 
         // Return to idle after completion
+        if (t >= 1f) SetState(AnimState.Idle);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  SHOOT - arm extended forward pointing gun, recoil kick
+    // ═══════════════════════════════════════════════════════════════
+
+    private void AnimateShoot(float dt)
+    {
+        float t = Mathf.Min(_stateTime / 0.5f, 1f); // 0.5s total
+
+        float shoulderX;
+        float elbowX;
+        float spineX;
+        if (t < 0.15f)
+        {
+            // Raise arm to aiming pose
+            float p = t / 0.15f;
+            shoulderX = Mathf.Lerp(0, Deg(-75), p);
+            elbowX = Mathf.Lerp(Deg(10), Deg(0), p);
+            spineX = Mathf.Lerp(0, Deg(-3), p);
+        }
+        else if (t < 0.25f)
+        {
+            // Brief hold on target before firing
+            shoulderX = Deg(-75);
+            elbowX = Deg(0);
+            spineX = Deg(-3);
+        }
+        else if (t < 0.35f)
+        {
+            // FIRE — sharp recoil kick: arm jerks up, spine rocks back
+            float p = (t - 0.25f) / 0.1f; // fast 0→1 over 10% of anim
+            float kick = Mathf.Sin(p * Mathf.Pi); // spike up then back down
+            shoulderX = Deg(-75) + kick * Deg(25); // arm kicks up hard
+            elbowX = kick * Deg(12); // elbow flexes from recoil
+            spineX = Deg(-3) - kick * Deg(6); // spine rocks backward
+        }
+        else if (t < 0.50f)
+        {
+            // Recoil settle — arm drifts back to aim
+            float p = (t - 0.35f) / 0.15f;
+            shoulderX = Mathf.Lerp(Deg(-75) + Deg(8), Deg(-75), p); // slight overshoot
+            elbowX = Mathf.Lerp(Deg(5), Deg(0), p);
+            spineX = Mathf.Lerp(Deg(-5), Deg(-3), p);
+        }
+        else
+        {
+            // Return to idle
+            float p = (t - 0.50f) / 0.50f;
+            float ease = p * p;
+            shoulderX = Mathf.Lerp(Deg(-75), 0, ease);
+            elbowX = Mathf.Lerp(Deg(0), Deg(10), ease);
+            spineX = Mathf.Lerp(Deg(-3), 0, ease);
+        }
+
+        SetRotation(_rightShoulder, new Vector3(shoulderX, 0, 0));
+        SetRotation(_rightElbow, new Vector3(elbowX, 0, 0));
+        SetRotation(_spine, new Vector3(spineX, 0, 0));
+
+        // Left arm relaxed at side
+        SetRotation(_leftShoulder, new Vector3(0, 0, Deg(5)));
+        SetRotation(_leftElbow, new Vector3(Deg(15), 0, 0));
+
         if (t >= 1f) SetState(AnimState.Idle);
     }
 

@@ -4,28 +4,57 @@ using System.Collections.Generic;
 using VoxelSiege.Voxel;
 using VoxelSiege.Core;
 using VoxelSiege.Building;
+using VoxelSiege.Combat;
 using VoxelSiege.Utility;
 using VoxelValue = VoxelSiege.Voxel.Voxel;
+using CommanderActor = VoxelSiege.Commander.Commander;
 
 namespace VoxelSiege.Army;
+
+/// <summary>Target type for troop attacks, in priority order.</summary>
+public enum TroopTargetKind { EnemyTroop, Commander, Weapon, Voxel }
+
+/// <summary>
+/// Describes what a troop wants to attack this tick.
+/// Only the field matching <see cref="Kind"/> is populated.
+/// </summary>
+public readonly struct TroopAttackTarget
+{
+    public readonly TroopTargetKind Kind;
+    public readonly Vector3 WorldPosition;
+    public readonly Vector3I VoxelPos;
+    public readonly TroopEntity? EnemyTroop;
+    public readonly CommanderActor? EnemyCommander;
+    public readonly WeaponBase? EnemyWeapon;
+
+    public TroopAttackTarget(TroopTargetKind kind, Vector3 worldPos,
+        Vector3I voxelPos = default, TroopEntity? enemyTroop = null,
+        CommanderActor? enemyCommander = null, WeaponBase? enemyWeapon = null)
+    {
+        Kind = kind;
+        WorldPosition = worldPos;
+        VoxelPos = voxelPos;
+        EnemyTroop = enemyTroop;
+        EnemyCommander = enemyCommander;
+        EnemyWeapon = enemyWeapon;
+    }
+}
 
 /// <summary>
 /// Per-troop behavior logic. Called once per round by ArmyManager.TickTroops().
 /// Stateless — all state lives in TroopEntity.
 ///
-/// Troop lifecycle:
-///   1. Spawned inside own base at HomeMicrovoxel (ExitingBase)
-///   2. Pathfind from HomeMicrovoxel through own door to door exterior (ExitingBase)
-///   3. Pathfind across open terrain to enemy base door or enemy commander (Marching)
-///   4. Attack enemy commander when in range (Attacking)
-///   5. After attacking, pathfind back to own door exterior (Returning)
-///   6. Pathfind from own door through base back to HomeMicrovoxel (EnteringBase)
-///   7. Idle at HomeMicrovoxel (Idle)
+/// Simplified lifecycle:
+///   1. Idle — standing at placed position, waiting for move orders
+///   2. Moving — pathfinding toward MoveTarget, walks MoveStepsPerTick per tick
+///   3. Attacking — within range of targets, attacks with priority:
+///      Enemy Troops > Commander > Weapons > Voxels
 /// </summary>
 public static class TroopAI
 {
     /// <summary>
-    /// Execute one tick of troop behavior using the door-based pathfinding state machine.
+    /// Execute one tick of troop behavior (called on turn change).
+    /// Movement is now continuous in TroopEntity._Process — this only handles attack checks.
     /// </summary>
     public static void ExecuteTick(
         TroopEntity troop,
@@ -33,477 +62,323 @@ public static class TroopAI
         TroopPathfinder pathfinder,
         DoorRegistry doorRegistry,
         Dictionary<PlayerSlot, BuildZone> buildZones,
-        Node sceneRoot)
+        Node sceneRoot,
+        bool canAttack = true,
+        HashSet<PlayerSlot>? alivePlayers = null,
+        Dictionary<PlayerSlot, List<TroopEntity>>? allTroops = null,
+        Dictionary<PlayerSlot, CommanderActor>? commanders = null,
+        Dictionary<PlayerSlot, List<WeaponBase>>? weapons = null)
     {
         if (troop.AIState == TroopAIState.Dead || troop.CurrentHP <= 0) return;
 
-        switch (troop.AIState)
+        // Check for targets to attack (only on owner's turn)
+        if (canAttack)
         {
-            case TroopAIState.Idle:
-                HandleIdle(troop, doorRegistry, buildZones);
-                break;
-
-            case TroopAIState.ExitingBase:
-                HandleExitingBase(troop, world, pathfinder, doorRegistry, buildZones, sceneRoot);
-                break;
-
-            case TroopAIState.Marching:
-                HandleMarching(troop, world, pathfinder, doorRegistry, buildZones, sceneRoot);
-                break;
-
-            case TroopAIState.Breaching:
-                HandleBreaching(troop, world);
-                break;
-
-            case TroopAIState.Attacking:
-                HandleAttacking(troop, world, pathfinder, doorRegistry, buildZones, sceneRoot);
-                break;
-
-            case TroopAIState.Returning:
-                HandleReturning(troop, world, pathfinder, doorRegistry, buildZones, sceneRoot);
-                break;
-
-            case TroopAIState.EnteringBase:
-                HandleEnteringBase(troop, world, pathfinder, doorRegistry, buildZones);
-                break;
-        }
-    }
-
-    /// <summary>
-    /// Idle troops that haven't attacked yet start by exiting the base.
-    /// </summary>
-    private static void HandleIdle(
-        TroopEntity troop,
-        DoorRegistry doorRegistry,
-        Dictionary<PlayerSlot, BuildZone> buildZones)
-    {
-        if (troop.HasAttacked)
-            return; // Already completed cycle, stay idle at home
-
-        // Start the exit sequence
-        troop.SetAIState(TroopAIState.ExitingBase);
-        troop.CurrentPath = null;
-        troop.PathIndex = 0;
-    }
-
-    /// <summary>
-    /// Pathfind from inside the base through own door to the door exterior.
-    /// </summary>
-    private static void HandleExitingBase(
-        TroopEntity troop,
-        VoxelWorld world,
-        TroopPathfinder pathfinder,
-        DoorRegistry doorRegistry,
-        Dictionary<PlayerSlot, BuildZone> buildZones,
-        Node sceneRoot)
-    {
-        // Find our nearest door
-        DoorPlacement? ownDoor = doorRegistry.FindNearestDoor(troop.OwnerSlot, troop.CurrentMicrovoxel);
-        if (ownDoor == null)
-        {
-            // No door placed — can't exit base; go straight to marching from current position
-            GD.Print($"[TroopAI] {troop.Name}: No door found, marching from current position");
-            troop.SetAIState(TroopAIState.Marching);
-            troop.CurrentPath = null;
-            troop.PathIndex = 0;
-            return;
-        }
-
-        // Calculate the exterior position just outside the door
-        Vector3I doorExterior = GetDoorExterior(ownDoor, troop.OwnerSlot, buildZones, doorRegistry);
-
-        // If we're already outside, switch to marching
-        if (troop.CurrentMicrovoxel == doorExterior || troop.CurrentMicrovoxel == ownDoor.BaseMicrovoxel)
-        {
-            troop.SetAIState(TroopAIState.Marching);
-            troop.CurrentPath = null;
-            troop.PathIndex = 0;
-            return;
-        }
-
-        // Pathfind from current position to door exterior (through own door)
-        if (troop.CurrentPath == null || troop.PathIndex >= troop.CurrentPath.Count)
-        {
-            Func<Vector3I, bool> doorCheck = pos => doorRegistry.IsDoorVoxel(pos, troop.OwnerSlot);
-            troop.CurrentPath = pathfinder.FindPath(world, troop.CurrentMicrovoxel, doorExterior, doorCheck);
-            troop.PathIndex = 0;
-
-            if (troop.CurrentPath == null)
+            TroopAttackTarget? target = FindBestTarget(
+                troop, world, buildZones, allTroops, commanders, weapons, alivePlayers);
+            if (target.HasValue)
             {
-                // Can't find path to door from inside — try the door base position itself
-                troop.CurrentPath = pathfinder.FindPath(world, troop.CurrentMicrovoxel, ownDoor.BaseMicrovoxel, doorCheck);
-                troop.PathIndex = 0;
-
-                if (troop.CurrentPath == null)
-                {
-                    // Still no path — skip to marching from current position
-                    GD.Print($"[TroopAI] {troop.Name}: Can't pathfind to door, marching from current pos");
-                    troop.SetAIState(TroopAIState.Marching);
-                    troop.CurrentPath = null;
-                    troop.PathIndex = 0;
-                    return;
-                }
-            }
-        }
-
-        // Move along the exit path
-        MoveAlongPath(troop);
-
-        // Check if we've arrived outside
-        if (troop.PathIndex >= troop.CurrentPath.Count)
-        {
-            troop.SetAIState(TroopAIState.Marching);
-            troop.CurrentPath = null;
-            troop.PathIndex = 0;
-        }
-    }
-
-    /// <summary>
-    /// March across open terrain toward the enemy base/commander.
-    /// </summary>
-    private static void HandleMarching(
-        TroopEntity troop,
-        VoxelWorld world,
-        TroopPathfinder pathfinder,
-        DoorRegistry doorRegistry,
-        Dictionary<PlayerSlot, BuildZone> buildZones,
-        Node sceneRoot)
-    {
-        // Find target commander
-        Commander.Commander? targetCmd = FindTargetCommander(troop.TargetEnemy, sceneRoot);
-        if (targetCmd == null || targetCmd.IsDead)
-        {
-            // Target dead — return home
-            BeginReturn(troop, doorRegistry, buildZones);
-            return;
-        }
-
-        // Check if in attack range
-        Vector3I cmdMicrovoxel = MathHelpers.WorldToMicrovoxel(targetCmd.GlobalPosition);
-        float dist = MicrovoxelDistance(troop.CurrentMicrovoxel, cmdMicrovoxel);
-        TroopStats stats = TroopDefinitions.Get(troop.Type);
-
-        if (dist <= stats.AttackRange && stats.AttackDamage > 0)
-        {
-            // Attack!
-            troop.SetAIState(TroopAIState.Attacking);
-            targetCmd.ApplyDamage(stats.AttackDamage, troop.OwnerSlot, troop.GlobalPosition);
-            troop.RecordDamageDealt(stats.AttackDamage);
-            troop.HasAttacked = true;
-            return;
-        }
-
-        // Pathfind toward enemy commander
-        if (troop.CurrentPath == null || troop.PathIndex >= troop.CurrentPath.Count)
-        {
-            // Only walk through own doors — enemy doors block passage
-            Func<Vector3I, bool> doorCheck = pos => doorRegistry.IsDoorVoxel(pos, troop.OwnerSlot);
-
-            // Try to pathfind to the enemy commander's position
-            troop.CurrentPath = pathfinder.FindPath(world, troop.CurrentMicrovoxel, cmdMicrovoxel, doorCheck);
-            troop.PathIndex = 0;
-
-            if (troop.CurrentPath == null)
-            {
-                // No path found — try to find an enemy door to pathfind to instead
-                DoorPlacement? enemyDoor = doorRegistry.FindNearestDoor(troop.TargetEnemy, troop.CurrentMicrovoxel);
-                if (enemyDoor != null)
-                {
-                    Vector3I enemyDoorExterior = GetDoorExterior(enemyDoor, troop.TargetEnemy, buildZones, doorRegistry);
-                    troop.CurrentPath = pathfinder.FindPath(world, troop.CurrentMicrovoxel, enemyDoorExterior, doorCheck);
-                    troop.PathIndex = 0;
-                }
-
-                if (troop.CurrentPath == null)
-                {
-                    // Still no path — Demolisher tries to breach, others wait
-                    if (stats.CanDamageWalls)
-                    {
-                        troop.SetAIState(TroopAIState.Breaching);
-                    }
-                    return;
-                }
-            }
-        }
-
-        // Move along the march path
-        MoveAlongPath(troop);
-    }
-
-    /// <summary>
-    /// Demolisher breaches adjacent walls when no path exists.
-    /// </summary>
-    private static void HandleBreaching(TroopEntity troop, VoxelWorld world)
-    {
-        TroopStats stats = TroopDefinitions.Get(troop.Type);
-        if (!stats.CanDamageWalls)
-        {
-            troop.SetAIState(TroopAIState.Marching);
-            troop.CurrentPath = null;
-            troop.PathIndex = 0;
-            return;
-        }
-
-        // Demolish an adjacent wall voxel
-        bool demolished = TryDemolishAdjacentWall(troop, world);
-        if (!demolished)
-        {
-            // Nothing adjacent to demolish — go back to marching to re-pathfind
-            troop.SetAIState(TroopAIState.Marching);
-            troop.CurrentPath = null;
-            troop.PathIndex = 0;
-        }
-    }
-
-    /// <summary>
-    /// Attack the enemy commander. After attacking, begin return journey.
-    /// </summary>
-    private static void HandleAttacking(
-        TroopEntity troop,
-        VoxelWorld world,
-        TroopPathfinder pathfinder,
-        DoorRegistry doorRegistry,
-        Dictionary<PlayerSlot, BuildZone> buildZones,
-        Node sceneRoot)
-    {
-        Commander.Commander? targetCmd = FindTargetCommander(troop.TargetEnemy, sceneRoot);
-        TroopStats stats = TroopDefinitions.Get(troop.Type);
-
-        if (targetCmd == null || targetCmd.IsDead)
-        {
-            // Target dead — return home
-            BeginReturn(troop, doorRegistry, buildZones);
-            return;
-        }
-
-        Vector3I cmdMicrovoxel = MathHelpers.WorldToMicrovoxel(targetCmd.GlobalPosition);
-        float dist = MicrovoxelDistance(troop.CurrentMicrovoxel, cmdMicrovoxel);
-
-        if (dist <= stats.AttackRange && stats.AttackDamage > 0)
-        {
-            // Continue attacking
-            targetCmd.ApplyDamage(stats.AttackDamage, troop.OwnerSlot, troop.GlobalPosition);
-            troop.RecordDamageDealt(stats.AttackDamage);
-            // After one tick of attacking, begin return
-            BeginReturn(troop, doorRegistry, buildZones);
-        }
-        else
-        {
-            // Out of range — close in or return
-            if (troop.HasAttacked)
-            {
-                BeginReturn(troop, doorRegistry, buildZones);
-            }
-            else
-            {
-                // Get closer
-                troop.SetAIState(TroopAIState.Marching);
-                troop.CurrentPath = null;
-                troop.PathIndex = 0;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Return across open terrain to own base door exterior.
-    /// </summary>
-    private static void HandleReturning(
-        TroopEntity troop,
-        VoxelWorld world,
-        TroopPathfinder pathfinder,
-        DoorRegistry doorRegistry,
-        Dictionary<PlayerSlot, BuildZone> buildZones,
-        Node sceneRoot)
-    {
-        DoorPlacement? ownDoor = doorRegistry.FindNearestDoor(troop.OwnerSlot, troop.CurrentMicrovoxel);
-        if (ownDoor == null)
-        {
-            // No door — just idle in place
-            troop.SetAIState(TroopAIState.Idle);
-            return;
-        }
-
-        Vector3I doorExterior = GetDoorExterior(ownDoor, troop.OwnerSlot, buildZones, doorRegistry);
-
-        // Check if we've arrived at the door exterior
-        if (troop.CurrentMicrovoxel == doorExterior || troop.CurrentMicrovoxel == ownDoor.BaseMicrovoxel)
-        {
-            // Start entering the base
-            troop.SetAIState(TroopAIState.EnteringBase);
-            troop.CurrentPath = null;
-            troop.PathIndex = 0;
-            return;
-        }
-
-        // Pathfind back to the door exterior
-        if (troop.CurrentPath == null || troop.PathIndex >= troop.CurrentPath.Count)
-        {
-            Func<Vector3I, bool> doorCheck = pos => doorRegistry.IsDoorVoxel(pos, troop.OwnerSlot);
-            troop.CurrentPath = pathfinder.FindPath(world, troop.CurrentMicrovoxel, doorExterior, doorCheck);
-            troop.PathIndex = 0;
-
-            if (troop.CurrentPath == null)
-            {
-                // Try the door base position directly
-                troop.CurrentPath = pathfinder.FindPath(world, troop.CurrentMicrovoxel, ownDoor.BaseMicrovoxel, doorCheck);
-                troop.PathIndex = 0;
-
-                if (troop.CurrentPath == null)
-                {
-                    // Can't find way back — idle where we are
-                    troop.SetAIState(TroopAIState.Idle);
-                    return;
-                }
-            }
-        }
-
-        MoveAlongPath(troop);
-
-        // Check arrival again after moving
-        if (troop.PathIndex >= troop.CurrentPath.Count)
-        {
-            if (troop.CurrentMicrovoxel == doorExterior || troop.CurrentMicrovoxel == ownDoor.BaseMicrovoxel)
-            {
-                troop.SetAIState(TroopAIState.EnteringBase);
-                troop.CurrentPath = null;
-                troop.PathIndex = 0;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Enter the base through own door and pathfind back to home position.
-    /// </summary>
-    private static void HandleEnteringBase(
-        TroopEntity troop,
-        VoxelWorld world,
-        TroopPathfinder pathfinder,
-        DoorRegistry doorRegistry,
-        Dictionary<PlayerSlot, BuildZone> buildZones)
-    {
-        // Check if we've arrived home
-        if (troop.CurrentMicrovoxel == troop.HomeMicrovoxel)
-        {
-            troop.SetAIState(TroopAIState.Idle);
-            troop.CurrentPath = null;
-            troop.PathIndex = 0;
-            return;
-        }
-
-        // Pathfind from current position (door area) to home inside the base
-        if (troop.CurrentPath == null || troop.PathIndex >= troop.CurrentPath.Count)
-        {
-            Func<Vector3I, bool> doorCheck = pos => doorRegistry.IsDoorVoxel(pos, troop.OwnerSlot);
-            troop.CurrentPath = pathfinder.FindPath(world, troop.CurrentMicrovoxel, troop.HomeMicrovoxel, doorCheck);
-            troop.PathIndex = 0;
-
-            if (troop.CurrentPath == null)
-            {
-                // Can't find path home — just idle here
-                troop.SetAIState(TroopAIState.Idle);
+                troop.SetAIState(TroopAIState.Attacking);
+                ExecuteAttack(troop, world, target.Value);
+                troop.PauseForAttack(0.5f);
                 return;
             }
         }
+    }
 
-        MoveAlongPath(troop);
-
-        // Check arrival
-        if (troop.PathIndex >= troop.CurrentPath.Count)
+    /// <summary>
+    /// Dispatches an attack based on target kind.
+    /// </summary>
+    internal static void ExecuteAttack(TroopEntity troop, VoxelWorld world, TroopAttackTarget target)
+    {
+        switch (target.Kind)
         {
-            troop.SetAIState(TroopAIState.Idle);
-            troop.CurrentPath = null;
-            troop.PathIndex = 0;
+            case TroopTargetKind.EnemyTroop:
+                if (target.EnemyTroop != null && GodotObject.IsInstanceValid(target.EnemyTroop))
+                    troop.AttackTroop(target.EnemyTroop);
+                break;
+            case TroopTargetKind.Commander:
+                if (target.EnemyCommander != null && GodotObject.IsInstanceValid(target.EnemyCommander))
+                    troop.AttackCommander(target.EnemyCommander);
+                break;
+            case TroopTargetKind.Weapon:
+                if (target.EnemyWeapon != null && GodotObject.IsInstanceValid(target.EnemyWeapon))
+                    troop.AttackWeapon(target.EnemyWeapon);
+                break;
+            case TroopTargetKind.Voxel:
+                troop.AttackVoxel(world, target.VoxelPos);
+                break;
         }
     }
 
     /// <summary>
-    /// Begin the return journey home.
+    /// Finds the best target for a troop, checking in priority order:
+    /// 1. Enemy troops (highest — defend against incoming attackers)
+    /// 2. Enemy commander (high value — win condition)
+    /// 3. Enemy weapons (medium — reduce enemy firepower)
+    /// 4. Enemy voxels (low — dig toward high-value targets)
     /// </summary>
-    private static void BeginReturn(
+    internal static TroopAttackTarget? FindBestTarget(
         TroopEntity troop,
-        DoorRegistry doorRegistry,
-        Dictionary<PlayerSlot, BuildZone> buildZones)
-    {
-        troop.HasAttacked = true;
-        troop.SetAIState(TroopAIState.Returning);
-        troop.CurrentPath = null;
-        troop.PathIndex = 0;
-    }
-
-    /// <summary>
-    /// Move the troop along its current path according to its movement speed.
-    /// </summary>
-    private static void MoveAlongPath(TroopEntity troop)
-    {
-        if (troop.CurrentPath == null) return;
-
-        TroopStats stats = TroopDefinitions.Get(troop.Type);
-        int stepsToTake = stats.MoveStepsPerTick;
-
-        for (int i = 0; i < stepsToTake && troop.PathIndex < troop.CurrentPath.Count; i++)
-        {
-            Vector3I next = troop.CurrentPath[troop.PathIndex];
-            troop.StartMoveTo(next);
-            troop.PathIndex++;
-        }
-    }
-
-    /// <summary>
-    /// Gets the exterior position outside a door, accounting for the build zone edges.
-    /// </summary>
-    private static Vector3I GetDoorExterior(
-        DoorPlacement door,
-        PlayerSlot owner,
+        VoxelWorld world,
         Dictionary<PlayerSlot, BuildZone> buildZones,
-        DoorRegistry doorRegistry)
+        Dictionary<PlayerSlot, List<TroopEntity>>? allTroops = null,
+        Dictionary<PlayerSlot, CommanderActor>? commanders = null,
+        Dictionary<PlayerSlot, List<WeaponBase>>? weapons = null,
+        HashSet<PlayerSlot>? alivePlayers = null)
     {
-        if (buildZones.TryGetValue(owner, out BuildZone zone))
-        {
-            return doorRegistry.GetDoorExteriorPosition(door, zone.OriginMicrovoxels, zone.MaxMicrovoxelsInclusive);
-        }
-        // Fallback: step one voxel in -X
-        return door.BaseMicrovoxel + new Vector3I(-1, 0, 0);
-    }
+        TroopStats stats = TroopDefinitions.Get(troop.Type);
+        float rangeMeters = stats.AttackRange * GameConfig.MicrovoxelMeters;
+        Vector3 troopPos = troop.GlobalPosition;
 
-    private static Commander.Commander? FindTargetCommander(PlayerSlot target, Node sceneRoot)
-    {
-        foreach (Node node in sceneRoot.GetTree().GetNodesInGroup("Commanders"))
+        // Priority 1: Enemy troops within attack range
+        if (allTroops != null)
         {
-            if (node is Commander.Commander cmd && cmd.OwnerSlot == target)
-                return cmd;
-        }
-        return null;
-    }
-
-    private static float MicrovoxelDistance(Vector3I a, Vector3I b)
-    {
-        Vector3 af = new Vector3(a.X, a.Y, a.Z);
-        Vector3 bf = new Vector3(b.X, b.Y, b.Z);
-        return af.DistanceTo(bf);
-    }
-
-    private static bool TryDemolishAdjacentWall(TroopEntity troop, VoxelWorld world)
-    {
-        // Check 4 horizontal neighbors for solid voxels to demolish
-        Vector3I[] dirs = { Vector3I.Right, Vector3I.Left, new(0, 0, 1), new(0, 0, -1) };
-        foreach (var dir in dirs)
-        {
-            Vector3I wallPos = troop.CurrentMicrovoxel + dir;
-            VoxelValue voxel = world.GetVoxel(wallPos);
-            if (voxel.IsSolid && voxel.Material != VoxelMaterialType.Foundation)
+            TroopEntity? closestTroop = null;
+            float closestDist = float.MaxValue;
+            foreach (var (player, troops) in allTroops)
             {
-                // Deal 1 HP damage to this voxel
-                int newHP = System.Math.Max(0, voxel.HitPoints - 1);
-                if (newHP <= 0)
-                    world.SetVoxel(wallPos, VoxelValue.Air);
-                else
-                    world.SetVoxel(wallPos, voxel.WithHitPoints(newHP).WithDamaged(true));
-
-                troop.SetAIState(TroopAIState.Breaching);
-                return true;
+                if (player == troop.OwnerSlot) continue;
+                foreach (var enemy in troops)
+                {
+                    if (!GodotObject.IsInstanceValid(enemy) || enemy.CurrentHP <= 0) continue;
+                    float dist = troopPos.DistanceTo(enemy.GlobalPosition);
+                    if (dist <= rangeMeters && dist < closestDist)
+                    {
+                        closestDist = dist;
+                        closestTroop = enemy;
+                    }
+                }
+            }
+            if (closestTroop != null)
+            {
+                return new TroopAttackTarget(TroopTargetKind.EnemyTroop,
+                    closestTroop.GlobalPosition, enemyTroop: closestTroop);
             }
         }
 
-        return false;
+        // Priority 2: Enemy commander within attack range
+        if (commanders != null)
+        {
+            CommanderActor? closestCmd = null;
+            float closestDist = float.MaxValue;
+            foreach (var (player, cmd) in commanders)
+            {
+                if (player == troop.OwnerSlot) continue;
+                if (alivePlayers != null && !alivePlayers.Contains(player)) continue;
+                if (!GodotObject.IsInstanceValid(cmd) || cmd.IsDead) continue;
+                float dist = troopPos.DistanceTo(cmd.GlobalPosition);
+                if (dist <= rangeMeters && dist < closestDist)
+                {
+                    closestDist = dist;
+                    closestCmd = cmd;
+                }
+            }
+            if (closestCmd != null)
+            {
+                return new TroopAttackTarget(TroopTargetKind.Commander,
+                    closestCmd.GlobalPosition, enemyCommander: closestCmd);
+            }
+        }
+
+        // Priority 3: Enemy weapons within attack range
+        if (weapons != null)
+        {
+            WeaponBase? closestWpn = null;
+            float closestDist = float.MaxValue;
+            foreach (var (player, wpnList) in weapons)
+            {
+                if (player == troop.OwnerSlot) continue;
+                if (alivePlayers != null && !alivePlayers.Contains(player)) continue;
+                foreach (var wpn in wpnList)
+                {
+                    if (wpn == null || !GodotObject.IsInstanceValid(wpn) || wpn.IsDestroyed) continue;
+                    float dist = troopPos.DistanceTo(wpn.GlobalPosition);
+                    if (dist <= rangeMeters && dist < closestDist)
+                    {
+                        closestDist = dist;
+                        closestWpn = wpn;
+                    }
+                }
+            }
+            if (closestWpn != null)
+            {
+                return new TroopAttackTarget(TroopTargetKind.Weapon,
+                    closestWpn.GlobalPosition, enemyWeapon: closestWpn);
+            }
+        }
+
+        // Priority 4: Enemy voxels (dig toward high-value targets)
+        // Build HVT list from passed commanders/weapons for voxel scoring
+        List<Vector3>? hvts = null;
+        if (commanders != null || weapons != null)
+        {
+            hvts = new List<Vector3>();
+            if (commanders != null)
+            {
+                foreach (var (player, cmd) in commanders)
+                {
+                    if (player != troop.OwnerSlot && GodotObject.IsInstanceValid(cmd) && !cmd.IsDead)
+                        hvts.Add(cmd.GlobalPosition);
+                }
+            }
+            if (weapons != null)
+            {
+                foreach (var (player, wpnList) in weapons)
+                {
+                    if (player != troop.OwnerSlot)
+                    {
+                        foreach (var wpn in wpnList)
+                        {
+                            if (wpn != null && GodotObject.IsInstanceValid(wpn) && !wpn.IsDestroyed)
+                                hvts.Add(wpn.GlobalPosition);
+                        }
+                    }
+                }
+            }
+        }
+
+        Vector3I? voxelTarget = FindNearestEnemyVoxel(
+            troop, world, buildZones, highValueTargets: hvts, alivePlayers: alivePlayers);
+        if (voxelTarget.HasValue)
+        {
+            float mvM = GameConfig.MicrovoxelMeters;
+            Vector3 voxelWorld = new Vector3(
+                voxelTarget.Value.X * mvM + mvM * 0.5f,
+                voxelTarget.Value.Y * mvM + mvM * 0.5f,
+                voxelTarget.Value.Z * mvM + mvM * 0.5f);
+            return new TroopAttackTarget(TroopTargetKind.Voxel,
+                voxelWorld, voxelPos: voxelTarget.Value);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Finds the best solid enemy voxel within attack range.
+    /// Priority: blocks near commanders/weapons (high-value targets) > structural supports > zone center.
+    /// Skips voxels in <paramref name="excludeTargets"/> so multiple troops spread their attacks.
+    /// </summary>
+    internal static Vector3I? FindNearestEnemyVoxel(
+        TroopEntity troop,
+        VoxelWorld world,
+        Dictionary<PlayerSlot, BuildZone> buildZones,
+        HashSet<Vector3I>? excludeTargets = null,
+        List<Vector3>? highValueTargets = null,
+        HashSet<PlayerSlot>? alivePlayers = null)
+    {
+        TroopStats stats = TroopDefinitions.Get(troop.Type);
+        int range = (int)Mathf.Ceil(stats.AttackRange);
+        Vector3I pos = troop.CurrentMicrovoxel;
+        float mvMeters = GameConfig.MicrovoxelMeters;
+
+        Vector3I? bestTarget = null;
+        float bestScore = float.MaxValue;
+
+        foreach (var (player, zone) in buildZones)
+        {
+            if (player == troop.OwnerSlot) continue; // Don't attack own base
+            // Skip dead players — don't waste attacks on bases with no commander
+            if (alivePlayers != null && !alivePlayers.Contains(player)) continue;
+
+            for (int dx = -range; dx <= range; dx++)
+            {
+                for (int dy = -range; dy <= range; dy++)
+                {
+                    for (int dz = -range; dz <= range; dz++)
+                    {
+                        Vector3I candidate = pos + new Vector3I(dx, dy, dz);
+                        float dist = new Vector3(dx, dy, dz).Length();
+                        if (dist > stats.AttackRange) continue;
+
+                        // Skip blocks already claimed by another troop
+                        if (excludeTargets != null && excludeTargets.Contains(candidate)) continue;
+
+                        // Must be inside enemy build zone
+                        if (!zone.ContainsMicrovoxel(candidate)) continue;
+
+                        VoxelValue voxel = world.GetVoxel(candidate);
+                        if (!voxel.IsSolid || voxel.Material == VoxelMaterialType.Foundation) continue;
+
+                        // Base score: distance from troop
+                        float score = dist;
+
+                        // Priority bonus: blocks near high-value targets (commanders, weapons)
+                        // get a large score reduction so troops dig toward them
+                        if (highValueTargets != null && highValueTargets.Count > 0)
+                        {
+                            Vector3 candidateWorld = new Vector3(
+                                candidate.X * mvMeters, candidate.Y * mvMeters, candidate.Z * mvMeters);
+                            float nearestHVT = float.MaxValue;
+                            foreach (Vector3 hvt in highValueTargets)
+                            {
+                                float hvtDist = candidateWorld.DistanceTo(hvt);
+                                if (hvtDist < nearestHVT) nearestHVT = hvtDist;
+                            }
+                            // Strong bonus for blocks within 5m of a high-value target
+                            if (nearestHVT < 5f)
+                                score -= (5f - nearestHVT) * 3f;
+                        }
+
+                        // Structural bonus: prefer blocks that are supporting other blocks
+                        // (have solid blocks above them — knocking these out causes collapse)
+                        VoxelValue above = world.GetVoxel(candidate + Vector3I.Up);
+                        if (above.IsSolid && above.Material != VoxelMaterialType.Foundation)
+                            score -= 1.5f;
+
+                        // Weaker blocks are easier to destroy — slight preference
+                        score -= (float)voxel.HitPoints * 0.05f;
+
+                        if (score < bestScore)
+                        {
+                            bestScore = score;
+                            bestTarget = candidate;
+                        }
+                    }
+                }
+            }
+        }
+
+        return bestTarget;
+    }
+
+    /// <summary>
+    /// Bot AI: compute a move target toward the nearest enemy base center.
+    /// Returns null if no enemies remain.
+    /// </summary>
+    public static Vector3I? ComputeBotMoveTarget(
+        TroopEntity troop,
+        Dictionary<PlayerSlot, BuildZone> buildZones,
+        int troopIndex,
+        int totalTroops)
+    {
+        float bestDist = float.MaxValue;
+        Vector3I bestCenter = troop.CurrentMicrovoxel;
+
+        foreach (var (player, zone) in buildZones)
+        {
+            if (player == troop.OwnerSlot) continue;
+
+            Vector3I center = new Vector3I(
+                (zone.OriginMicrovoxels.X + zone.MaxMicrovoxelsInclusive.X) / 2,
+                zone.OriginMicrovoxels.Y + 1, // ground level
+                (zone.OriginMicrovoxels.Z + zone.MaxMicrovoxelsInclusive.Z) / 2);
+
+            float dist = new Vector3(
+                troop.CurrentMicrovoxel.X - center.X,
+                0,
+                troop.CurrentMicrovoxel.Z - center.Z).Length();
+
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                bestCenter = center;
+            }
+        }
+
+        // Apply spread offset so troops don't all stack on the same point
+        int spreadX = (troopIndex % 3) - 1; // -1, 0, 1
+        int spreadZ = (troopIndex / 3) - 1;
+        return bestCenter + new Vector3I(spreadX * 2, 0, spreadZ * 2);
     }
 }

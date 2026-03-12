@@ -82,6 +82,9 @@ public partial class RetroSFXGenerator : Node
         // Backup bombardment alert
         audio.RegisterSFX("backup_alert", GenerateBackupAlert());
 
+        // Troop melee attack
+        audio.RegisterSFX("troop_attack", GenerateTroopAttack());
+
         // UI sounds
         audio.RegisterSFX("ui_click", GenerateUIClick());
         audio.RegisterSFX("ui_hover", GenerateUIHover());
@@ -467,6 +470,29 @@ public partial class RetroSFXGenerator : Node
             float freq = 200f + MathF.Sin(2f * MathF.PI * 30f * t) * 40f;
             float val = MathF.Sign(MathF.Sin(2f * MathF.PI * freq * t)) * env * 0.19f;
             WriteSample(data, i, val);
+        }
+        return CreateWav(data);
+    }
+
+    // ─── Troop attack: punchy thud + sharp crack ───
+    private AudioStreamWav GenerateTroopAttack()
+    {
+        int samples = (int)(SampleRate * 0.12f);
+        byte[] data = new byte[samples * 2];
+        Random rng = new Random(42);
+        for (int i = 0; i < samples; i++)
+        {
+            float t = i / (float)SampleRate;
+            float env = MathF.Max(0f, 1f - t * 12f);
+            // Low thud at 120Hz
+            float thud = MathF.Sin(2f * MathF.PI * 120f * t) * 0.5f;
+            // Sharp crack — high square wave with fast decay
+            float crackEnv = MathF.Max(0f, 1f - t * 30f);
+            float crack = MathF.Sign(MathF.Sin(2f * MathF.PI * 900f * t)) * crackEnv * 0.25f;
+            // Tiny noise for grit
+            float noise = ((float)rng.NextDouble() * 2f - 1f) * env * 0.08f;
+            float val = (thud + crack + noise) * env;
+            WriteSample(data, i, Clamp(val));
         }
         return CreateWav(data);
     }

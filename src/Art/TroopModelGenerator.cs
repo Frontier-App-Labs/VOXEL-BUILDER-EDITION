@@ -288,24 +288,36 @@ public static class TroopModelGenerator
         leftForearm[0, 1, 0] = uniform; leftForearm[0, 1, 1] = uniform;
         leftForearm[0, 0, 0] = Skin; leftForearm[0, 0, 1] = Skin;
 
-        // ── RIGHT FOREARM (2x3x3) — holding a pixel rifle ──
-        // The gun barrel extends forward (z=0), grip at hand level (y=0)
-        Color?[,,] rightForearm = new Color?[2, 3, 3];
-        // Forearm (uniform)
-        rightForearm[0, 2, 1] = uniform; rightForearm[0, 2, 2] = uniform;
-        rightForearm[0, 1, 1] = uniform; rightForearm[0, 1, 2] = uniform;
-        // Hand gripping the gun
-        rightForearm[0, 0, 1] = Skin;
-        // Gun stock (behind hand, z=2)
-        rightForearm[1, 1, 2] = DarkMetal;
-        rightForearm[1, 0, 2] = DarkMetal;
-        // Gun body/receiver (z=1, alongside hand)
-        rightForearm[1, 1, 1] = MetalGrey;
-        rightForearm[1, 0, 1] = DarkMetal; // trigger guard
-        // Gun barrel (front, z=0)
-        rightForearm[0, 0, 0] = MetalGrey; // barrel tip
-        rightForearm[1, 0, 0] = MetalGrey; // barrel
-        rightForearm[1, 1, 0] = DarkMetal; // barrel top
+        // ── RIGHT FOREARM (2x5x2) — holding a pixel rifle ──
+        // Gun runs along Y axis: y=0 is barrel tip (bottom/down at rest, forward when aiming),
+        // y=4 is stock (near elbow). z=0 is front-facing, z=1 is magazine/back side.
+        Color WoodStock = new Color(0.42f, 0.28f, 0.14f);
+        Color WoodStockDark = new Color(0.30f, 0.18f, 0.08f);
+        Color?[,,] rightForearm = new Color?[2, 5, 2];
+
+        // y=0: Barrel muzzle (bottom — points down at rest, forward when aiming)
+        rightForearm[1, 0, 0] = MetalGrey;  // barrel tip
+
+        // y=1: Barrel + front sight
+        rightForearm[1, 1, 0] = MetalGrey;  // barrel
+        rightForearm[1, 1, 1] = DarkMetal;  // sight rail
+
+        // y=2: Hand grip + handguard
+        rightForearm[0, 2, 0] = Skin;       // hand gripping
+        rightForearm[1, 2, 0] = DarkMetal;  // handguard front
+        rightForearm[1, 2, 1] = MetalGrey;  // handguard back
+
+        // y=3: Forearm + receiver
+        rightForearm[0, 3, 0] = uniform;    // forearm
+        rightForearm[0, 3, 1] = uniform;    // forearm
+        rightForearm[1, 3, 0] = MetalGrey;  // receiver front
+        rightForearm[1, 3, 1] = DarkMetal;  // magazine / trigger guard
+
+        // y=4: Forearm near elbow + stock
+        rightForearm[0, 4, 0] = uniform;    // forearm
+        rightForearm[0, 4, 1] = uniform;    // forearm
+        rightForearm[1, 4, 0] = WoodStock;      // stock body
+        rightForearm[1, 4, 1] = WoodStockDark;  // buttplate
 
         // ── THIGH (2x2x2) ──
         Color?[,,] thigh = new Color?[2, 2, 2];
@@ -361,7 +373,7 @@ public static class TroopModelGenerator
             RightForearm = new BodyPartDefinition
             {
                 Name = "RightForearm", Voxels = rightForearm,
-                PivotVoxelCoords = new Vector3(1, 2, 1.5f),
+                PivotVoxelCoords = new Vector3(1, 4, 1),
                 AttachOffset = new Vector3(0, -2, 0)
             },
             LeftThigh = new BodyPartDefinition

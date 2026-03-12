@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using VoxelSiege.Core;
 using VoxelSiege.Networking;
 using VoxelSiege.Networking.Steam;
+using VoxelSiege.Utility;
 
 namespace VoxelSiege.UI;
 
@@ -79,6 +80,9 @@ public partial class MainMenu : Control
     private VBoxContainer? _hostPanel;
     private PanelContainer? _lobbyCodePanel;
     private VBoxContainer? _joinPanel;
+    private VBoxContainer? _sandboxSlotsPanel;
+    private VBoxContainer? _sandboxSlotList;
+    private Label? _sandboxWalletLabel;
     private Label? _lobbyCodeLabel;
     private Label? _statusLabel;
 
@@ -430,6 +434,36 @@ public partial class MainMenu : Control
         AddSubMenuHeader(_joinPanel, "JOIN GAME");
         AddJoinCodeInput(_joinPanel);
         AddMenuButton(_joinPanel, "BACK", TextSecondary, OnBackToPlayOnline);
+
+        // === SANDBOX SLOTS PANEL (slot selection + purchase) ===
+        _sandboxSlotsPanel = new VBoxContainer();
+        _sandboxSlotsPanel.AddThemeConstantOverride("separation", 6);
+        _sandboxSlotsPanel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _sandboxSlotsPanel.MouseFilter = MouseFilterEnum.Ignore;
+        _sandboxSlotsPanel.Visible = false;
+        buttonArea.AddChild(_sandboxSlotsPanel);
+
+        AddSubMenuHeader(_sandboxSlotsPanel, "SANDBOX BUILDS");
+
+        // Wallet display inside the panel
+        _sandboxWalletLabel = new Label();
+        _sandboxWalletLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        _sandboxWalletLabel.AddThemeFontOverride("font", PixelFont);
+        _sandboxWalletLabel.AddThemeFontSizeOverride("font_size", 10);
+        _sandboxWalletLabel.AddThemeColorOverride("font_color", AccentGold);
+        _sandboxWalletLabel.MouseFilter = MouseFilterEnum.Ignore;
+        _sandboxSlotsPanel.AddChild(_sandboxWalletLabel);
+
+        // Scrollable slot list
+        _sandboxSlotList = new VBoxContainer();
+        _sandboxSlotList.AddThemeConstantOverride("separation", 4);
+        _sandboxSlotList.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        _sandboxSlotList.MouseFilter = MouseFilterEnum.Ignore;
+        _sandboxSlotsPanel.AddChild(_sandboxSlotList);
+
+        // Buy new slot button + back button (added after slot list)
+        AddMenuButton(_sandboxSlotsPanel, $"+ NEW SLOT (${GameConfig.SandboxSlotCost:N0})", AccentGold, OnBuySandboxSlot);
+        AddMenuButton(_sandboxSlotsPanel, "BACK", TextSecondary, OnBackToMainMenu);
 
         // Bottom spacer
         Control bottomSpacer = new Control();
@@ -1141,6 +1175,7 @@ public partial class MainMenu : Control
         if (_playOnlinePanel != null) _playOnlinePanel.Visible = false;
         if (_hostPanel != null) _hostPanel.Visible = false;
         if (_joinPanel != null) _joinPanel.Visible = false;
+        if (_sandboxSlotsPanel != null) _sandboxSlotsPanel.Visible = false;
 
         if (panelToShow != null) panelToShow.Visible = true;
     }
@@ -1248,12 +1283,77 @@ public partial class MainMenu : Control
 
     private void OnSandboxPressed()
     {
+        RefreshSandboxSlots();
+        ShowPanel(_sandboxSlotsPanel);
+    }
+
+    private void RefreshSandboxSlots()
+    {
+        if (_sandboxSlotList == null) return;
+
+        // Clear existing slot buttons
+        foreach (Node child in _sandboxSlotList.GetChildren())
+            child.QueueFree();
+
+        ProgressionManager? pm = GetTree().Root.FindChild("ProgressionManager", true, false) as ProgressionManager;
+        PlayerProfile? profile = pm?.Profile;
+        int slotCount = profile?.SandboxSlots ?? 1;
+        List<string> savedBuilds = profile?.SavedBuilds ?? new List<string>();
+        long wallet = profile?.WalletBalance ?? 0;
+
+        if (_sandboxWalletLabel != null)
+            _sandboxWalletLabel.Text = $"WALLET: ${wallet:N0}";
+
+        for (int i = 0; i < slotCount; i++)
+        {
+            string? buildName = i < savedBuilds.Count ? savedBuilds[i] : null;
+            string label = buildName ?? $"EMPTY SLOT {i + 1}";
+            Color slotColor = buildName != null ? AccentGreen : TextSecondary;
+            string? captured = buildName; // capture for lambda
+
+            AddMenuButton(_sandboxSlotList, label, slotColor, () => OnSandboxSlotSelected(captured));
+        }
+    }
+
+    private void OnSandboxSlotSelected(string? buildName)
+    {
         GameManager? gameManager = GetTree().Root.GetNodeOrNull<GameManager>("Main");
         if (gameManager != null)
         {
-            gameManager.StartSandboxMode();
+            gameManager.StartSandboxMode(buildName);
         }
         Visible = false;
+    }
+
+    private void OnBuySandboxSlot()
+    {
+        ProgressionManager? pm = GetTree().Root.FindChild("ProgressionManager", true, false) as ProgressionManager;
+        PlayerProfile? profile = pm?.Profile;
+        if (profile == null) return;
+
+        if (profile.WalletBalance < GameConfig.SandboxSlotCost)
+        {
+            // Can't afford — flash the wallet label red briefly
+            if (_sandboxWalletLabel != null)
+            {
+                _sandboxWalletLabel.AddThemeColorOverride("font_color", AccentRed);
+                var timer = GetTree().CreateTimer(0.5);
+                timer.Timeout += () =>
+                {
+                    if (_sandboxWalletLabel != null)
+                        _sandboxWalletLabel.AddThemeColorOverride("font_color", AccentGold);
+                };
+            }
+            return;
+        }
+
+        profile.WalletBalance -= GameConfig.SandboxSlotCost;
+        profile.SandboxSlots++;
+        SaveSystem.SaveJson("user://profile/player_profile.json", profile);
+
+        AudioDirector.Instance?.PlaySFX("ui_click");
+        RefreshSandboxSlots();
+        RefreshWalletDisplay();
     }
 
     private void OnHostPressed()

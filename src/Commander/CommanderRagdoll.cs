@@ -419,6 +419,20 @@ public partial class CommanderRagdoll : Node3D
         return _settledTimer >= MinSettledTime;
     }
 
+    /// <summary>
+    /// Returns the global position of the torso body (center of mass),
+    /// or the ragdoll node's own position if no torso is found.
+    /// </summary>
+    public Vector3 GetTorsoPosition()
+    {
+        foreach (RigidBody3D body in _bodies)
+        {
+            if (IsInstanceValid(body) && body.Name == "Ragdoll_Torso")
+                return body.GlobalPosition;
+        }
+        return GlobalPosition;
+    }
+
     public override void _PhysicsProcess(double delta)
     {
         if (!IsActive)

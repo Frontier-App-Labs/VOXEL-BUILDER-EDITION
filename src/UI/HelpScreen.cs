@@ -370,8 +370,9 @@ public partial class HelpScreen : Control
         AddBullet(parent, "Your commander needs at least 6 blocks around them");
         AddBullet(parent, "Weapons must be at least 2 blocks away from your commander");
         AddBullet(parent, "Weapons can be placed up to 60 build units from zone center");
-        AddBullet(parent, "Place doors (max 4) for troop movement paths");
+        AddBullet(parent, "Place doors (max 4) for troop movement — blocks enemy line of sight. R to rotate");
         AddBullet(parent, "Right-click a weapon button in the build UI to sell the last placed weapon of that type");
+        AddBullet(parent, "Ctrl+Z undoes any placement: blocks, weapons, troops, and doors");
     }
 
     private void BuildMaterials(VBoxContainer parent)
@@ -467,7 +468,7 @@ public partial class HelpScreen : Control
 
         AddSubHeader(parent, "WEAPON DURABILITY");
         AddParagraph(parent,
-            "Weapons have 200 HP and can be damaged or destroyed by enemy fire. " +
+            "Weapons have 150 HP and can be damaged or destroyed by enemy fire. " +
             "If the blocks beneath a weapon are destroyed, it loses structural " +
             "support and is instantly destroyed. Protect your weapons!");
     }
@@ -493,10 +494,10 @@ public partial class HelpScreen : Control
         AddBullet(parent, "Troops move automatically along pathfinding routes");
         AddBullet(parent, "Infantry attacks commanders only (1 damage per turn)");
         AddBullet(parent, "Demolishers can damage both walls AND commanders (2 damage per turn)");
-        AddBullet(parent, "Troops have a lifespan of 6 ticks before they expire");
+        AddBullet(parent, "Troops survive until killed — no lifespan limit");
         AddBullet(parent, "Troops have a max total damage cap (Infantry: 30, Demolisher: 50)");
-        AddBullet(parent, "Place doors in your fortress to create troop pathways");
-        AddBullet(parent, "Max 4 doors per player");
+        AddBullet(parent, "Doors let own troops pass but block enemy LOS and weapon fire");
+        AddBullet(parent, "Max 4 doors per player. Press R to rotate door facing");
         AddBullet(parent, "Attack range: 2 microvoxels (melee only)");
     }
 

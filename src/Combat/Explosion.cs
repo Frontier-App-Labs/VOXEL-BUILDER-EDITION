@@ -260,7 +260,7 @@ public partial class Explosion : Node3D
             {
                 int troopDamage = DamageCalculator.CalculateCommanderDamage(baseDamage, radiusMicrovoxels, troopDistance);
                 if (troopDamage > 0)
-                    troop.ApplyDamage(troopDamage, instigator);
+                    troop.ApplyDamage(troopDamage, instigator, worldPosition);
             }
         }
 

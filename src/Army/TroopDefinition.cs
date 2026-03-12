@@ -20,8 +20,8 @@ public static class TroopDefinitions
 {
     private static readonly TroopStats[] Stats =
     {
-        new("Infantry",   50,  3, 2.5f, 5, 1, 2f, false, 30),
-        new("Demolisher", 100, 5, 2.0f, 4, 2, 2f, true,  50),
+        new("Infantry",   75,  5, 2.5f, 5, 12, 4f, false, 200),
+        new("Demolisher", 150, 8, 2.0f, 4, 18, 5f, true,  280),
     };
 
     public static TroopStats Get(TroopType type) => Stats[(int)type];

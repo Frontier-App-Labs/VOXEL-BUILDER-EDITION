@@ -161,6 +161,11 @@ public partial class AudioDirector : Node
             _sfxLayers["block_remove"] = crashes;
             _sfxLayers["debris_impact"] = crashes;
         }
+        // Troop attacks use crash sounds layered with retro thud
+        if (crashes.Count > 0)
+        {
+            _sfxLayers["troop_attack"] = new List<AudioStream> { crashes[0] };
+        }
 
         GD.Print($"[AudioDirector] Loaded {_musicPlaylist.Count} music tracks, {_sfxLayers.Count} SFX layers.");
     }
@@ -337,6 +342,7 @@ public partial class AudioDirector : Node
         ["drill_fire"] = -2f,
         ["countdown_tick"] = -6f,
         ["countdown_fight"] = -4f,
+        ["troop_attack"] = 0f,
     };
 
     // Sounds that should use non-positional (2D) playback even when a position
@@ -350,6 +356,12 @@ public partial class AudioDirector : Node
         "railgun_fire",
         "drill_fire",
         "weapon_fire",
+        "explosion_impact",
+        "commander_hit",
+        "commander_critical_hit",
+        "commander_death",
+        "drill_bore",
+        "troop_attack",
     };
 
     public void PlaySFX(string name, Vector3? position = null)
@@ -400,6 +412,8 @@ public partial class AudioDirector : Node
         if (!use2D)
         {
             // 3D positional audio for impact sounds, debris, etc.
+            // UnitSize 30 + MaxDistance 200 ensures explosions are clearly audible
+            // even from the top-down spectator camera (~100 units up).
             if (hasRetro)
             {
                 AudioStreamPlayer3D player3D = new AudioStreamPlayer3D();
@@ -408,6 +422,8 @@ public partial class AudioDirector : Node
                 player3D.VolumeDb = retroDb;
                 player3D.MaxDb = 3.0f; // prevent clipping
                 player3D.AttenuationModel = AudioStreamPlayer3D.AttenuationModelEnum.InverseSquareDistance;
+                player3D.UnitSize = 30f;
+                player3D.MaxDistance = 200f;
                 AddChild(player3D);
                 player3D.GlobalPosition = position!.Value;
                 _activeSfxCount++;
@@ -423,6 +439,8 @@ public partial class AudioDirector : Node
                 layerPlayer.VolumeDb = layerDb;
                 layerPlayer.MaxDb = 3.0f;
                 layerPlayer.AttenuationModel = AudioStreamPlayer3D.AttenuationModelEnum.InverseSquareDistance;
+                layerPlayer.UnitSize = 30f;
+                layerPlayer.MaxDistance = 200f;
                 AddChild(layerPlayer);
                 layerPlayer.GlobalPosition = position!.Value;
                 _activeSfxCount++;
@@ -516,8 +534,31 @@ public partial class AudioDirector : Node
 
     private void OnMusicFinished()
     {
-        // Automatically play next random track when current one ends
-        PlayRandomMusic();
+        // When a track finishes, replay the same track for the current phase
+        // instead of shuffling to a random track (which could play combat
+        // music on the menu). This keeps the music appropriate to the phase.
+        GameManager? gm = GetTree()?.Root.GetNodeOrNull<GameManager>("Main");
+        GamePhase phase = gm?.CurrentPhase ?? GamePhase.Menu;
+
+        string? targetTrack = phase switch
+        {
+            GamePhase.Menu => "menu_music",
+            GamePhase.Building or GamePhase.FogReveal => "build_music",
+            GamePhase.Combat => "combat_music",
+            GamePhase.GameOver => "gameover_music",
+            _ => null,
+        };
+
+        if (targetTrack != null && _musicCache.TryGetValue(targetTrack, out AudioStream? stream) && stream != null && _musicPlayer != null)
+        {
+            _currentMusicName = targetTrack;
+            _musicPlayer.Stream = stream;
+            _musicPlayer.Play();
+        }
+        else
+        {
+            PlayRandomMusic();
+        }
     }
 
     /// <summary>

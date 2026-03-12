@@ -27,6 +27,18 @@ global uniform float edge_grid_enabled;
 uniform float kill_cam_dissolve : hint_range(0.0, 1.0) = 0.0;
 uniform float kill_cam_ground_y = 3.0;
 
+// -- Smoke screen: dissolve blocks inside up to 4 world-space bounding boxes --
+uniform float smoke_dissolve : hint_range(0.0, 1.0) = 0.0;
+uniform int smoke_zone_count = 0;
+uniform vec3 smoke_zone_min_0 = vec3(-99999.0);
+uniform vec3 smoke_zone_max_0 = vec3(-99999.0);
+uniform vec3 smoke_zone_min_1 = vec3(-99999.0);
+uniform vec3 smoke_zone_max_1 = vec3(-99999.0);
+uniform vec3 smoke_zone_min_2 = vec3(-99999.0);
+uniform vec3 smoke_zone_max_2 = vec3(-99999.0);
+uniform vec3 smoke_zone_min_3 = vec3(-99999.0);
+uniform vec3 smoke_zone_max_3 = vec3(-99999.0);
+
 // -- Varying --
 varying vec3 world_pos;
 varying vec3 world_normal;
@@ -258,7 +270,7 @@ void fragment() {
 
     // -- Kill cam: discard pixels in a clean checkerboard pattern so blocks become see-through.
     //    Uses discard (not ALPHA) so the shader stays in the opaque render pipeline.
-    //    Checkerboard gives a uniform, non-noisy transparency vs random hash dithering.
+    //    Height-based fade: blocks near ground dissolve less, higher blocks more.
     if (kill_cam_dissolve > 0.01) {
         if (world_pos.y > kill_cam_ground_y) {
             // Smooth height-based fade: blocks near ground dissolve less, higher blocks more
@@ -276,6 +288,51 @@ void fragment() {
             );
             float threshold = bayer4x4[py * 4 + px];
             if (threshold < effective_dissolve) {
+                discard;
+            }
+        }
+    }
+
+    // -- Smoke screen: dissolve blocks inside any active smoked zone's bounding box.
+    //    Same Bayer dithering as kill cam but scoped to world-space AABBs.
+    //    Supports up to 4 simultaneous smoke zones (one per player).
+    if (smoke_dissolve > 0.01 && smoke_zone_count > 0) {
+        bool in_smoke = false;
+        if (smoke_zone_count >= 1 &&
+            world_pos.x >= smoke_zone_min_0.x && world_pos.x <= smoke_zone_max_0.x &&
+            world_pos.y >= smoke_zone_min_0.y && world_pos.y <= smoke_zone_max_0.y &&
+            world_pos.z >= smoke_zone_min_0.z && world_pos.z <= smoke_zone_max_0.z) {
+            in_smoke = true;
+        }
+        if (!in_smoke && smoke_zone_count >= 2 &&
+            world_pos.x >= smoke_zone_min_1.x && world_pos.x <= smoke_zone_max_1.x &&
+            world_pos.y >= smoke_zone_min_1.y && world_pos.y <= smoke_zone_max_1.y &&
+            world_pos.z >= smoke_zone_min_1.z && world_pos.z <= smoke_zone_max_1.z) {
+            in_smoke = true;
+        }
+        if (!in_smoke && smoke_zone_count >= 3 &&
+            world_pos.x >= smoke_zone_min_2.x && world_pos.x <= smoke_zone_max_2.x &&
+            world_pos.y >= smoke_zone_min_2.y && world_pos.y <= smoke_zone_max_2.y &&
+            world_pos.z >= smoke_zone_min_2.z && world_pos.z <= smoke_zone_max_2.z) {
+            in_smoke = true;
+        }
+        if (!in_smoke && smoke_zone_count >= 4 &&
+            world_pos.x >= smoke_zone_min_3.x && world_pos.x <= smoke_zone_max_3.x &&
+            world_pos.y >= smoke_zone_min_3.y && world_pos.y <= smoke_zone_max_3.y &&
+            world_pos.z >= smoke_zone_min_3.z && world_pos.z <= smoke_zone_max_3.z) {
+            in_smoke = true;
+        }
+        if (in_smoke) {
+            int spx = int(FRAGCOORD.x) % 4;
+            int spy = int(FRAGCOORD.y) % 4;
+            float sbayer[16] = float[16](
+                 0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0,
+                12.0/16.0,  4.0/16.0, 14.0/16.0,  6.0/16.0,
+                 3.0/16.0, 11.0/16.0,  1.0/16.0,  9.0/16.0,
+                15.0/16.0,  7.0/16.0, 13.0/16.0,  5.0/16.0
+            );
+            float sthreshold = sbayer[spy * 4 + spx];
+            if (sthreshold < smoke_dissolve) {
                 discard;
             }
         }

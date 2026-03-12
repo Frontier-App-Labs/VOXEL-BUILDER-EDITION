@@ -487,6 +487,20 @@ public partial class VoxelWorld : Node3D
         _dirtyChunkSet.Clear();
         _deferredEdgeRemesh.Clear();
 
+        // Remove decorator nodes (grass, flags) from previous generation.
+        // These are NOT VoxelChunks so the loop above doesn't catch them.
+        var decoratorNodes = new List<Node>();
+        foreach (Node child in GetChildren())
+        {
+            if (child is not VoxelChunk)
+                decoratorNodes.Add(child);
+        }
+        foreach (Node node in decoratorNodes)
+        {
+            RemoveChild(node);
+            node.QueueFree();
+        }
+
         if (regeneratePrototypeArena)
         {
             GeneratePrototypeArena();

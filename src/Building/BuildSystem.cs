@@ -227,6 +227,12 @@ public partial class BuildSystem : Node
         return true;
     }
 
+    public void ClearHistory()
+    {
+        _undoStack.Clear();
+        _redoStack.Clear();
+    }
+
     public bool UndoLast(PlayerSlot playerSlot)
     {
         if (_undoStack.Count == 0)

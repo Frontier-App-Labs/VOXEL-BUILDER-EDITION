@@ -64,9 +64,9 @@ public partial class BuildUI : Control
     {
         ("Cannon", WeaponType.Cannon, 500),
         ("Mortar", WeaponType.Mortar, 600),
-        ("Drill", WeaponType.Drill, 400),
+        ("Drill", WeaponType.Drill, 550),
         ("Railgun", WeaponType.Railgun, 800),
-        ("Missile", WeaponType.MissileLauncher, 1000),
+        ("Missile", WeaponType.MissileLauncher, 850),
     };
 
     private Label? _budgetLabel;
@@ -114,6 +114,7 @@ public partial class BuildUI : Control
 
     // Sandbox mode
     private bool _sandboxMode;
+    private PanelContainer? _sandboxPanel;
     private LineEdit? _sandboxNameInput;
     private VBoxContainer? _sandboxBuildList;
     private List<string> _sandboxBuildNames = new List<string>();
@@ -835,18 +836,26 @@ public partial class BuildUI : Control
             _powerupCountLabels.Add(countLabel);
 
             PowerupType capturedType = pType;
-            Button pwrClickArea = new Button();
-            pwrClickArea.Flat = true;
+            // Use a plain Control overlay so both left- and right-click are handled
+            // via GuiInput (Button nodes can swallow right-clicks on some platforms).
+            Control pwrClickArea = new Control();
             pwrClickArea.MouseFilter = MouseFilterEnum.Stop;
-            pwrClickArea.Modulate = new Color(1, 1, 1, 0);
-            pwrClickArea.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); OnPowerupBuyClicked(capturedType); };
             pwrClickArea.GuiInput += (InputEvent @event) =>
             {
-                if (@event is InputEventMouseButton mb && mb.ButtonIndex == MouseButton.Right && mb.Pressed)
+                if (@event is InputEventMouseButton mb && mb.Pressed)
                 {
-                    AudioDirector.Instance?.PlaySFX("ui_click");
-                    OnPowerupSellClicked(capturedType);
-                    pwrClickArea.AcceptEvent();
+                    if (mb.ButtonIndex == MouseButton.Left)
+                    {
+                        AudioDirector.Instance?.PlaySFX("ui_click");
+                        OnPowerupBuyClicked(capturedType);
+                        pwrClickArea.AcceptEvent();
+                    }
+                    else if (mb.ButtonIndex == MouseButton.Right)
+                    {
+                        AudioDirector.Instance?.PlaySFX("ui_click");
+                        OnPowerupSellClicked(capturedType);
+                        pwrClickArea.AcceptEvent();
+                    }
                 }
             };
             pwrClickArea.MouseEntered += () => { AudioDirector.Instance?.PlaySFX("ui_hover"); ShowPowerupTooltip(capturedType); };
@@ -1734,18 +1743,48 @@ public partial class BuildUI : Control
         BuildSandboxPanel();
     }
 
+    /// <summary>
+    /// Disables sandbox mode: removes sandbox panel and resets state.
+    /// </summary>
+    public void DisableSandboxMode()
+    {
+        _sandboxMode = false;
+        if (_sandboxPanel != null && IsInstanceValid(_sandboxPanel))
+        {
+            _sandboxPanel.QueueFree();
+            _sandboxPanel = null;
+        }
+        _sandboxNameInput = null;
+        _sandboxBuildList = null;
+        _sandboxBuildNames.Clear();
+
+        if (_readyBtn != null)
+            _readyBtn.Text = "READY";
+    }
+
     private void BuildSandboxPanel()
     {
-        // Floating panel on the right side
+        // Remove old panel if it exists
+        if (_sandboxPanel != null && IsInstanceValid(_sandboxPanel))
+        {
+            _sandboxPanel.QueueFree();
+            _sandboxPanel = null;
+        }
+
+        // Floating panel on the LEFT side (right side has tool panel)
         PanelContainer sandboxPanel = CreateStyledPanel(PanelBg, 0);
-        sandboxPanel.SetAnchorsPreset(LayoutPreset.CenterRight);
-        sandboxPanel.OffsetLeft = -240;
-        sandboxPanel.OffsetRight = -10;
-        sandboxPanel.OffsetTop = -200;
-        sandboxPanel.OffsetBottom = 200;
-        sandboxPanel.CustomMinimumSize = new Vector2(230, 400);
+        sandboxPanel.AnchorLeft = 0f;
+        sandboxPanel.AnchorRight = 0f;
+        sandboxPanel.AnchorTop = 0.5f;
+        sandboxPanel.AnchorBottom = 0.5f;
+        sandboxPanel.OffsetLeft = 10;
+        sandboxPanel.OffsetRight = 230;
+        sandboxPanel.OffsetTop = -180;
+        sandboxPanel.OffsetBottom = 180;
+        sandboxPanel.CustomMinimumSize = new Vector2(220, 360);
         sandboxPanel.MouseFilter = MouseFilterEnum.Stop;
         AddChild(sandboxPanel);
+        _sandboxPanel = sandboxPanel;
 
         VBoxContainer content = new VBoxContainer();
         content.AddThemeConstantOverride("separation", 6);

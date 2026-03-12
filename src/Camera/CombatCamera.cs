@@ -244,6 +244,7 @@ public partial class CombatCamera : Camera3D
         _povAiming = null;
         RestoreTimeScale();
         SetVoxelKillCamDissolve(0f);
+        FX.FallingChunk.SetKillCamAlpha(1f);
         SetProcess(false);
         SetProcessUnhandledInput(false);
         if (Current)
@@ -284,8 +285,18 @@ public partial class CombatCamera : Camera3D
         _followTarget = projectile;
         _sideFollowLocked = false;
         _targetFov = DefaultFov;
-        _lastProjectileVelocity = Vector3.Forward;
+        _lastProjectileVelocity = -projectile.GlobalTransform.Basis.Z;
         _lastProjectilePosition = projectile.GlobalPosition;
+
+        // Snap look-at and position immediately so the camera doesn't lag behind
+        // looking at the old targeting pivot (causes "snap back" when firing from
+        // targeting mode where _currentLookAt was pointed at the enemy fortress).
+        Vector3 trailDir = _lastProjectileVelocity.Normalized();
+        if (trailDir.LengthSquared() < 0.001f) trailDir = Vector3.Forward;
+        _targetLookAt = projectile.GlobalPosition + trailDir * FollowLookAhead;
+        _currentLookAt = _targetLookAt;
+        _targetPosition = projectile.GlobalPosition + (-trailDir * 5f) + (Vector3.Up * 2.5f);
+        GlobalPosition = _targetPosition;
 
         // Cursor stays visible during projectile flight (user may click UI)
     }
@@ -339,6 +350,8 @@ public partial class CombatCamera : Camera3D
 
         // Dissolve blocks so the death is visible through fortress walls
         SetVoxelKillCamDissolve(0.9f);
+        // Make fallen debris chunks semi-transparent too
+        FX.FallingChunk.SetKillCamAlpha(0.4f);
     }
 
     /// <summary>Free orbit look between turns for inspecting bases.</summary>
@@ -673,6 +686,9 @@ public partial class CombatCamera : Camera3D
 
             // Right-click: start drag orbit. Only cancel on release if the player
             // did NOT drag (i.e. a simple click-release cancels, drag-release does not).
+            // Guard: only process the release if we actually saw the corresponding press.
+            // This prevents orphaned release events (e.g. from UI weapon cycling destroying
+            // the button mid-click) from accidentally cancelling targeting.
             if (mouseButton.ButtonIndex == MouseButton.Right)
             {
                 if (mouseButton.Pressed)
@@ -681,7 +697,7 @@ public partial class CombatCamera : Camera3D
                     _targetingRmbDragged = false;
                     _targetingDragging = true;
                 }
-                else
+                else if (_targetingRmbDown)
                 {
                     _targetingRmbDown = false;
                     // Only cancel targeting if the player didn't drag
@@ -958,6 +974,8 @@ public partial class CombatCamera : Camera3D
         {
             // Restore time scale and transition out
             Engine.TimeScale = _preImpactTimeScale > 0.01f ? _preImpactTimeScale : 1f;
+            SetVoxelKillCamDissolve(0f);
+            FX.FallingChunk.SetKillCamAlpha(1f);
             // Set to Inactive to prevent re-firing on subsequent frames
             CurrentMode = Mode.Inactive;
             // Signal that the cinematic moment is done so GameManager can switch
@@ -983,6 +1001,7 @@ public partial class CombatCamera : Camera3D
         {
             Engine.TimeScale = _preKillTimeScale > 0.01f ? _preKillTimeScale : 1f;
             SetVoxelKillCamDissolve(0f);
+            FX.FallingChunk.SetKillCamAlpha(1f);
             // Set to Inactive to prevent re-firing on subsequent frames
             CurrentMode = Mode.Inactive;
             // Signal that the cinematic moment is done so GameManager can switch

@@ -43,9 +43,9 @@ public abstract partial class WeaponBase : Node3D
     public int CooldownTurns { get; set; }
 
     [Export]
-    public int MaxHitPoints { get; set; } = 200;
+    public int MaxHitPoints { get; set; } = 150;
 
-    public int HitPoints { get; private set; } = 200;
+    public int HitPoints { get; private set; } = 150;
     public bool IsDestroyed { get; private set; }
     public int LastFiredRound { get; protected set; } = -999;
     public PlayerSlot OwnerSlot { get; private set; }

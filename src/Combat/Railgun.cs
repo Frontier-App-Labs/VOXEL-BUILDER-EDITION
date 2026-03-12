@@ -145,7 +145,7 @@ public partial class Railgun : WeaponBase
 
             Vector3 closestPoint = start + direction * projection;
             float distance = commander.GlobalPosition.DistanceTo(closestPoint) / GameConfig.MicrovoxelMeters;
-            if (distance < 3.5f) // within 3.5 microvoxels of the beam (~1.75m)
+            if (distance < 3.5f) // within 3.5 microvoxels of the beam
             {
                 // Railgun commander damage: tuned for a 3-shot kill (Commander HP=15).
                 // 2 direct hits = 12 damage (3 HP left, super low), 3rd hit finishes.

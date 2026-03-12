@@ -10,13 +10,16 @@ namespace VoxelSiege.Army;
 public sealed class DoorPlacement
 {
     public PlayerSlot Owner { get; init; }
-    public Vector3I BaseMicrovoxel { get; init; }  // bottom of the 1xDoorHeight opening
-    public List<Vector3I> OpeningVoxels { get; init; } = new(); // the 1x3 column of carved air
+    public Vector3I BaseMicrovoxel { get; init; }  // bottom of the 1xDoorHeight column
+    public List<Vector3I> OpeningVoxels { get; init; } = new(); // the 1x4 column of door-marked voxels
 
     /// <summary>
     /// Visual door panel mesh parented to the VoxelWorld node. Freed on removal.
     /// </summary>
     public MeshInstance3D? DoorMesh { get; set; }
+
+    /// <summary>The outward-facing direction of the door (set during placement).</summary>
+    public Vector3 OutwardNormal { get; init; } = Vector3.Forward;
 
     /// <summary>Hit points remaining. When zero, the door is destroyed.</summary>
     public int HitPoints { get; set; } = 30;
@@ -31,11 +34,12 @@ public class DoorRegistry
 {
     private readonly Dictionary<PlayerSlot, List<DoorPlacement>> _doors = new();
     public const int MaxDoorsPerPlayer = 4;
-    public const int DoorHeight = 4; // microvoxels tall (2 build units)
+    public const int DoorHeight = 4; // microvoxels tall (2 large blocks)
+    public const int DoorWidth = 2;  // microvoxels wide (1 large block = 2 build units)
 
     /// <summary>
-    /// Attempts to place a door at the given base microvoxel position on the build zone perimeter.
-    /// Carves a 1-wide x DoorHeight-tall opening through solid voxels.
+    /// Attempts to place a door at the given base microvoxel position.
+    /// Marks a 1-wide x DoorHeight-tall column as a door (voxels stay solid for LOS blocking).
     /// </summary>
     /// <param name="world">The voxel world to carve into.</param>
     /// <param name="baseMicrovoxel">Bottom microvoxel of the 1x3 opening.</param>
@@ -50,6 +54,7 @@ public class DoorRegistry
         PlayerSlot owner,
         Vector3I zoneMin,
         Vector3I zoneMax,
+        int rotationHint,
         out string failReason)
     {
         failReason = string.Empty;
@@ -81,15 +86,61 @@ public class DoorRegistry
         bool onMinZ = baseMicrovoxel.Z == zoneMin.Z;
         bool onMaxZ = baseMicrovoxel.Z == zoneMax.Z;
 
-        // Collect the 3 voxel positions
-        var openingVoxels = new List<Vector3I>(DoorHeight);
-        for (int dy = 0; dy < DoorHeight; dy++)
+        // Determine door facing direction first (needed to compute width axis).
+        // rotationHint: -1=auto-detect, 0=Forward, 1=Right, 2=Back, 3=Left
+        Vector3 outwardNormal;
+        if (rotationHint >= 0)
         {
-            openingVoxels.Add(new Vector3I(baseMicrovoxel.X, baseMicrovoxel.Y + dy, baseMicrovoxel.Z));
+            outwardNormal = rotationHint switch
+            {
+                0 => Vector3.Forward,
+                1 => Vector3.Right,
+                2 => Vector3.Back,
+                3 => Vector3.Left,
+                _ => Vector3.Forward,
+            };
+        }
+        else
+        {
+            // Auto-detect: prefer zone edge, then adjacent blocks
+            if (onMinX) outwardNormal = Vector3.Left;
+            else if (onMaxX) outwardNormal = Vector3.Right;
+            else if (onMinZ) outwardNormal = Vector3.Forward;
+            else if (onMaxZ) outwardNormal = Vector3.Back;
+            else
+            {
+                bool solidPosX = world.GetVoxel(baseMicrovoxel + new Vector3I(1, 0, 0)).IsSolid;
+                bool solidNegX = world.GetVoxel(baseMicrovoxel + new Vector3I(-1, 0, 0)).IsSolid;
+                bool solidPosZ = world.GetVoxel(baseMicrovoxel + new Vector3I(0, 0, 1)).IsSolid;
+                bool solidNegZ = world.GetVoxel(baseMicrovoxel + new Vector3I(0, 0, -1)).IsSolid;
+
+                // Wall runs along X (neighbors in X are solid) → door faces along Z (perpendicular)
+                if (solidPosX || solidNegX)
+                    outwardNormal = solidPosZ ? Vector3.Back : Vector3.Forward;
+                // Wall runs along Z (neighbors in Z are solid) → door faces along X (perpendicular)
+                // Face away from the solid side: if +Z is solid, face -X (Left); if -Z is solid, face +X (Right)
+                else if (solidPosZ || solidNegZ)
+                    outwardNormal = solidNegZ ? Vector3.Right : Vector3.Left;
+                else
+                    outwardNormal = Vector3.Forward;
+            }
         }
 
-        // Check: at least one voxel is solid (something to carve through).
-        // Don't require all to be solid — partial walls are fine.
+        // Compute the width axis (perpendicular to outward normal, in the horizontal plane)
+        bool facesX = Mathf.Abs(outwardNormal.X) > 0.5f;
+        Vector3I widthStep = facesX ? new Vector3I(0, 0, 1) : new Vector3I(1, 0, 0);
+
+        // Collect the 2-wide x 8-tall grid of opening voxels
+        var openingVoxels = new List<Vector3I>(DoorHeight * DoorWidth);
+        for (int dw = 0; dw < DoorWidth; dw++)
+        {
+            for (int dy = 0; dy < DoorHeight; dy++)
+            {
+                openingVoxels.Add(baseMicrovoxel + widthStep * dw + new Vector3I(0, dy, 0));
+            }
+        }
+
+        // Check: at least one voxel is solid
         bool anySolid = false;
         foreach (Vector3I pos in openingVoxels)
         {
@@ -123,39 +174,8 @@ public class DoorRegistry
             }
         }
 
-        // Sample the wall material BEFORE carving so we can color-match the door panel
+        // Sample the wall material for the door panel color
         VoxelMaterialType wallMaterial = world.GetVoxel(openingVoxels[0]).Material;
-
-        // Success: carve the opening (only remove solid voxels)
-        foreach (Vector3I pos in openingVoxels)
-        {
-            if (world.GetVoxel(pos).IsSolid)
-                world.SetVoxel(pos, VoxelValue.Air, owner);
-        }
-
-        // Determine door facing direction. Prefer zone edge if present,
-        // otherwise detect from surrounding solid voxels.
-        Vector3 outwardNormal = Vector3.Zero;
-        if (onMinX) outwardNormal = Vector3.Left;
-        else if (onMaxX) outwardNormal = Vector3.Right;
-        else if (onMinZ) outwardNormal = Vector3.Forward;
-        else if (onMaxZ) outwardNormal = Vector3.Back;
-        else
-        {
-            // Interior door: check adjacent blocks to determine wall orientation.
-            // If +X/-X neighbors are solid, door faces along Z; else along X.
-            bool solidPosX = world.GetVoxel(baseMicrovoxel + new Vector3I(1, 0, 0)).IsSolid;
-            bool solidNegX = world.GetVoxel(baseMicrovoxel + new Vector3I(-1, 0, 0)).IsSolid;
-            bool solidPosZ = world.GetVoxel(baseMicrovoxel + new Vector3I(0, 0, 1)).IsSolid;
-            bool solidNegZ = world.GetVoxel(baseMicrovoxel + new Vector3I(0, 0, -1)).IsSolid;
-
-            if (solidPosX || solidNegX)
-                outwardNormal = solidPosX ? Vector3.Right : Vector3.Left;
-            else if (solidPosZ || solidNegZ)
-                outwardNormal = solidPosZ ? Vector3.Back : Vector3.Forward;
-            else
-                outwardNormal = Vector3.Forward; // fallback
-        }
 
         // Build the visual door mesh and parent it to the VoxelWorld node
         Color?[,,]? doorVoxelGrid;
@@ -171,6 +191,7 @@ public class DoorRegistry
             Owner = owner,
             BaseMicrovoxel = baseMicrovoxel,
             OpeningVoxels = openingVoxels,
+            OutwardNormal = outwardNormal,
             DoorMesh = doorMesh,
             VoxelGrid = doorVoxelGrid,
         };
@@ -280,7 +301,7 @@ public class DoorRegistry
     public Vector3I GetDoorExteriorPosition(DoorPlacement door, Vector3I zoneMin, Vector3I zoneMax)
     {
         Vector3I basePos = door.BaseMicrovoxel;
-        Vector3I step = GetDoorOutwardStep(basePos, zoneMin, zoneMax);
+        Vector3I step = GetDoorOutwardStep(door, zoneMin, zoneMax);
         return basePos + step;
     }
 
@@ -291,28 +312,28 @@ public class DoorRegistry
     public Vector3I GetDoorInteriorPosition(DoorPlacement door, Vector3I zoneMin, Vector3I zoneMax)
     {
         Vector3I basePos = door.BaseMicrovoxel;
-        Vector3I step = GetDoorOutwardStep(basePos, zoneMin, zoneMax);
+        Vector3I step = GetDoorOutwardStep(door, zoneMin, zoneMax);
         return basePos - step; // opposite of outward = inward
     }
 
     /// <summary>
     /// Returns a single-voxel step in the outward direction from the door.
-    /// Checks zone edges first, then falls back to the stored door facing.
+    /// Checks zone edges first, then uses the stored door facing direction.
     /// </summary>
-    private static Vector3I GetDoorOutwardStep(Vector3I basePos, Vector3I zoneMin, Vector3I zoneMax)
+    private static Vector3I GetDoorOutwardStep(DoorPlacement door, Vector3I zoneMin, Vector3I zoneMax)
     {
+        Vector3I basePos = door.BaseMicrovoxel;
         if (basePos.X == zoneMin.X) return new Vector3I(-1, 0, 0);
         if (basePos.X == zoneMax.X) return new Vector3I(1, 0, 0);
         if (basePos.Z == zoneMin.Z) return new Vector3I(0, 0, -1);
         if (basePos.Z == zoneMax.Z) return new Vector3I(0, 0, 1);
 
-        // Interior door: determine facing from zone center
-        Vector3I zoneCenter = (zoneMin + zoneMax) / 2;
-        int dx = basePos.X - zoneCenter.X;
-        int dz = basePos.Z - zoneCenter.Z;
-        if (System.Math.Abs(dx) >= System.Math.Abs(dz))
-            return dx >= 0 ? new Vector3I(1, 0, 0) : new Vector3I(-1, 0, 0);
-        return dz >= 0 ? new Vector3I(0, 0, 1) : new Vector3I(0, 0, -1);
+        // Interior door: use the stored outward normal from placement
+        Vector3 n = door.OutwardNormal;
+        return new Vector3I(
+            Mathf.RoundToInt(n.X),
+            0,
+            Mathf.RoundToInt(n.Z));
     }
 
     /// <summary>
@@ -427,10 +448,10 @@ public class DoorRegistry
     {
         float mv = GameConfig.MicrovoxelMeters;
 
-        // Build a voxel door: 4 wide x 12 tall x 2 deep (at 0.04m per voxel)
-        // This fits into a 1-microvoxel-wide x 3-microvoxel-tall opening
-        const int dw = 4;  // width (across opening)
-        const int dh = 12; // height (3 microvoxels * 4 voxels each)
+        // Build a voxel door: 8 wide x 12 tall x 2 deep (at 0.04m per voxel)
+        // Fills a 2-microvoxel-wide x 4-microvoxel-tall opening (1 large block wide, 2 large blocks tall)
+        const int dw = 8;  // width (across opening) — 2 microvoxels
+        const int dh = 12; // height (4 microvoxels * 3 voxels each)
         const int dd = 2;  // depth (thin door)
         const float voxelSize = 0.04f;
 
@@ -448,7 +469,7 @@ public class DoorRegistry
             }
         }
 
-        // Iron reinforcement bands across the door (rows 1, 5, 9)
+        // Iron reinforcement bands across the door (evenly spaced)
         for (int band = 1; band < dh; band += 4)
         {
             for (int x = 0; x < dw; x++)
@@ -458,17 +479,17 @@ public class DoorRegistry
             }
         }
 
-        // Hinges on one side (left edge, at top/mid/bottom bands)
+        // Hinges on one side (left edge, at band positions)
         v[0, 1, 0] = HingeColor;
         v[0, 5, 0] = HingeColor;
         v[0, 9, 0] = HingeColor;
 
         // Brass door handle (right side, mid-height, front face)
-        v[3, 5, 0] = HandleColor;
-        v[3, 6, 0] = HandleColor;
+        v[dw - 1, 5, 0] = HandleColor;
+        v[dw - 1, 6, 0] = HandleColor;
 
         // Small keyhole below handle
-        v[3, 4, 0] = new Color(0.08f, 0.08f, 0.10f);
+        v[dw - 1, 4, 0] = new Color(0.08f, 0.08f, 0.10f);
 
         voxelGridOut = (Color?[,,])v.Clone();
 
@@ -502,28 +523,34 @@ public class DoorRegistry
         doorMeshInstance.Mesh = doorMesh;
         doorMeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
 
+        // Small offset to push door mesh slightly out from the wall face (prevents Z-fighting)
+        const float wallOffset = 0.02f;
+
+        float doorWidthMeters = DoorWidth * mv;
+        float halfWidth = doorWidthMeters * 0.5f;
+
         if (facesX)
         {
-            float xFace = outwardNormal.X > 0 ? worldBase.X + mv : worldBase.X;
+            float xFace = outwardNormal.X > 0 ? worldBase.X + mv + wallOffset : worldBase.X - wallOffset;
             doorMeshInstance.Position = new Vector3(
                 xFace,
                 worldBase.Y,
-                worldBase.Z + mv * 0.5f);
+                worldBase.Z + halfWidth);
             // Rotate 90° around Y so door width runs along Z
             doorMeshInstance.RotationDegrees = new Vector3(0, 90, 0);
         }
         else
         {
-            float zFace = outwardNormal.Z > 0 ? worldBase.Z + mv : worldBase.Z;
+            float zFace = outwardNormal.Z > 0 ? worldBase.Z + mv + wallOffset : worldBase.Z - wallOffset;
             doorMeshInstance.Position = new Vector3(
-                worldBase.X + mv * 0.5f,
+                worldBase.X + halfWidth,
                 worldBase.Y,
                 zFace);
             // No rotation needed — door width runs along X by default
         }
 
         // Scale to fit the opening (door voxels are small, scale up to match microvoxels)
-        float scaleX = mv / (dw * voxelSize);
+        float scaleX = doorWidthMeters / (dw * voxelSize);
         float scaleY = panelHeight / (dh * voxelSize);
         float scaleZ = (mv * 0.15f) / (dd * voxelSize); // thin depth
         doorMeshInstance.Scale = new Vector3(scaleX, scaleY, scaleZ);

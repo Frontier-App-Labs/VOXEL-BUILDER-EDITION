@@ -399,11 +399,13 @@ public partial class Commander : Node3D
         EventBus.Instance?.EmitCommanderKilled(new CommanderKilledEvent(OwnerSlot, _lastInstigator, GlobalPosition));
 
         // Bleed out: keep spurting blood for ~1.5 seconds (3 additional bursts)
+        // Use ragdoll torso position so blood follows the flying body
         for (int burst = 0; burst < 3; burst++)
         {
             await ToSignal(GetTree().CreateTimer(0.5f * GameConfig.SlowMoTimeScale), SceneTreeTimer.SignalName.Timeout);
             if (!IsInsideTree()) return;
-            SpawnBloodSplat();
+            Vector3 bloodPos = _ragdoll?.IsActive == true ? _ragdoll.GetTorsoPosition() : GlobalPosition;
+            SpawnBloodSplatAt(bloodPos);
         }
 
         await ToSignal(GetTree().CreateTimer(0.3f * GameConfig.SlowMoTimeScale), SceneTreeTimer.SignalName.Timeout);
@@ -414,9 +416,14 @@ public partial class Commander : Node3D
     /// Spawns a burst of tiny blood-red voxel debris from the commander's position.
     /// Uses multiple shades of red/crimson for variety.
     /// </summary>
-    private void SpawnBloodSplat()
+    private void SpawnBloodSplat() => SpawnBloodSplatAt(GlobalPosition);
+
+    /// <summary>
+    /// Spawns blood debris at a specific world position (used to follow ragdoll).
+    /// </summary>
+    private void SpawnBloodSplatAt(Vector3 origin)
     {
-        Vector3 pos = GlobalPosition + Vector3.Up * 0.5f; // center-mass height
+        Vector3 pos = origin + Vector3.Up * 0.5f; // center-mass height
         Vector3 center = pos;
 
         // Blood colors: dark red, bright red, crimson
@@ -439,8 +446,8 @@ public partial class Commander : Node3D
                 (float)GD.RandRange(-0.3, 0.6),
                 (float)GD.RandRange(-0.4, 0.4));
             Color color = bloodColors[i % bloodColors.Length];
-            FX.DebrisFX.SpawnDebris(this, pos + offset, color, center, 12,
-                VoxelMaterialType.Stone, bloodVoxelScale);
+            FX.DebrisFX.SpawnDebrisWithEmission(this, pos + offset, color, center, 12,
+                VoxelMaterialType.Stone, bloodVoxelScale, color);
         }
     }
 

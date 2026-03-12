@@ -122,8 +122,8 @@ public class TroopPathfinder
             if (isDiagonal)
                 continue;
 
-            // 2. Step-up: check up to 2 voxels higher (troops can jump 2 blocks)
-            for (int stepUp = 1; stepUp <= 2; stepUp++)
+            // 2. Step-up: check up to 4 microvoxels higher (2 normal building blocks)
+            for (int stepUp = 1; stepUp <= 4; stepUp++)
             {
                 Vector3I up = new Vector3I(flat.X, flat.Y + stepUp, flat.Z);
                 if (IsWalkable(world, up, isDoorForOwner))

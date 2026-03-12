@@ -57,6 +57,20 @@ public partial class GameManager : Node
     private Vector3I _dragStartBuildUnit;
     private int _buildRotation; // 0-3 representing 0/90/180/270 degrees
 
+    // Unified undo stack for all build-phase actions (voxels, weapons, troops, doors)
+    private enum UndoType { Voxel, Weapon, Troop, Door }
+    private sealed class BuildUndoEntry
+    {
+        public UndoType Type { get; init; }
+        public WeaponBase? Weapon { get; init; }
+        public WeaponType WeaponKind { get; init; }
+        public TroopType TroopKind { get; init; }
+        public int Cost { get; init; }
+        public Vector3I Position { get; init; }
+        public bool Cancelled { get; set; } // set true when item is manually deleted/sold
+    }
+    private readonly Stack<BuildUndoEntry> _buildUndoStack = new();
+
     // Build placement mode (commander / weapon placement during build phase)
     private enum PlacementMode { Block, Commander, Weapon, Troop }
     private PlacementMode _placementMode = PlacementMode.Block;
@@ -87,9 +101,18 @@ public partial class GameManager : Node
     // Remembers the last attacked enemy per player so targeting defaults to them next turn
     private readonly Dictionary<PlayerSlot, PlayerSlot> _lastAttackedEnemy = new Dictionary<PlayerSlot, PlayerSlot>();
 
+    // Troop attack camera sequence: defers turn advancement so troops attack visually after weapon impact
+    private bool _deferTurnAdvanceForTroops;
+    private bool _troopSequenceActive;
+    private PlayerSlot _troopSequencePlayer; // which player's troops are attacking
+    private bool _troopsMoved; // true if human player has moved troops this turn
+
     // Spectator view preference: when true, bot turns (and post-fire cinematics) use
     // top-down instead of free-fly. Sticky — persists until the player presses V again.
     private bool _spectatorTopDown;
+
+    // Troop movement mode: when true, clicking terrain moves all player troops
+    private bool _troopMoveMode;
 
     // UI (buttons only — labels handled by BuildUI / CombatUI)
     private Control? _hudRoot;
@@ -143,6 +166,7 @@ public partial class GameManager : Node
 
     // Sandbox mode: build freely with no opponents, save/load builds
     private bool _isSandbox;
+    private string? _sandboxLoadBuildName;
     private BlueprintSystem? _blueprintSystem;
 
     // Menu battle scene state
@@ -909,8 +933,13 @@ public partial class GameManager : Node
             return null;
         }
 
-        int safeIndex = _selectedWeaponIndex % weaponList.Count;
-        WeaponBase? weapon = weaponList[safeIndex];
+        // Use filtered alive-weapon list matching CombatUI's indices
+        List<WeaponBase> aliveWeapons = weaponList.FindAll(w =>
+            w != null && GodotObject.IsInstanceValid(w) && !w.IsDestroyed);
+        if (aliveWeapons.Count == 0) return null;
+
+        int safeIndex = _selectedWeaponIndex % aliveWeapons.Count;
+        WeaponBase? weapon = aliveWeapons[safeIndex];
         if (weapon == null || !GodotObject.IsInstanceValid(weapon))
         {
             return null;
@@ -932,12 +961,27 @@ public partial class GameManager : Node
             return;
         }
 
+        // Cancel troop move mode if active — weapon targeting takes priority
+        if (_troopMoveMode)
+        {
+            _troopMoveMode = false;
+            CombatUI? troopUI = GetNodeOrNull<CombatUI>("%CombatUI")
+                ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
+            troopUI?.SetTroopsModeActive(false);
+            troopUI?.HideSelectWeaponPrompt();
+        }
+
         if (!_weapons.TryGetValue(currentPlayer, out List<WeaponBase>? weaponList) || weaponList.Count == 0)
         {
             return;
         }
 
-        int newIndex = weaponIndex % weaponList.Count;
+        // Use same filtered alive-weapon list that CombatUI uses
+        List<WeaponBase> aliveWeapons = weaponList.FindAll(w =>
+            w != null && GodotObject.IsInstanceValid(w) && !w.IsDestroyed);
+        if (aliveWeapons.Count == 0) return;
+
+        int newIndex = weaponIndex % aliveWeapons.Count;
 
         // If already in targeting/aiming mode, just swap the weapon without
         // resetting the camera or target so the player's aim is preserved.
@@ -953,7 +997,7 @@ public partial class GameManager : Node
             // for the new weapon's projectile speed / arc.
             if (_hasTarget && _aimingSystem != null && _aimingSystem.HasTarget)
             {
-                WeaponBase? newWeapon = weaponList[newIndex];
+                WeaponBase? newWeapon = aliveWeapons[newIndex];
                 if (newWeapon != null && GodotObject.IsInstanceValid(newWeapon))
                 {
                     _aimingSystem.SetTargetPoint(
@@ -994,8 +1038,9 @@ public partial class GameManager : Node
     /// <summary>
     /// Starts sandbox mode: a single build zone with no opponents or timer.
     /// The player can build freely and save/load their designs.
+    /// Optionally loads an existing build if <paramref name="loadBuildName"/> is provided.
     /// </summary>
-    public void StartSandboxMode()
+    public void StartSandboxMode(string? loadBuildName = null)
     {
         if (CurrentPhase != GamePhase.Menu && CurrentPhase != GamePhase.GameOver)
         {
@@ -1004,6 +1049,7 @@ public partial class GameManager : Node
         }
 
         _isSandbox = true;
+        _sandboxLoadBuildName = loadBuildName;
         Settings.BotCount = 0;
         Settings.StartingBudget = GameConfig.SandboxBudget;
 
@@ -1036,7 +1082,7 @@ public partial class GameManager : Node
         BlueprintData blueprint = _blueprintSystem.Capture(_voxelWorld, zone, buildName);
         _blueprintSystem.SaveBlueprint(blueprint);
 
-        // Track in player profile
+        // Track in player profile (use ProgressionManager's save path)
         PlayerProfile? profile = _progressionManager?.Profile;
         if (profile != null)
         {
@@ -1044,7 +1090,7 @@ public partial class GameManager : Node
             {
                 profile.SavedBuilds.Add(buildName);
             }
-            SaveSystem.SaveJson("user://profile.json", profile);
+            SaveSystem.SaveJson("user://profile/player_profile.json", profile);
         }
 
         GD.Print($"[Sandbox] Build '{buildName}' saved ({blueprint.Voxels.Count} voxels).");
@@ -1212,6 +1258,14 @@ public partial class GameManager : Node
         if (_loadingSplash == null) return;
 
         SetupBuildZones();
+
+        // Initialize army manager with world reference and build zones for troop deployment
+        if (_armyManager != null && _voxelWorld != null)
+        {
+            _armyManager.Initialize(_voxelWorld);
+            _armyManager.SetBuildZones(_buildZones);
+        }
+
         _loadingSplash.SetLoadingProgress(0.4f);
 
         CallDeferred(nameof(LoadingStep3_Terrain));
@@ -1286,6 +1340,22 @@ public partial class GameManager : Node
                 ?? GetNodeOrNull<BuildUI>("%BuildUI")
                 ?? GetTree().Root.FindChild("BuildHUD", true, false) as BuildUI;
             buildUI?.EnableSandboxMode(GetSavedBuildNames());
+
+            // Auto-load a saved build if one was selected from the slot menu
+            if (!string.IsNullOrEmpty(_sandboxLoadBuildName))
+            {
+                // Deferred so the voxel world is fully initialized
+                CallDeferred(nameof(DeferredSandboxLoad));
+            }
+        }
+    }
+
+    private void DeferredSandboxLoad()
+    {
+        if (!string.IsNullOrEmpty(_sandboxLoadBuildName))
+        {
+            LoadSandboxBuild(_sandboxLoadBuildName!);
+            _sandboxLoadBuildName = null;
         }
     }
 
@@ -1374,6 +1444,9 @@ public partial class GameManager : Node
 
         // Hide ghost preview
         _ghostPreview?.Hide();
+
+        // Clean up all powerup FX (smoke clouds, shields, EMP) so they don't persist to menu
+        _powerupExecutor?.CleanupAllFX();
     }
 
     /// <summary>
@@ -1419,6 +1492,13 @@ public partial class GameManager : Node
     private void ExitSandboxMode()
     {
         _isSandbox = false;
+
+        // Clean up sandbox UI so it doesn't persist into the next game
+        BuildUI? buildUI = GetNodeOrNull<BuildUI>("BuildHUD")
+            ?? GetNodeOrNull<BuildUI>("%BuildUI")
+            ?? GetTree().Root.FindChild("BuildHUD", true, false) as BuildUI;
+        buildUI?.DisableSandboxMode();
+
         ReturnToMainMenu();
     }
 
@@ -1852,6 +1932,8 @@ public partial class GameManager : Node
                 Input.MouseMode = Input.MouseModeEnum.Visible;
                 _isDragBuilding = false;
                 _buildRotation = 0;
+                _buildUndoStack.Clear();
+                _buildSystem?.ClearHistory();
                 // Ready button is now integrated into BuildUI panel — keep floating button hidden
                 if (_readyButton != null) _readyButton.Visible = false;
                 if (_skipTurnButton != null) _skipTurnButton.Visible = false;
@@ -1870,6 +1952,8 @@ public partial class GameManager : Node
                         ?? GetTree().Root.FindChild("BuildHUD", true, false) as BuildUI;
                     buildUI?.UpdatePowerupCounts(p1Data.Powerups);
                 }
+                // Reset troop counts in BuildUI (ClearAll zeroed the army, UI must match)
+                UpdateBuildUITroopCounts();
                 break;
 
             case GamePhase.FogReveal:
@@ -2045,9 +2129,10 @@ public partial class GameManager : Node
         if (_voxelWorld.RaycastVoxel(rayOrigin, rayDir, MaxRaycastDistance, out Vector3I hitPos, out Vector3I hitNormal))
         {
             Vector3I targetMicrovoxel;
-            if (isEraser && _placementMode == PlacementMode.Block)
+            bool isDoorTool = _buildSystem?.CurrentToolMode == BuildToolMode.Door;
+            if ((isEraser && _placementMode == PlacementMode.Block) || isDoorTool)
             {
-                // Eraser targets the hit voxel itself (only in block mode)
+                // Eraser and Door target the hit voxel itself (the solid block)
                 targetMicrovoxel = hitPos;
             }
             else
@@ -2176,11 +2261,15 @@ public partial class GameManager : Node
             else if (_placementMode == PlacementMode.Troop && _ghostPreview != null)
             {
                 // Troop preview: show the troop model at the cursor position
+                // Offset Y by leg depth so preview matches actual spawn position
+                float troopVoxelSize = _selectedTroopType == TroopType.Demolisher ? 0.07f : 0.06f;
+                float legOffset = 4f * troopVoxelSize;
                 ArrayMesh previewMesh = GetOrCreateTroopPreviewMesh(_selectedTroopType);
                 Vector3I microBase = MathHelpers.BuildToMicrovoxel(_buildCursorBuildUnit);
                 Vector3 worldPos = MathHelpers.MicrovoxelToWorld(microBase)
-                    + new Vector3(GameConfig.BuildUnitMeters * 0.5f, 0f, GameConfig.BuildUnitMeters * 0.5f);
-                _ghostPreview.SetModelPreview(previewMesh, worldPos, 0f, _buildCursorValid);
+                    + new Vector3(GameConfig.BuildUnitMeters * 0.5f, legOffset, GameConfig.BuildUnitMeters * 0.5f);
+                float yaw = _buildRotation * Mathf.Pi * 0.5f;
+                _ghostPreview.SetModelPreview(previewMesh, worldPos, yaw, _buildCursorValid);
             }
             else if (_placementMode == PlacementMode.Commander && _ghostPreview != null)
             {
@@ -2197,6 +2286,37 @@ public partial class GameManager : Node
             {
                 // HalfBlock preview: show a single microvoxel at the exact cursor position
                 _ghostPreview.SetPreview(new[] { _buildCursorMicrovoxel }, _buildCursorValid);
+            }
+            else if (_buildSystem?.CurrentToolMode == BuildToolMode.Door && _ghostPreview != null)
+            {
+                // Door preview: show 2-wide x 4-tall rectangle at the hit solid block
+                // Width axis depends on door facing (perpendicular to outward normal)
+                int doorRot = _buildRotation == 0 ? -1 : _buildRotation - 1;
+                // Determine if door faces X or Z to pick width axis
+                bool doorFacesX = doorRot == 1 || doorRot == 3; // Right or Left
+                if (doorRot < 0)
+                {
+                    // Auto-detect: check if on zone edge or neighbor solids
+                    // Simplified: default width along Z unless cursor neighbors suggest X-wall
+                    doorFacesX = false;
+                    if (_voxelWorld != null)
+                    {
+                        bool solidPosX = _voxelWorld.GetVoxel(_buildCursorMicrovoxel + new Vector3I(1, 0, 0)).IsSolid;
+                        bool solidNegX = _voxelWorld.GetVoxel(_buildCursorMicrovoxel + new Vector3I(-1, 0, 0)).IsSolid;
+                        if (solidPosX || solidNegX) doorFacesX = false; // wall along X → door faces Z → width along X... no, perpendicular
+                        // Wall along X → door faces Z → width runs along X
+                        // Wall along Z → door faces X → width runs along Z
+                        bool solidPosZ = _voxelWorld.GetVoxel(_buildCursorMicrovoxel + new Vector3I(0, 0, 1)).IsSolid;
+                        bool solidNegZ = _voxelWorld.GetVoxel(_buildCursorMicrovoxel + new Vector3I(0, 0, -1)).IsSolid;
+                        doorFacesX = solidPosZ || solidNegZ;
+                    }
+                }
+                Vector3I widthStep = doorFacesX ? new Vector3I(0, 0, 1) : new Vector3I(1, 0, 0);
+                var doorMicros = new List<Vector3I>();
+                for (int dw = 0; dw < DoorRegistry.DoorWidth; dw++)
+                    for (int dy = 0; dy < DoorRegistry.DoorHeight; dy++)
+                        doorMicros.Add(_buildCursorMicrovoxel + widthStep * dw + new Vector3I(0, dy, 0));
+                _ghostPreview.SetPreview(doorMicros, _buildCursorValid);
             }
             else
             {
@@ -2237,7 +2357,10 @@ public partial class GameManager : Node
         // Rotate build piece with R
         if (@event.IsActionPressed("rotate_piece"))
         {
-            _buildRotation = (_buildRotation + 1) % 4;
+            // Door mode needs 5 states: 0=auto, 1-4=explicit directions
+            bool isDoorMode = _buildSystem?.CurrentToolMode == BuildToolMode.Door;
+            int modulus = isDoorMode ? 5 : 4;
+            _buildRotation = (_buildRotation + 1) % modulus;
             GD.Print($"[Build] Rotation: {_buildRotation * 90}°");
             GetViewport().SetInputAsHandled();
             return;
@@ -2274,33 +2397,41 @@ public partial class GameManager : Node
             return;
         }
 
-        // Erase block or cancel placement mode with right click
+        // Right-click: try to erase weapon/troop/door under cursor first.
+        // If nothing was erased and we're in a non-block placement mode, cancel back to block.
+        // If in block mode and nothing else erased, erase block.
         if (@event.IsActionPressed("place_secondary"))
         {
-            if (_placementMode != PlacementMode.Block)
+            bool erased = TryEraseWeaponAtCursor() || TryEraseTroopAtCursor() || TryEraseDoorAtCursor();
+            if (!erased)
             {
-                _placementMode = PlacementMode.Block;
-                GD.Print("[GameManager] Placement mode cancelled.");
-                GetViewport().SetInputAsHandled();
+                if (_placementMode != PlacementMode.Block)
+                {
+                    _placementMode = PlacementMode.Block;
+                    GD.Print("[GameManager] Placement mode cancelled.");
+                }
+                else if (_hasBuildCursor)
+                {
+                    TryEraseBlock();
+                }
             }
-            else if (_hasBuildCursor)
-            {
-                TryEraseBlock();
-                GetViewport().SetInputAsHandled();
-            }
+            GetViewport().SetInputAsHandled();
             return;
         }
 
         // Undo with Ctrl+Z
         if (@event.IsActionPressed("undo_build"))
         {
-            _buildSystem.UndoLast(_activeBuilder);
+            UndoLastBuildAction();
         }
 
         // Redo with Ctrl+Y
         if (@event.IsActionPressed("redo_build"))
         {
-            _buildSystem.RedoLast(_activeBuilder);
+            if (_buildSystem.RedoLast(_activeBuilder))
+            {
+                _buildUndoStack.Push(new BuildUndoEntry { Type = UndoType.Voxel });
+            }
         }
 
         // Scroll wheel is reserved for camera zoom only (FreeFlyCamera handles it)
@@ -2483,6 +2614,7 @@ public partial class GameManager : Node
         }
         else
         {
+            _buildUndoStack.Push(new BuildUndoEntry { Type = UndoType.Voxel });
             if (_players.TryGetValue(_activeBuilder, out PlayerData? player))
             {
                 player.Stats.VoxelsPlaced++;
@@ -2520,6 +2652,7 @@ public partial class GameManager : Node
         }
         else
         {
+            _buildUndoStack.Push(new BuildUndoEntry { Type = UndoType.Voxel });
             if (_players.TryGetValue(_activeBuilder, out PlayerData? player))
             {
                 player.Stats.VoxelsPlaced += _buildSystem.ActiveBlueprint.BlockCount;
@@ -2573,9 +2706,178 @@ public partial class GameManager : Node
             {
                 GD.Print($"[Erase] Failed: {failureReason}");
             }
+            else
+            {
+                _buildUndoStack.Push(new BuildUndoEntry { Type = UndoType.Voxel });
+            }
 
             _buildSystem.CurrentToolMode = previousMode;
         }
+    }
+
+    /// <summary>
+    /// Right-click erase: removes the nearest weapon under the cursor.
+    /// Returns true if a weapon was found and removed.
+    /// </summary>
+    private bool TryEraseWeaponAtCursor()
+    {
+        if (_camera == null || !_weapons.TryGetValue(_activeBuilder, out var weaponList) || weaponList.Count == 0)
+            return false;
+        if (!_players.TryGetValue(_activeBuilder, out PlayerData? player))
+            return false;
+
+        // Raycast from camera to get a world position
+        Vector2 mousePos = GetViewport().GetMousePosition();
+        Vector3 rayOrigin = _camera.ProjectRayOrigin(mousePos);
+        Vector3 rayDir = _camera.ProjectRayNormal(mousePos);
+        Vector3 worldTarget = rayOrigin + rayDir * 20f; // approximate target
+
+        // Find nearest weapon to cursor ray
+        WeaponBase? closest = null;
+        float closestDist = 2.0f; // max selection distance in meters
+        for (int i = weaponList.Count - 1; i >= 0; i--)
+        {
+            WeaponBase w = weaponList[i];
+            if (w == null || !GodotObject.IsInstanceValid(w) || w.IsDestroyed) continue;
+
+            // Distance from weapon to camera ray
+            Vector3 wPos = w.GlobalPosition;
+            Vector3 toWeapon = wPos - rayOrigin;
+            float t = toWeapon.Dot(rayDir);
+            if (t < 0) continue;
+            Vector3 closestPointOnRay = rayOrigin + rayDir * t;
+            float dist = closestPointOnRay.DistanceTo(wPos);
+            if (dist < closestDist)
+            {
+                closestDist = dist;
+                closest = w;
+            }
+        }
+
+        if (closest == null) return false;
+
+        WeaponType wType = closest switch
+        {
+            Cannon => WeaponType.Cannon,
+            Mortar => WeaponType.Mortar,
+            Railgun => WeaponType.Railgun,
+            MissileLauncher => WeaponType.MissileLauncher,
+            Drill => WeaponType.Drill,
+            _ => WeaponType.Cannon,
+        };
+
+        CancelUndoEntry(UndoType.Weapon, weapon: closest);
+        int refund = GetWeaponCost(wType);
+        weaponList.Remove(closest);
+        player.WeaponIds.Remove(closest.WeaponId);
+        player.Refund(refund);
+        closest.QueueFree();
+        EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(_activeBuilder, player.Budget, refund));
+        AudioDirector.Instance?.PlaySFX("ui_click");
+        GD.Print($"[Build] Right-click erased {wType} for {_activeBuilder}, refund ${refund}.");
+        return true;
+    }
+
+    /// <summary>
+    /// Right-click erase: removes the nearest troop marker under the cursor.
+    /// Returns true if a troop marker was found and removed.
+    /// </summary>
+    private bool TryEraseTroopAtCursor()
+    {
+        if (_camera == null || _armyManager == null) return false;
+        if (!_players.TryGetValue(_activeBuilder, out PlayerData? player)) return false;
+
+        Vector2 mousePos = GetViewport().GetMousePosition();
+        Vector3 rayOrigin = _camera.ProjectRayOrigin(mousePos);
+        Vector3 rayDir = _camera.ProjectRayNormal(mousePos);
+
+        // Find nearest troop marker to cursor ray
+        Node? closestMarker = null;
+        float closestDist = 1.5f;
+        string prefix = $"TroopMarker_{_activeBuilder}_";
+
+        foreach (Node child in GetTree().GetNodesInGroup("TroopMarkers"))
+        {
+            if (child is not Node3D marker) continue;
+            if (!child.Name.ToString().StartsWith(prefix)) continue;
+
+            Vector3 mPos = marker.GlobalPosition;
+            Vector3 toMarker = mPos - rayOrigin;
+            float t = toMarker.Dot(rayDir);
+            if (t < 0) continue;
+            Vector3 closestPointOnRay = rayOrigin + rayDir * t;
+            float dist = closestPointOnRay.DistanceTo(mPos);
+            if (dist < closestDist)
+            {
+                closestDist = dist;
+                closestMarker = child;
+            }
+        }
+
+        if (closestMarker == null) return false;
+
+        // Extract troop type from marker name: "TroopMarker_{player}_{type}_{pos}"
+        string markerName = closestMarker.Name.ToString();
+        TroopType clickedType = TroopType.Infantry; // default
+        foreach (TroopType tt in TroopDefinitions.AllTypes)
+        {
+            if (markerName.Contains(tt.ToString()))
+            {
+                clickedType = tt;
+                break;
+            }
+        }
+
+        if (_armyManager.TrySellTroop(_activeBuilder, clickedType, player))
+        {
+            Vector3I markerPos = ParseTroopMarkerPosition(markerName);
+            CancelUndoEntry(UndoType.Troop, position: markerPos);
+            closestMarker.QueueFree();
+            UpdateBuildUITroopCounts();
+            EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(_activeBuilder, player.Budget, TroopDefinitions.Get(clickedType).Cost));
+            AudioDirector.Instance?.PlaySFX("ui_click");
+            GD.Print($"[Build] Right-click erased {clickedType} for {_activeBuilder}.");
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Right-click erase: removes the nearest door under the cursor.
+    /// Returns true if a door was found and removed.
+    /// </summary>
+    private bool TryEraseDoorAtCursor()
+    {
+        if (_camera == null || _armyManager == null || _voxelWorld == null) return false;
+
+        Vector2 mousePos = GetViewport().GetMousePosition();
+        Vector3 rayOrigin = _camera.ProjectRayOrigin(mousePos);
+        Vector3 rayDir = _camera.ProjectRayNormal(mousePos);
+
+        if (!_voxelWorld.RaycastVoxel(rayOrigin, rayDir, MaxRaycastDistance, out Vector3I hitPos, out Vector3I _))
+            return false;
+
+        // Check if the hit position (or adjacent) is part of a door
+        var doors = _armyManager.Doors.GetDoors(_activeBuilder);
+        foreach (var door in doors)
+        {
+            foreach (var voxel in door.OpeningVoxels)
+            {
+                // Check within 1 voxel of the hit
+                int dx = System.Math.Abs(voxel.X - hitPos.X);
+                int dy = System.Math.Abs(voxel.Y - hitPos.Y);
+                int dz = System.Math.Abs(voxel.Z - hitPos.Z);
+                if (dx <= 1 && dy <= 1 && dz <= 1)
+                {
+                    CancelUndoEntry(UndoType.Door, position: door.BaseMicrovoxel);
+                    _armyManager.Doors.RemoveDoor(door.BaseMicrovoxel, _activeBuilder);
+                    AudioDirector.Instance?.PlaySFX("ui_click");
+                    GD.Print($"[Build] Right-click erased door at {door.BaseMicrovoxel} for {_activeBuilder}.");
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void TryPlaceCommanderAtCursor()
@@ -2685,6 +2987,14 @@ public partial class GameManager : Node
         player.TrySpend(weaponCost);
         EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(player.Slot, player.Budget, -weaponCost));
 
+        _buildUndoStack.Push(new BuildUndoEntry
+        {
+            Type = UndoType.Weapon,
+            Weapon = weapon,
+            WeaponKind = _selectedWeaponType,
+            Cost = weaponCost,
+        });
+
         AudioDirector.Instance?.PlaySFX("ui_confirm");
         GD.Print($"[Build] {_selectedWeaponType} placed for {_activeBuilder} at {_buildCursorBuildUnit} (cost: ${weaponCost}).");
         // Stay in weapon placement mode so the user can place multiple weapons in a row.
@@ -2692,8 +3002,9 @@ public partial class GameManager : Node
     }
 
     /// <summary>
-    /// Places a door at the build cursor, carving a 1x3 opening through the zone edge wall.
-    /// Doors allow troops to exit the base. Placed via the Door build tool.
+    /// Places a door at the build cursor, carving a 1x4 opening through the wall.
+    /// Doors allow own troops to pass through. Cursor already targets solid blocks
+    /// in door mode (handled in UpdateBuildCursorPosition).
     /// </summary>
     private void TryPlaceDoorAtCursor()
     {
@@ -2707,31 +3018,25 @@ public partial class GameManager : Node
             return;
         }
 
-        // Use the actual clicked microvoxel as the door base.
-        // The raycast hit a solid block face — the door starts at that hit position.
         Vector3I zoneMin = zone.OriginMicrovoxels;
         Vector3I zoneMax = zone.MaxMicrovoxelsInclusive;
 
-        // The cursor targets the air voxel adjacent to the surface.
-        // For doors we want the solid block itself, so step back by the hit normal.
-        // Re-raycast to get the actual solid block position.
-        Vector2 mousePos = GetViewport().GetMousePosition();
-        Vector3 rayOrigin = _camera!.ProjectRayOrigin(mousePos);
-        Vector3 rayDir = _camera.ProjectRayNormal(mousePos);
+        // Cursor already targets the solid block in door mode (like eraser)
+        Vector3I doorBase = _buildCursorMicrovoxel;
 
-        if (!_voxelWorld.RaycastVoxel(rayOrigin, rayDir, MaxRaycastDistance, out Vector3I hitPos, out Vector3I _))
-        {
-            return;
-        }
-
-        // Door base is the hit solid block position (bottom of the 1x4 opening)
-        Vector3I doorBase = hitPos;
-
+        // _buildRotation 0 = auto-detect facing,
+        // 1-4 = user pressed R (explicit: 0=Forward, 1=Right, 2=Back, 3=Left)
+        int doorRotation = _buildRotation == 0 ? -1 : _buildRotation - 1;
         bool success = _armyManager.Doors.TryPlaceDoor(
-            _voxelWorld, doorBase, _activeBuilder, zoneMin, zoneMax, out string failReason);
+            _voxelWorld, doorBase, _activeBuilder, zoneMin, zoneMax, doorRotation, out string failReason);
 
         if (success)
         {
+            _buildUndoStack.Push(new BuildUndoEntry
+            {
+                Type = UndoType.Door,
+                Position = doorBase,
+            });
             GD.Print($"[Build] Door placed for {_activeBuilder} at {doorBase}.");
             AudioDirector.Instance?.PlaySFX("ui_click");
         }
@@ -2816,15 +3121,78 @@ public partial class GameManager : Node
         if (_troopPreviewMeshes.TryGetValue(type, out ArrayMesh? cached))
             return cached;
 
-        // Simple humanoid-shaped preview: a box roughly troop-sized
-        float w = 0.3f;
-        float h = type == TroopType.Demolisher ? 0.5f : 0.45f;
-        float d = 0.3f;
-        BoxMesh box = new BoxMesh { Size = new Vector3(w, h, d) };
+        // Build the actual character model and combine all mesh surfaces
+        Color teamColor = _players.TryGetValue(_activeBuilder, out PlayerData? p)
+            ? p.PlayerColor : new Color(0.2f, 0.6f, 1.0f);
+        Art.CharacterDefinition charDef = type switch
+        {
+            TroopType.Infantry => Art.TroopModelGenerator.GenerateInfantry(teamColor),
+            TroopType.Demolisher => Art.TroopModelGenerator.GenerateDemolisher(teamColor),
+            _ => Art.TroopModelGenerator.GenerateInfantry(teamColor),
+        };
+        Node3D model = Art.VoxelCharacterBuilder.Build(charDef);
+
+        // Collect all MeshInstance3D vertices into a single combined mesh
+        var allVerts = new System.Collections.Generic.List<Vector3>();
+        var allNormals = new System.Collections.Generic.List<Vector3>();
+        var allIndices = new System.Collections.Generic.List<int>();
+        CollectMeshesRecursive(model, Transform3D.Identity, allVerts, allNormals, allIndices);
+
         ArrayMesh mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, box.GetMeshArrays());
+        if (allVerts.Count > 0)
+        {
+            var arrays = new Godot.Collections.Array();
+            arrays.Resize((int)Mesh.ArrayType.Max);
+            arrays[(int)Mesh.ArrayType.Vertex] = allVerts.ToArray();
+            arrays[(int)Mesh.ArrayType.Normal] = allNormals.ToArray();
+            arrays[(int)Mesh.ArrayType.Index] = allIndices.ToArray();
+            mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        }
+
+        model.QueueFree(); // dispose the temp hierarchy
         _troopPreviewMeshes[type] = mesh;
         return mesh;
+    }
+
+    private static void CollectMeshesRecursive(Node node, Transform3D parentTransform,
+        System.Collections.Generic.List<Vector3> verts,
+        System.Collections.Generic.List<Vector3> normals,
+        System.Collections.Generic.List<int> indices)
+    {
+        Transform3D nodeTransform = parentTransform;
+        if (node is Node3D n3d)
+            nodeTransform = parentTransform * n3d.Transform;
+
+        if (node is MeshInstance3D mi && mi.Mesh != null)
+        {
+            for (int s = 0; s < mi.Mesh.GetSurfaceCount(); s++)
+            {
+                var surfArrays = mi.Mesh.SurfaceGetArrays(s);
+                if (surfArrays == null || surfArrays.Count == 0) continue;
+                var surfVerts = surfArrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
+                var surfNormals = surfArrays[(int)Mesh.ArrayType.Normal].AsVector3Array();
+                var surfIndices = surfArrays[(int)Mesh.ArrayType.Index].AsInt32Array();
+                if (surfVerts == null || surfVerts.Length == 0) continue;
+
+                int baseIndex = verts.Count;
+                for (int i = 0; i < surfVerts.Length; i++)
+                {
+                    verts.Add(nodeTransform * surfVerts[i]);
+                    if (surfNormals != null && i < surfNormals.Length)
+                        normals.Add((nodeTransform.Basis * surfNormals[i]).Normalized());
+                    else
+                        normals.Add(Vector3.Up);
+                }
+                if (surfIndices != null && surfIndices.Length > 0)
+                {
+                    for (int i = 0; i < surfIndices.Length; i++)
+                        indices.Add(baseIndex + surfIndices[i]);
+                }
+            }
+        }
+
+        foreach (Node child in node.GetChildren())
+            CollectMeshesRecursive(child, nodeTransform, verts, normals, indices);
     }
 
     private void TryPlaceTroopAtCursor()
@@ -2873,6 +3241,16 @@ public partial class GameManager : Node
             return;
         }
 
+        // Check for overlap with already-placed troops
+        foreach (var (existingType, existingPos) in _armyManager.GetPurchasedTroops(_activeBuilder))
+        {
+            if (existingPos.HasValue && existingPos.Value == spawnPos)
+            {
+                GD.Print("[Army] A troop is already placed at this position.");
+                return;
+            }
+        }
+
         // Try to buy and place
         if (_armyManager.TryBuyAndPlaceTroop(_activeBuilder, _selectedTroopType, player, spawnPos))
         {
@@ -2880,10 +3258,18 @@ public partial class GameManager : Node
             GD.Print($"[Army] {_activeBuilder}: Placed {stats.Name} at {spawnPos}. Budget: ${player.Budget}.");
 
             // Spawn a visual marker so the player sees where their troops are
-            SpawnTroopMarker(spawnPos, _selectedTroopType);
+            SpawnTroopMarker(spawnPos, _selectedTroopType, _buildRotation);
 
             // Update BuildUI troop counts
             UpdateBuildUITroopCounts();
+
+            _buildUndoStack.Push(new BuildUndoEntry
+            {
+                Type = UndoType.Troop,
+                TroopKind = _selectedTroopType,
+                Cost = stats.Cost,
+                Position = spawnPos,
+            });
 
             EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(_activeBuilder, player.Budget, -stats.Cost));
 
@@ -2896,7 +3282,7 @@ public partial class GameManager : Node
         }
     }
 
-    private void SpawnTroopMarker(Vector3I microPos, TroopType type)
+    private void SpawnTroopMarker(Vector3I microPos, TroopType type, int rotation = 0)
     {
         Color teamColor = _players.TryGetValue(_activeBuilder, out PlayerData? p)
             ? p.PlayerColor : new Color(0.2f, 0.6f, 1.0f);
@@ -2911,7 +3297,7 @@ public partial class GameManager : Node
 
         Node3D model = Art.VoxelCharacterBuilder.Build(charDef);
         Art.VoxelCharacterBuilder.ApplyToonMaterial(model, teamColor);
-        model.Name = $"TroopMarker_{_activeBuilder}_{microPos}";
+        model.Name = $"TroopMarker_{_activeBuilder}_{type}_{microPos}";
         model.AddToGroup("TroopMarkers");
 
         float microMeters = GameConfig.MicrovoxelMeters;
@@ -2921,6 +3307,9 @@ public partial class GameManager : Node
             microPos.X * microMeters + microMeters * 0.5f,
             microPos.Y * microMeters + legOffset,
             microPos.Z * microMeters + microMeters * 0.5f);
+
+        // Apply rotation from R key
+        model.RotationDegrees = new Vector3(0, rotation * 90f, 0);
 
         AddChild(model);
     }
@@ -3002,6 +3391,9 @@ public partial class GameManager : Node
 
         // Reset countdown for the next builder
         _phaseCountdownSeconds = PrototypeBuildPhaseSeconds;
+
+        // Refresh troop counts for the new builder (prevents stale counts after rematch)
+        UpdateBuildUITroopCounts();
 
         // Smoothly transition camera to the new builder's zone with updated bounds
         PositionCameraAtBuildZone(_activeBuilder, animate: true);
@@ -3546,14 +3938,15 @@ public partial class GameManager : Node
         Vector3 fortCenter = ComputePlayerFortressCenter(firstPlayer) + new Vector3(0f, 4f, 0f);
         Vector3 arenaCenter = ComputeArenaMidpoint();
 
-        // Compute the final behind-zone position (same as PositionFreeFlyBehindZone)
+        // Compute the final behind-zone position — slightly closer than regular
+        // PositionFreeFlyBehindZone so the initial view feels more intimate
         Vector3 awayDir = new Vector3(fortCenter.X - arenaCenter.X, 0f, fortCenter.Z - arenaCenter.Z);
         if (awayDir.LengthSquared() < 0.01f) awayDir = new Vector3(0f, 0f, 1f);
         awayDir = awayDir.Normalized();
-        Vector3 behindPos = fortCenter + new Vector3(0f, 30f, 0f) + awayDir * 38f;
+        Vector3 behindPos = fortCenter + new Vector3(0f, 22f, 0f) + awayDir * 30f;
 
         // Start position: directly above the fortress looking down
-        Vector3 topDownPos = fortCenter + new Vector3(0f, 50f, 0f);
+        Vector3 topDownPos = fortCenter + new Vector3(0f, 40f, 0f);
 
         float progress = Mathf.Clamp(_combatIntroTimer / CombatIntroDuration, 0f, 1f);
         float t = progress * progress * (3f - 2f * progress); // smoothstep easing
@@ -3579,20 +3972,19 @@ public partial class GameManager : Node
             return;
         }
 
-        // Space bar / fire action: fire if target is set
-        if (@event.IsActionPressed("fire_weapon"))
-        {
-            if (_hasTarget && _aimingSystem != null && _aimingSystem.HasTarget)
-            {
-                FireCurrentPlayerWeapon();
-            }
-        }
-
-        // Cancel aiming with escape: return to top-down (also resets confirmation)
-        // (right-click and ESC in targeting mode are handled by CombatCamera events)
+        // Cancel aiming with escape or right-click: return to top-down (also resets confirmation)
+        // CombatCamera also handles right-click in targeting/POV via ExitWeaponPOVRequested.
         if (@event.IsActionPressed("ui_cancel"))
         {
-            if (_isAiming || (_combatCamera != null && _combatCamera.IsInTargeting))
+            if (_isAiming || _weaponConfirmed || (_combatCamera != null && _combatCamera.IsInTargeting))
+            {
+                CancelTargeting();
+            }
+        }
+        // Right-click to unaim: cancel weapon selection even before entering targeting cam
+        if (@event is InputEventMouseButton rmbCancel && rmbCancel.Pressed && rmbCancel.ButtonIndex == MouseButton.Right)
+        {
+            if (_weaponConfirmed && !_isAiming && (_combatCamera == null || !_combatCamera.IsInTargeting))
             {
                 CancelTargeting();
             }
@@ -3632,6 +4024,39 @@ public partial class GameManager : Node
             }
         }
 
+        // T key: toggle troop movement mode (syncs with TROOPS button)
+        if (@event is InputEventKey troopKey && troopKey.Pressed && troopKey.Keycode == Key.T)
+        {
+            OnTroopMoveToggled();
+            _armyManager?.PrintTroopDebug();
+        }
+
+        // Troop move mode: click terrain to send troops there
+        if (_troopMoveMode && @event is InputEventMouseButton troopClick &&
+            troopClick.Pressed && troopClick.ButtonIndex == MouseButton.Left)
+        {
+            Vector2 mousePos = troopClick.Position;
+            Camera3D? cam = GetViewport().GetCamera3D();
+            if (cam != null && _voxelWorld != null)
+            {
+                Vector3 rayOrigin = cam.ProjectRayOrigin(mousePos);
+                Vector3 rayDir = cam.ProjectRayNormal(mousePos);
+                if (_voxelWorld.RaycastVoxel(rayOrigin, rayDir, 200f, out Vector3I hitPos, out Vector3I _))
+                {
+                    // Move troops to the air position above the hit voxel
+                    Vector3I moveTarget = hitPos + Vector3I.Up;
+                    _armyManager?.MoveTroopsToward(currentPlayer, moveTarget);
+                    _troopMoveMode = false;
+                    _troopsMoved = true; // hide button for rest of turn
+                    CombatUI? troopUI2 = GetNodeOrNull<CombatUI>("%CombatUI")
+                        ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
+                    troopUI2?.HideSelectWeaponPrompt();
+                    troopUI2?.SetTroopsModeActive(false);
+                    troopUI2?.SetTroopsButtonVisible(false); // hide button after use
+                }
+            }
+        }
+
         // Cycle target enemy with Tab/E/Q during targeting mode is handled by
         // CombatCamera.TargetCycleRequested event -> OnTargetCycleRequested()
 
@@ -3657,8 +4082,13 @@ public partial class GameManager : Node
             return;
         }
 
-        int safeIndex = _selectedWeaponIndex % weaponList.Count;
-        WeaponBase? weapon = weaponList[safeIndex];
+        // Use filtered alive-weapon list matching CombatUI's indices
+        List<WeaponBase> aliveWeapons = weaponList.FindAll(w =>
+            w != null && GodotObject.IsInstanceValid(w) && !w.IsDestroyed);
+        if (aliveWeapons.Count == 0) return;
+
+        int safeIndex = _selectedWeaponIndex % aliveWeapons.Count;
+        WeaponBase? weapon = aliveWeapons[safeIndex];
         if (weapon == null || !GodotObject.IsInstanceValid(weapon))
         {
             return;
@@ -3692,6 +4122,11 @@ public partial class GameManager : Node
 
         // Show the target enemy selector on the CombatUI
         UpdateTargetEnemyUI();
+
+        // Show "CLICK TO AIM — ENTER TO FIRE" prompt
+        CombatUI? aimPromptUI = GetNodeOrNull<CombatUI>("%CombatUI")
+            ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
+        aimPromptUI?.ShowAimPrompt();
 
         GD.Print($"[Combat] Entering targeting mode. Use Tab/Q/E to cycle enemies, click to set target.");
     }
@@ -3858,14 +4293,14 @@ public partial class GameManager : Node
             return;
         }
 
-        // If we already have a target, a second click fires
+        // Second click fires if we already have a target set
         if (_hasTarget && _aimingSystem.HasTarget)
         {
             FireCurrentPlayerWeapon();
             return;
         }
 
-        // Raycast from camera through the mouse position
+        // First click: raycast to find a target
         Vector3 rayOrigin = _combatCamera.ProjectRayOrigin(mousePos);
         Vector3 rayDir = _combatCamera.ProjectRayNormal(mousePos);
 
@@ -3881,10 +4316,6 @@ public partial class GameManager : Node
         }
         else if (_voxelWorld.RaycastVoxel(rayOrigin, rayDir, MaxRaycastDistance, out Vector3I hitPos, out Vector3I _))
         {
-            // Convert microvoxel position to world-space center of the clicked voxel.
-            // MicrovoxelToWorld returns the corner; offset by half a microvoxel so
-            // the ballistic solution targets the voxel center, eliminating the
-            // systematic ~0.25m bias that made projectiles land off-target.
             targetWorld = MathHelpers.MicrovoxelToWorld(hitPos)
                 + new Vector3(
                     GameConfig.MicrovoxelMeters * 0.5f,
@@ -3914,13 +4345,18 @@ public partial class GameManager : Node
             // Rotate the weapon to face the target (yaw only, stays upright)
             RotateWeaponToward(weapon, targetWorld.Value);
 
+            // Show fire prompt
+            CombatUI? firePromptUI = GetNodeOrNull<CombatUI>("%CombatUI")
+                ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
+            firePromptUI?.ShowFirePrompt();
+
             if (commanderSnapTarget.HasValue)
             {
                 GD.Print($"[Combat] AIM ASSIST: Snapped to enemy commander at {targetWorld.Value}. Click again to fire.");
             }
             else if (inRange)
             {
-                GD.Print($"[Combat] Target set at {targetWorld.Value}. Click again or press SPACE/FIRE to shoot.");
+                GD.Print($"[Combat] Target set at {targetWorld.Value}. Click again to fire.");
             }
             else
             {
@@ -3942,7 +4378,7 @@ public partial class GameManager : Node
     private Vector3? TrySnapToCommander(Vector3 rayOrigin, Vector3 rayDir, PlayerSlot currentPlayer)
     {
         // Generous world-space threshold: ray must pass within this distance
-        // of the commander's center-mass to trigger the snap. 1.5m is generous
+        // of the commander's center-mass to trigger the snap. 2.5m is generous
         // enough to feel helpful without being jarring.
         const float snapRadius = 1.5f;
 
@@ -4022,6 +4458,7 @@ public partial class GameManager : Node
         _isAiming = false;
         _hasTarget = false;
         _weaponConfirmed = false;
+        _troopMoveMode = false;
         _aimingSystem?.ClearTarget();
         _combatCamera?.ExitWeaponPOV();
         // Return to FreeFlyCamera for WASD movement
@@ -4032,10 +4469,12 @@ public partial class GameManager : Node
         // Remove the green selection highlight from all weapons
         ClearAllWeaponHighlights();
 
-        // Hide the target enemy selector UI
+        // Hide the target enemy selector UI and reset prompt
         CombatUI? combatUI = GetNodeOrNull<CombatUI>("%CombatUI")
             ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
         combatUI?.HideTargetSelector();
+        combatUI?.HideSelectWeaponPrompt();
+        combatUI?.ResetPromptText();
     }
 
     /// <summary>
@@ -4055,15 +4494,25 @@ public partial class GameManager : Node
             return;
         }
 
-        // When no weapon is selected (-1), unhighlight all weapons
-        int safeIndex = _selectedWeaponIndex < 0 ? -1 : _selectedWeaponIndex % weaponList.Count;
+        // Build filtered alive list matching CombatUI's indices
+        List<WeaponBase> aliveWeapons = weaponList.FindAll(w =>
+            w != null && GodotObject.IsInstanceValid(w) && !w.IsDestroyed);
 
+        // Map the selected alive-list index back to identify which weapon to highlight
+        WeaponBase? selectedWeapon = null;
+        if (_selectedWeaponIndex >= 0 && aliveWeapons.Count > 0)
+        {
+            int safeIndex = _selectedWeaponIndex % aliveWeapons.Count;
+            selectedWeapon = aliveWeapons[safeIndex];
+        }
+
+        // Highlight only the selected weapon in the full list
         for (int i = 0; i < weaponList.Count; i++)
         {
             WeaponBase? w = weaponList[i];
             if (w != null && GodotObject.IsInstanceValid(w))
             {
-                w.SetHighlighted(i == safeIndex);
+                w.SetHighlighted(w == selectedWeapon);
             }
         }
     }
@@ -4191,14 +4640,20 @@ public partial class GameManager : Node
             return;
         }
 
-        int safeIndex = _selectedWeaponIndex % weaponList.Count;
-        WeaponBase? weapon = weaponList[safeIndex];
+        // Build the same filtered alive-weapon list that CombatUI uses,
+        // so _selectedWeaponIndex (set by CombatUI) maps correctly.
+        List<WeaponBase> aliveWeapons = weaponList.FindAll(w =>
+            w != null && GodotObject.IsInstanceValid(w) && !w.IsDestroyed);
+        if (aliveWeapons.Count == 0) return;
+
+        int safeIndex = _selectedWeaponIndex % aliveWeapons.Count;
+        WeaponBase? weapon = aliveWeapons[safeIndex];
         bool isEmpd = weapon != null && GodotObject.IsInstanceValid(weapon) &&
             (_powerupExecutor?.IsWeaponEmpDisabled(weapon, _players) ?? false);
         if (weapon == null || !GodotObject.IsInstanceValid(weapon) || !weapon.CanFire(_turnManager.RoundNumber) || isEmpd)
         {
             // Try to find any weapon that can fire and isn't EMP'd
-            weapon = weaponList.Find(candidate =>
+            weapon = aliveWeapons.Find(candidate =>
                 GodotObject.IsInstanceValid(candidate) &&
                 candidate.CanFire(_turnManager.RoundNumber) &&
                 !(_powerupExecutor?.IsWeaponEmpDisabled(candidate, _players) ?? false));
@@ -4228,12 +4683,16 @@ public partial class GameManager : Node
             // Clear the weapon highlight after firing
             ClearAllWeaponHighlights();
 
-            // Hide the target enemy selector UI after firing
+            // Hide all attack UI after firing — weapon bar, powerup panel, troops button, selectors, skip
             {
                 CombatUI? combatUI2 = GetNodeOrNull<CombatUI>("%CombatUI")
                     ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
                 combatUI2?.HideTargetSelector();
+                combatUI2?.HideSelectWeaponPrompt();
+                combatUI2?.ResetPromptText();
+                combatUI2?.HideAttackUI();
             }
+            if (_skipTurnButton != null) _skipTurnButton.Visible = false;
 
             // Transition camera to follow projectile (cursor stays visible).
             // CombatCamera takes over temporarily for the cinematic follow/impact;
@@ -4250,8 +4709,15 @@ public partial class GameManager : Node
                 // the camera transition is handled in OnRailgunBeamFired.
             }
 
-            // Wait for projectile to land, then linger on the impact before advancing
+            // Check if current player has troops that can attack — if so, defer turn
+            // advancement so the troop attack cam sequence plays after the impact cam.
+            // Works for ALL players (human + bots) so you see everyone's troops attack.
             PlayerSlot firedPlayer = currentPlayer;
+            _deferTurnAdvanceForTroops = _armyManager?.HasAliveTroops(firedPlayer) ?? false;
+            _troopSequencePlayer = firedPlayer;
+            GD.Print($"[TroopSeq] DeferTroopAttack={_deferTurnAdvanceForTroops} player={firedPlayer} hasAliveTroops={_armyManager?.HasAliveTroops(firedPlayer)}");
+
+            // Wait for projectile to land, then linger on the impact before advancing
             if (projectile != null)
             {
                 WaitForProjectileThenAdvance(projectile, firedPlayer);
@@ -4261,6 +4727,29 @@ public partial class GameManager : Node
                 // Hitscan — advance after a short delay
                 GetTree().CreateTimer(2.0).Timeout += () =>
                 {
+                    if (_troopSequenceActive) return; // troop sequence already running
+
+                    // If troops are deferred and CinematicFinished won't fire, start
+                    // troop sequence directly from here.
+                    if (_deferTurnAdvanceForTroops && _armyManager != null)
+                    {
+                        _deferTurnAdvanceForTroops = false;
+
+                        // Skip troop attacks if backup bombardment is imminent
+                        if (!_artilleryDominanceActive && AnyPlayerHasUsableWeapons())
+                        {
+                            PlayerSlot troopPlayer = _troopSequencePlayer;
+                            var aliveP1 = new HashSet<PlayerSlot>();
+                            foreach (var (s, d) in _players) { if (d.IsAlive) aliveP1.Add(s); }
+                            var attackTargets = _armyManager.GetTroopsWithAttackTargets(troopPlayer, _commanders, _weapons, aliveP1);
+                            if (attackTargets.Count > 0)
+                            {
+                                StartTroopAttackSequence(attackTargets, troopPlayer);
+                                return;
+                            }
+                        }
+                    }
+
                     if (CurrentPhase == GamePhase.Combat && _turnManager?.CurrentPlayer == firedPlayer)
                     {
                         _turnManager.AdvanceTurn(Settings.TurnTimeSeconds);
@@ -4296,7 +4785,22 @@ public partial class GameManager : Node
             return;
         }
 
-        CancelTargeting();
+        // If we have a target set, right-click clears the crosshair so the player
+        // can click a new spot (stay in targeting mode). If no target, fully cancel.
+        if (_hasTarget && _isAiming)
+        {
+            _hasTarget = false;
+            _aimingSystem?.ClearTarget();
+            HideTargetHighlight();
+            CombatUI? ui = GetNodeOrNull<CombatUI>("%CombatUI")
+                ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
+            ui?.ShowTargetPrompt();
+            GD.Print("[Combat] Target cleared — click to set a new target.");
+        }
+        else
+        {
+            CancelTargeting();
+        }
     }
 
     /// <summary>
@@ -4365,10 +4869,11 @@ public partial class GameManager : Node
         for (int i = 0; i < activePlayers.Length; i++)
         {
             PlayerSlot player = activePlayers[i];
-            // Target the next player in rotation
-            PlayerSlot target = activePlayers[(i + 1) % activePlayers.Length];
-            _armyManager.DeployTroops(player, target, this);
+            _armyManager.DeployTroops(player, this);
         }
+
+        // Seed bots with random powerups
+        SeedBotPowerups();
     }
 
     private void PlaceCommanderAndWeapons(PlayerSlot slot, BuildZone zone, bool placeCommander = true, bool placeWeapons = true)
@@ -4634,20 +5139,55 @@ public partial class GameManager : Node
         // count in that player's turns, not every player's turns)
         _powerupExecutor?.TickAllPlayerEffects(_players, payload.CurrentPlayer);
 
-        // Tick army troops — only the current player's troops move/attack per turn
-        _armyManager?.TickTroops(payload.CurrentPlayer, this);
+        // Re-enforce smoke screen chunk hiding (chunks may have been remeshed by explosions)
+        _powerupExecutor?.ReenforceSmokeScreens(_players);
 
-        // Update CombatUI powerup slots for the new current player
-        if (_players.TryGetValue(payload.CurrentPlayer, out PlayerData? currentPlayerData))
+        // Tick army troops — all players' attacks are deferred to the visual troop
+        // attack sequence that plays after their weapon fires. Skip attacks for the
+        // current player here; the camera sequence handles them visually.
+        var alivePlayers = new HashSet<PlayerSlot>();
+        foreach (var (slot, data) in _players) { if (data.IsAlive) alivePlayers.Add(slot); }
+        _armyManager?.TickAllTroops(payload.CurrentPlayer, this, skipAttacksFor: payload.CurrentPlayer,
+            alivePlayers: alivePlayers, commanders: _commanders, weapons: _weapons);
+
+        // Bot troops auto-move toward nearest enemy base each turn.
+        // Human troops only move when the player clicks TROOPS + terrain.
+        if (IsBot(payload.CurrentPlayer) && _armyManager != null)
+        {
+            _armyManager.BotMoveTroops(payload.CurrentPlayer);
+        }
+
+        // Update CombatUI powerup slots, troops button, and turn banner
         {
             CombatUI? combatUI = GetNodeOrNull<CombatUI>("%CombatUI")
                 ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
-            combatUI?.UpdatePowerupSlots(currentPlayerData.Powerups);
+            if (_players.TryGetValue(payload.CurrentPlayer, out PlayerData? currentPlayerData))
+            {
+                combatUI?.UpdatePowerupSlots(currentPlayerData.Powerups);
+
+                // Show centered commander name banner during camera pan
+                int colorIdx = (int)payload.CurrentPlayer;
+                Color bannerColor = colorIdx < GameConfig.PlayerColors.Length
+                    ? GameConfig.PlayerColors[colorIdx] : Colors.White;
+                combatUI?.ShowTurnBanner(currentPlayerData.DisplayName, bannerColor);
+            }
+
+            // Show troops button only for human player with alive troops
+            bool showTroops = !IsBot(payload.CurrentPlayer)
+                && (_armyManager?.HasAliveTroops(payload.CurrentPlayer) ?? false);
+            combatUI?.SetTroopsButtonVisible(showTroops);
+
+            // Re-show weapon bar + powerup panel on human turn (safety net — they
+            // get hidden by HideAttackUI after firing and must reappear next turn)
+            if (!IsBot(payload.CurrentPlayer))
+                combatUI?.ShowAttackUI();
         }
 
         // Reset aiming state and per-turn limits for the new turn
         _isAiming = false;
         _hasTarget = false;
+        _troopMoveMode = false;
+        _troopsMoved = false;
         _aimingSystem?.ClearTarget();
         Input.MouseMode = Input.MouseModeEnum.Visible;
 
@@ -4716,39 +5256,31 @@ public partial class GameManager : Node
             return;
         }
 
-        // If the combat camera is following a projectile or showing impact, let that finish
-        // naturally (it will fire CinematicFinished, which switches back to FreeFlyCamera).
-        // For immediate turns, position the camera appropriately.
-        if (_combatCamera.CurrentMode != CombatCamera.Mode.FollowProjectile &&
-            _combatCamera.CurrentMode != CombatCamera.Mode.Impact &&
-            _combatCamera.CurrentMode != CombatCamera.Mode.KillCam &&
-            _combatCamera.CurrentMode != CombatCamera.Mode.RailgunBeam)
+        // Always deactivate the combat camera when a new turn starts so its
+        // cinematic mode (Impact/KillCam/etc.) from the previous turn doesn't
+        // block camera positioning for this player.
+        _combatCamera.Deactivate();
+
+        if (IsBot(payload.CurrentPlayer) && _spectatorTopDown)
         {
-            if (IsBot(payload.CurrentPlayer) && _spectatorTopDown)
-            {
-                // Player has toggled top-down spectator mode — stay in top-down
-                _camera?.Deactivate();
-                _combatCamera.TopDown(ComputeArenaMidpoint());
-            }
-            else if (IsBot(payload.CurrentPlayer))
-            {
-                // Bot turn: show the bot's base briefly before it fires
-                SwitchToFreeFlyCamera();
-                PositionFreeFlyBehindZone(payload.CurrentPlayer);
-            }
-            else
-            {
-                // Human turn: position behind their build zone so they can aim
-                SwitchToFreeFlyCamera();
-                PositionFreeFlyBehindZone(payload.CurrentPlayer);
-            }
+            // Player has toggled top-down spectator mode — stay in top-down
+            _camera?.Deactivate();
+            _combatCamera.TopDown(ComputeArenaMidpoint());
+        }
+        else
+        {
+            // Position camera behind this player's build zone
+            SwitchToFreeFlyCamera();
+            PositionFreeFlyBehindZone(payload.CurrentPlayer);
         }
 
-        // If the current player is a bot, schedule automatic play after a short delay
+        // If the current player is a bot, schedule automatic play after a delay.
+        // 2.5s gives the camera time to pan to their base and the player time to
+        // see the commander name banner before the bot fires.
         if (IsBot(payload.CurrentPlayer))
         {
             PlayerSlot botSlot = payload.CurrentPlayer;
-            GetTree().CreateTimer(1.0).Timeout += () => ExecuteBotTurn(botSlot);
+            GetTree().CreateTimer(2.5).Timeout += () => ExecuteBotTurn(botSlot);
         }
     }
 
@@ -4953,25 +5485,33 @@ public partial class GameManager : Node
             return;
         }
 
+        Random rng = new Random(System.Environment.TickCount ^ botSlot.GetHashCode() ^ (_turnManager?.RoundNumber ?? 0));
+
         // Find weapons that can fire this round
-        if (!_weapons.TryGetValue(botSlot, out List<WeaponBase>? weaponList) || weaponList.Count == 0)
-        {
-            GD.Print($"[Bot] {botSlot} has no weapons — skipping turn.");
-            _turnManager.AdvanceTurn(Settings.TurnTimeSeconds);
-            return;
-        }
+        if (!_weapons.TryGetValue(botSlot, out List<WeaponBase>? weaponList))
+            weaponList = new List<WeaponBase>();
 
         // Purge destroyed/invalid weapons
         weaponList.RemoveAll(w => w == null || !GodotObject.IsInstanceValid(w) || w.IsDestroyed);
 
         WeaponBase? weapon = weaponList.Find(w => w.CanFire(_turnManager.RoundNumber) &&
             !(_powerupExecutor?.IsWeaponEmpDisabled(w, _players) ?? false));
+
+        // Still move troops even if no weapon can fire
         if (weapon == null)
         {
-            GD.Print($"[Bot] {botSlot} has no weapons ready (or all EMP'd) — skipping turn.");
-            _turnManager.AdvanceTurn(Settings.TurnTimeSeconds);
+            _armyManager?.BotMoveTroops(botSlot);
+            TryBotPowerupActivation(botSlot, rng);
+            GD.Print($"[Bot] {botSlot} has no weapons ready — troops moved, skipping fire.");
+            _turnManager?.AdvanceTurn(Settings.TurnTimeSeconds);
             return;
         }
+
+        // Move bot's troops toward nearest enemy base
+        _armyManager?.BotMoveTroops(botSlot);
+
+        // Bot powerup usage: check if any should be activated this turn
+        TryBotPowerupActivation(botSlot, rng);
 
         // Gather alive enemies
         List<(PlayerSlot Slot, PlayerData Data)> enemies = new List<(PlayerSlot, PlayerData)>();
@@ -4996,8 +5536,6 @@ public partial class GameManager : Node
         {
             difficulty = botCtrl.Difficulty;
         }
-
-        Random rng = new Random(System.Environment.TickCount ^ botSlot.GetHashCode() ^ _turnManager.RoundNumber);
 
         // --- Target selection (weighted random, difficulty-aware) ---
         // Gather threat scores from the BotController if available
@@ -5137,6 +5675,10 @@ public partial class GameManager : Node
             GD.Print($"[Bot] {botSlot} fired {weapon.WeaponId} (hitscan) at {enemy.Slot}.");
         }
 
+        // Check if this bot has troops — defer turn advancement for troop attack cam
+        _deferTurnAdvanceForTroops = _armyManager?.HasAliveTroops(botSlot) ?? false;
+        _troopSequencePlayer = botSlot;
+
         // Wait for the projectile to actually land before advancing the turn.
         // Poll every 0.5s until the projectile is gone, then wait an extra 2s
         // so the camera can linger on the impact before moving on.
@@ -5149,11 +5691,141 @@ public partial class GameManager : Node
             // Hitscan or failed fire — advance after a short delay
             GetTree().CreateTimer(2.0).Timeout += () =>
             {
+                if (_troopSequenceActive) return; // troop sequence already running
+
+                // If troops are deferred and CinematicFinished won't fire, start troop
+                // sequence directly (same fallback as projectile path above).
+                if (_deferTurnAdvanceForTroops && _armyManager != null)
+                {
+                    _deferTurnAdvanceForTroops = false;
+
+                    // Skip troop attacks if backup bombardment is imminent
+                    if (!_artilleryDominanceActive && AnyPlayerHasUsableWeapons())
+                    {
+                        PlayerSlot troopPlayer = _troopSequencePlayer;
+                        var aliveP2 = new HashSet<PlayerSlot>();
+                        foreach (var (s, d) in _players) { if (d.IsAlive) aliveP2.Add(s); }
+                        var attackTargets = _armyManager.GetTroopsWithAttackTargets(troopPlayer, _commanders, _weapons, aliveP2);
+                        if (attackTargets.Count > 0)
+                        {
+                            StartTroopAttackSequence(attackTargets, troopPlayer);
+                            return;
+                        }
+                    }
+                }
+
                 if (CurrentPhase == GamePhase.Combat && _turnManager?.CurrentPlayer == botSlot)
                 {
                     _turnManager.AdvanceTurn(Settings.TurnTimeSeconds);
                 }
             };
+        }
+    }
+
+    /// <summary>
+    /// Seeds bot players with random powerups at combat start.
+    /// Easy: 0-1, Medium: 1-2, Hard: 2-3 powerups.
+    /// </summary>
+    private void SeedBotPowerups()
+    {
+        Random rng = new Random(System.Environment.TickCount);
+        PowerupType[] allTypes = { PowerupType.SmokeScreen, PowerupType.Medkit, PowerupType.ShieldGenerator, PowerupType.AirstrikeBeacon, PowerupType.EmpBlast };
+
+        foreach (var (slot, data) in _players)
+        {
+            if (!IsBot(slot)) continue;
+
+            AI.BotDifficulty diff = AI.BotDifficulty.Medium;
+            if (_botControllers.TryGetValue(slot, out AI.BotController? ctrl))
+                diff = ctrl.Difficulty;
+
+            int count = diff switch
+            {
+                AI.BotDifficulty.Easy => rng.Next(0, 2),
+                AI.BotDifficulty.Medium => rng.Next(1, 3),
+                AI.BotDifficulty.Hard => rng.Next(2, 4),
+                _ => rng.Next(1, 3),
+            };
+
+            for (int i = 0; i < count; i++)
+            {
+                PowerupType type = allTypes[rng.Next(allTypes.Length)];
+                data.Powerups.AddFree(type);
+                GD.Print($"[Bot] {slot} received free {type}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Bot AI: considers using a powerup this turn based on game state.
+    /// Uses the same activation paths as human players.
+    /// </summary>
+    private void TryBotPowerupActivation(PlayerSlot botSlot, Random rng)
+    {
+        if (!_players.TryGetValue(botSlot, out PlayerData? botData) || _powerupExecutor == null) return;
+        PowerupInventory inv = botData.Powerups;
+        if (inv.OwnedPowerups.Count == 0) return;
+
+        int alivePlayerCount = _players.Values.Count(p => p.IsAlive);
+
+        // Medkit: use if commander HP < 50%
+        if (inv.HasPowerup(PowerupType.Medkit) && _commanders.TryGetValue(botSlot, out var cmd))
+        {
+            Commander.CommanderHealth? health = cmd.GetNodeOrNull<Commander.CommanderHealth>("CommanderHealth");
+            if (!cmd.IsDead && health != null && health.CurrentHealth < health.MaxHealth * 0.5f)
+            {
+                if (_powerupExecutor.ActivateMedkit(botData))
+                    GD.Print($"[Bot] {botSlot} used Medkit");
+                return;
+            }
+        }
+
+        // Shield: 50% chance if not already active
+        if (inv.HasPowerup(PowerupType.ShieldGenerator) && !inv.HasActiveEffect(PowerupType.ShieldGenerator) && rng.NextDouble() < 0.5)
+        {
+            if (_powerupExecutor.ActivateShieldGenerator(botData, alivePlayerCount))
+                GD.Print($"[Bot] {botSlot} used Shield Generator");
+            return;
+        }
+
+        // EMP: 60% chance
+        if (inv.HasPowerup(PowerupType.EmpBlast) && rng.NextDouble() < 0.6)
+        {
+            if (_powerupExecutor.ActivateEmp(botData, _players, _weapons))
+                GD.Print($"[Bot] {botSlot} used EMP Blast");
+            return;
+        }
+
+        // Smoke: 30% chance
+        if (inv.HasPowerup(PowerupType.SmokeScreen) && !inv.HasActiveEffect(PowerupType.SmokeScreen) && rng.NextDouble() < 0.3)
+        {
+            if (_powerupExecutor.ActivateSmokeScreen(botData, alivePlayerCount))
+            {
+                _powerupExecutor.ReenforceSmokeScreens(_players);
+                GD.Print($"[Bot] {botSlot} used Smoke Screen");
+            }
+            return;
+        }
+
+        // Airstrike: 70% chance, target nearest enemy zone center
+        if (inv.HasPowerup(PowerupType.AirstrikeBeacon) && rng.NextDouble() < 0.7)
+        {
+            // Find nearest enemy zone center
+            foreach (var (slot, data) in _players)
+            {
+                if (slot == botSlot || !data.IsAlive) continue;
+                if (data.AssignedBuildZone is BuildZone zone)
+                {
+                    Vector3I target = zone.OriginBuildUnits + zone.SizeBuildUnits / 2;
+                    if (_powerupExecutor.ActivateAirstrike(botData, target, slot))
+                    {
+                        botData.AirstrikesUsedThisRound++;
+                        GD.Print($"[Bot] {botSlot} used Airstrike on {slot}");
+                    }
+                    break;
+                }
+            }
+            return;
         }
     }
 
@@ -5186,6 +5858,31 @@ public partial class GameManager : Node
             // Projectile landed (or timed out) — linger on impact, then advance
             GetTree().CreateTimer(postImpactDelay).Timeout += () =>
             {
+                if (_troopSequenceActive) return; // troop sequence already running
+
+                // If troops are deferred and CinematicFinished won't fire (e.g. spectator
+                // top-down mode skipped the projectile follow cam), start the troop
+                // sequence directly from here instead of waiting for a signal that never comes.
+                if (_deferTurnAdvanceForTroops && _armyManager != null)
+                {
+                    _deferTurnAdvanceForTroops = false;
+
+                    // Skip troop attacks if backup bombardment is imminent
+                    if (!_artilleryDominanceActive && AnyPlayerHasUsableWeapons())
+                    {
+                        PlayerSlot troopPlayer = _troopSequencePlayer;
+                        var aliveP3 = new HashSet<PlayerSlot>();
+                        foreach (var (s, d) in _players) { if (d.IsAlive) aliveP3.Add(s); }
+                        var attackTargets = _armyManager.GetTroopsWithAttackTargets(troopPlayer, _commanders, _weapons, aliveP3);
+                        if (attackTargets.Count > 0)
+                        {
+                            StartTroopAttackSequence(attackTargets, troopPlayer);
+                            return;
+                        }
+                    }
+                    // No targets — fall through to advance turn
+                }
+
                 if (CurrentPhase == GamePhase.Combat && _turnManager?.CurrentPlayer == botSlot)
                 {
                     _turnManager.AdvanceTurn(Settings.TurnTimeSeconds);
@@ -5216,6 +5913,12 @@ public partial class GameManager : Node
         if (CurrentPhase != GamePhase.Combat)
         {
             return;
+        }
+
+        // Re-enforce smoke screen chunk hiding after voxel destruction causes remesh
+        if (payload.AfterData == 0 && payload.BeforeData != 0)
+        {
+            _powerupExecutor?.ReenforceSmokeScreens(_players);
         }
 
         // Only count voxel destruction (solid -> air), not placement or damage
@@ -5527,12 +6230,12 @@ public partial class GameManager : Node
         _camera.ResetToFullArenaBounds();
         _camera.Activate();
 
-        // Position camera high above the arena center, looking nearly straight down.
-        // Height is tuned to show the full map in frame regardless of player count.
-        Vector3 arenaCenter = ComputeArenaMidpoint();
-        float overviewHeight = 70f;
-        Vector3 cameraPos = arenaCenter + new Vector3(0f, overviewHeight, 20f);
-        Vector3 lookTarget = arenaCenter;
+        // Use the true map center (all zones, not just alive) so the camera stays
+        // fixed over the middle of the map and doesn't shift as players die.
+        Vector3 mapCenter = ComputeMapCenter();
+        float overviewHeight = 100f;
+        Vector3 cameraPos = mapCenter + new Vector3(0f, overviewHeight, 25f);
+        Vector3 lookTarget = mapCenter;
 
         _camera.GlobalPosition = cameraPos;
         _camera.TransitionToLookTarget(cameraPos, lookTarget);
@@ -5680,6 +6383,53 @@ public partial class GameManager : Node
 
         if (CurrentPhase == GamePhase.Combat || CurrentPhase == GamePhase.GameOver)
         {
+            // If the current player has troops, show the troop attack cam after a brief delay
+            // so the player can watch the explosion before the camera moves to troops
+            if (_deferTurnAdvanceForTroops && _armyManager != null)
+            {
+                _deferTurnAdvanceForTroops = false;
+
+                // Skip troop attacks if backup bombardment is imminent (all weapons destroyed)
+                if (_artilleryDominanceActive || !AnyPlayerHasUsableWeapons())
+                {
+                    GD.Print($"[TroopSeq] CinematicFinished — skipping troops (backup imminent)");
+                    _turnManager?.AdvanceTurn(Settings.TurnTimeSeconds);
+                    return;
+                }
+
+                PlayerSlot troopPlayer = _troopSequencePlayer;
+                var aliveP4 = new HashSet<PlayerSlot>();
+                foreach (var (s, d) in _players) { if (d.IsAlive) aliveP4.Add(s); }
+                var attackTargets = _armyManager.GetTroopsWithAttackTargets(troopPlayer, _commanders, _weapons, aliveP4);
+                GD.Print($"[TroopSeq] CinematicFinished — player={troopPlayer} attackTargets={attackTargets.Count}");
+                if (attackTargets.Count > 0)
+                {
+                    // Mark troop sequence active IMMEDIATELY so WaitForProjectileThenAdvance
+                    // timers don't race and advance the turn during the 1.2s delay.
+                    _troopSequenceActive = true;
+
+                    // Delay before switching to troop cam so impact lingers
+                    GetTree().CreateTimer(1.2).Timeout += () =>
+                    {
+                        if (CurrentPhase != GamePhase.Combat)
+                        {
+                            _troopSequenceActive = false;
+                            return;
+                        }
+                        StartTroopAttackSequence(attackTargets, troopPlayer);
+                    };
+                    return; // sequence handles camera return + turn advance
+                }
+                // No attack targets — advance turn now and return camera
+                GD.Print("[TroopSeq] No attack targets, advancing turn immediately");
+                _turnManager?.AdvanceTurn(Settings.TurnTimeSeconds);
+            }
+
+            // If a troop sequence is active (started by WaitForProjectileThenAdvance
+            // which won the race against CinematicFinished), don't reposition the camera
+            // — the troop sequence owns camera control until it finishes.
+            if (_troopSequenceActive) return;
+
             // After a cinematic moment, respect the spectator top-down preference
             // so the player stays in their chosen view during bot turns.
             bool isBotTurn = _turnManager?.CurrentPlayer is PlayerSlot current && IsBot(current);
@@ -5690,16 +6440,99 @@ public partial class GameManager : Node
             }
             else
             {
-                // Return to free-fly camera. If it's the human player's turn,
-                // position behind their zone so they don't end up at some random
-                // post-impact location after their projectile cinematic ends.
+                // Return to free-fly camera and position behind the current player's zone.
                 SwitchToFreeFlyCamera();
-                if (_turnManager?.CurrentPlayer is PlayerSlot humanPlayer && !IsBot(humanPlayer))
+                if (_turnManager?.CurrentPlayer is PlayerSlot currentSlot)
                 {
-                    PositionFreeFlyBehindZone(humanPlayer);
+                    PositionFreeFlyBehindZone(currentSlot);
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Plays a cinematic troop attack sequence: camera pans to the troop cluster,
+    /// each troop attacks its target with staggered timing + VFX/SFX, then the
+    /// turn advances and the camera returns to normal.
+    /// </summary>
+    private void StartTroopAttackSequence(List<(TroopEntity Troop, TroopAttackTarget Target)> attacks, PlayerSlot player)
+    {
+        _troopSequenceActive = true;
+        _troopSequencePlayer = player;
+
+        // Deactivate combat camera, use free-fly positioned to watch the troops
+        _combatCamera?.Deactivate();
+        SwitchToFreeFlyCamera();
+
+        // Position camera to see the troop cluster — behind troops looking toward enemy base
+        Vector3 clusterCenter = _armyManager?.GetTroopClusterCenter(player)
+            ?? ComputePlayerFortressCenter(player);
+
+        // Compute average target position (the enemy base/targets the troops are attacking)
+        Vector3 targetCenter = Vector3.Zero;
+        int targetCount = 0;
+        foreach (var (_, target) in attacks)
+        {
+            targetCenter += target.WorldPosition;
+            targetCount++;
+        }
+        if (targetCount > 0) targetCenter /= targetCount;
+        else targetCenter = ComputeArenaMidpoint();
+
+        // Direction from enemy targets toward troops (camera goes behind troops on this line)
+        Vector3 troopToTarget = new Vector3(targetCenter.X - clusterCenter.X, 0f, targetCenter.Z - clusterCenter.Z);
+        if (troopToTarget.LengthSquared() < 0.01f) troopToTarget = Vector3.Forward;
+        troopToTarget = troopToTarget.Normalized();
+        Vector3 sideDir = troopToTarget.Cross(Vector3.Up).Normalized();
+
+        // Place camera BEHIND the troops (opposite side from enemy base), looking through
+        // troops toward the targets — gives an over-the-shoulder dramatic view
+        Vector3 cameraPos = clusterCenter - troopToTarget * 6f + Vector3.Up * 3f + sideDir * 1.5f;
+        Vector3 lookTarget = (clusterCenter + targetCenter) * 0.5f + Vector3.Up * 0.5f;
+        _camera?.TransitionToLookTarget(cameraPos, lookTarget);
+
+        // Stagger each troop's attack with a short delay
+        const float settleTime = 0.5f;
+        const float delayBetween = 0.3f;
+
+        for (int i = 0; i < attacks.Count; i++)
+        {
+            int idx = i;
+            GetTree().CreateTimer(settleTime + delayBetween * i).Timeout += () =>
+            {
+                if (CurrentPhase != GamePhase.Combat) return;
+                var (troop, target) = attacks[idx];
+                if (!GodotObject.IsInstanceValid(troop) || troop.CurrentHP <= 0) return;
+
+                // Execute the attack based on target kind
+                troop.SetAIState(TroopAIState.Attacking);
+                if (_voxelWorld != null)
+                    TroopAI.ExecuteAttack(troop, _voxelWorld, target);
+                troop.PauseForAttack(0.4f);
+
+                // Play SFX at the attack location
+                Vector3 attackWorld = troop.GlobalPosition;
+                AudioDirector.Instance?.PlaySFX("troop_attack", attackWorld);
+            };
+        }
+
+        // After all attacks finish, linger briefly then advance turn and return camera
+        float totalTime = settleTime + delayBetween * attacks.Count + 0.8f;
+        GetTree().CreateTimer(totalTime).Timeout += FinishTroopAttackSequence;
+    }
+
+    private void FinishTroopAttackSequence()
+    {
+        _troopSequenceActive = false;
+
+        if (CurrentPhase != GamePhase.Combat)
+            return;
+
+        // Advance the turn (was deferred for the troop sequence)
+        _turnManager?.AdvanceTurn(Settings.TurnTimeSeconds);
+
+        // Camera positioning is handled by OnTurnChanged (triggered by AdvanceTurn above).
+        // No additional positioning needed here.
     }
 
     private void PositionCameraAtBuildZone(PlayerSlot slot, bool animate = false)
@@ -5802,6 +6635,30 @@ public partial class GameManager : Node
     }
 
     /// <summary>
+    /// Computes the true center of the entire map using ALL build zones (alive or dead).
+    /// Unlike ComputeArenaMidpoint, this never shifts as players die — the camera stays
+    /// fixed over the middle of the arena during bombardment.
+    /// </summary>
+    private Vector3 ComputeMapCenter()
+    {
+        if (_buildZones.Count == 0)
+            return Vector3.Zero;
+
+        Vector3 sum = Vector3.Zero;
+        int count = 0;
+
+        foreach ((PlayerSlot slot, BuildZone zone) in _buildZones)
+        {
+            Vector3I centerBU = zone.OriginBuildUnits + new Vector3I(zone.SizeBuildUnits.X / 2, 0, zone.SizeBuildUnits.Z / 2);
+            Vector3 centerWorld = MathHelpers.MicrovoxelToWorld(MathHelpers.BuildToMicrovoxel(centerBU));
+            sum += centerWorld;
+            count++;
+        }
+
+        return count > 0 ? sum / count : Vector3.Zero;
+    }
+
+    /// <summary>
     /// Computes the world-space center of a specific player's build zone (ground-level XZ center).
     /// Used to center the combat camera on the current player's fortress during turn changes.
     /// Falls back to the arena midpoint if the player has no assigned zone.
@@ -5840,7 +6697,47 @@ public partial class GameManager : Node
             combatUI.PowerupActivateRequested += OnPowerupActivateRequested;
             combatUI.AirstrikeTargetSelected += OnAirstrikeTargetSelected;
             combatUI.TargetCycleRequested += OnTargetCycleRequested;
+            combatUI.TroopMoveRequested += OnTroopMoveToggled;
         }
+    }
+
+    private void OnTroopMoveToggled()
+    {
+        if (_turnManager?.CurrentPlayer is not PlayerSlot currentPlayer || IsBot(currentPlayer)) return;
+        if (!(_armyManager?.HasAliveTroops(currentPlayer) ?? false)) return;
+        if (_troopsMoved) return; // already moved this turn
+
+        // Cancel weapon targeting state if active — deactivate CombatCamera so it
+        // stops consuming left-clicks, and switch to FreeFly without repositioning
+        if (_isAiming || _weaponConfirmed || (_combatCamera != null && _combatCamera.IsInTargeting))
+        {
+            _isAiming = false;
+            _hasTarget = false;
+            _weaponConfirmed = false;
+            _aimingSystem?.ClearTarget();
+            _combatCamera?.ExitWeaponPOV();
+            _combatCamera?.Deactivate(); // stop CombatCamera from consuming clicks
+            if (_camera != null) _camera.Activate(); // activate FreeFly at current position (no reset)
+            Input.MouseMode = Input.MouseModeEnum.Visible;
+            HideTargetHighlight();
+            ClearAllWeaponHighlights();
+            CombatUI? cancelUI = GetNodeOrNull<CombatUI>("%CombatUI")
+                ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
+            cancelUI?.HideTargetSelector();
+            cancelUI?.ResetPromptText();
+        }
+
+        _troopMoveMode = !_troopMoveMode;
+        GD.Print($"[Combat] Troop move mode: {(_troopMoveMode ? "ON" : "OFF")}");
+
+        CombatUI? ui = GetNodeOrNull<CombatUI>("%CombatUI")
+            ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
+        ui?.SetTroopsModeActive(_troopMoveMode);
+
+        if (_troopMoveMode)
+            ui?.ShowTroopMovePrompt();
+        else
+            ui?.HideSelectWeaponPrompt();
     }
 
     private void SubscribeToBuildUI()
@@ -5868,7 +6765,7 @@ public partial class GameManager : Node
             buildUI.BlueprintSelected += OnBlueprintSelected;
             buildUI.ReadyPressed += OnReadyPressed;
             buildUI.SymmetryChanged += (mode) => { if (_buildSystem != null) _buildSystem.SymmetryMode = mode; };
-            buildUI.UndoRequested += () => _buildSystem?.UndoLast(_activeBuilder);
+            buildUI.UndoRequested += () => UndoLastBuildAction();
             buildUI.RedoRequested += () => _buildSystem?.RedoLast(_activeBuilder);
             GD.Print("[GameManager] BuildUI subscribed successfully.");
         }
@@ -6370,11 +7267,11 @@ public partial class GameManager : Node
 
         if (_armyManager.TrySellTroop(_activeBuilder, type, player))
         {
+            // Remove marker first to get its position for undo cancellation
+            Vector3I markerPos = RemoveLastTroopMarker(type);
+            CancelUndoEntry(UndoType.Troop, position: markerPos);
             TroopStats stats = TroopDefinitions.Get(type);
             GD.Print($"[Army] {_activeBuilder}: Sold {stats.Name} for ${stats.Cost} refund. Budget: ${player.Budget}.");
-
-            // Remove the last placed troop marker of this type
-            RemoveLastTroopMarker(type);
 
             UpdateBuildUITroopCounts();
 
@@ -6383,19 +7280,147 @@ public partial class GameManager : Node
         }
     }
 
-    private void RemoveLastTroopMarker(TroopType type)
+    /// <summary>
+    /// Removes the last placed troop marker of the given type and returns its encoded position
+    /// (for undo cancellation). Returns default if no marker found.
+    /// </summary>
+    private Vector3I RemoveLastTroopMarker(TroopType type)
     {
+        string typeTag = $"_{type}_";
         string prefix = $"TroopMarker_{_activeBuilder}_";
-        // Find and remove the last matching troop marker
         Node? lastMarker = null;
         foreach (Node child in GetChildren())
         {
-            if (child.Name.ToString().StartsWith(prefix) && child.IsInGroup("TroopMarkers"))
+            string name = child.Name.ToString();
+            if (name.StartsWith(prefix) && name.Contains(typeTag) && child.IsInGroup("TroopMarkers"))
             {
                 lastMarker = child;
             }
         }
-        lastMarker?.QueueFree();
+        Vector3I pos = default;
+        if (lastMarker != null)
+        {
+            pos = ParseTroopMarkerPosition(lastMarker.Name.ToString());
+            lastMarker.QueueFree();
+        }
+        return pos;
+    }
+
+    /// <summary>
+    /// Extracts the Vector3I position from a marker name like "TroopMarker_Player1_Infantry_(10, 0, 5)".
+    /// </summary>
+    private static Vector3I ParseTroopMarkerPosition(string markerName)
+    {
+        // Position is the last segment after the type: "TroopMarker_{player}_{type}_{pos}"
+        // The pos part looks like "(10, 0, 5)" from Vector3I.ToString()
+        int lastUnderscore = markerName.LastIndexOf('_');
+        if (lastUnderscore < 0) return default;
+        string posPart = markerName[(lastUnderscore + 1)..];
+        // Parse "(X, Y, Z)" format
+        posPart = posPart.Trim('(', ')');
+        string[] parts = posPart.Split(',');
+        if (parts.Length == 3 &&
+            int.TryParse(parts[0].Trim(), out int x) &&
+            int.TryParse(parts[1].Trim(), out int y) &&
+            int.TryParse(parts[2].Trim(), out int z))
+        {
+            return new Vector3I(x, y, z);
+        }
+        return default;
+    }
+
+    /// <summary>
+    /// Unified undo: pops the most recent build action (voxel, weapon, troop, or door)
+    /// and reverses it, refunding costs as appropriate.
+    /// </summary>
+    private void UndoLastBuildAction()
+    {
+        // Skip cancelled entries (items already deleted via right-click/sell)
+        while (_buildUndoStack.Count > 0)
+        {
+            BuildUndoEntry entry = _buildUndoStack.Pop();
+            if (entry.Cancelled) continue;
+
+            switch (entry.Type)
+            {
+                case UndoType.Voxel:
+                    _buildSystem?.UndoLast(_activeBuilder);
+                    return;
+                case UndoType.Weapon:
+                    UndoWeaponPlacement(entry);
+                    return;
+                case UndoType.Troop:
+                    UndoTroopPlacement(entry);
+                    return;
+                case UndoType.Door:
+                    UndoDoorPlacement(entry);
+                    return;
+            }
+        }
+    }
+
+    private void UndoWeaponPlacement(BuildUndoEntry entry)
+    {
+        if (entry.Weapon == null || !GodotObject.IsInstanceValid(entry.Weapon)) return;
+        if (!_players.TryGetValue(_activeBuilder, out PlayerData? player)) return;
+        if (!_weapons.TryGetValue(_activeBuilder, out var weaponList)) return;
+
+        weaponList.Remove(entry.Weapon);
+        player.WeaponIds.Remove(entry.Weapon.WeaponId);
+        player.Refund(entry.Cost);
+        entry.Weapon.QueueFree();
+        EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(_activeBuilder, player.Budget, entry.Cost));
+        AudioDirector.Instance?.PlaySFX("ui_click");
+        GD.Print($"[Build] Undo: removed {entry.WeaponKind}, refund ${entry.Cost}.");
+    }
+
+    private void UndoTroopPlacement(BuildUndoEntry entry)
+    {
+        if (_armyManager == null) return;
+        if (!_players.TryGetValue(_activeBuilder, out PlayerData? player)) return;
+
+        if (_armyManager.TrySellTroop(_activeBuilder, entry.TroopKind, player))
+        {
+            RemoveLastTroopMarker(entry.TroopKind);
+            UpdateBuildUITroopCounts();
+            EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(_activeBuilder, player.Budget, entry.Cost));
+            AudioDirector.Instance?.PlaySFX("ui_click");
+            GD.Print($"[Build] Undo: removed {entry.TroopKind}, refund ${entry.Cost}.");
+        }
+    }
+
+    private void UndoDoorPlacement(BuildUndoEntry entry)
+    {
+        if (_armyManager == null) return;
+        _armyManager.Doors.RemoveDoor(entry.Position, _activeBuilder);
+        AudioDirector.Instance?.PlaySFX("ui_click");
+        GD.Print($"[Build] Undo: removed door at {entry.Position}.");
+    }
+
+    /// <summary>
+    /// Marks undo entries as cancelled when an item is manually deleted (right-click/sell).
+    /// This prevents Ctrl+Z from "skipping" the next real action.
+    /// </summary>
+    private void CancelUndoEntry(UndoType type, WeaponBase? weapon = null, Vector3I position = default)
+    {
+        foreach (BuildUndoEntry entry in _buildUndoStack)
+        {
+            if (entry.Cancelled) continue;
+            if (entry.Type != type) continue;
+
+            bool match = type switch
+            {
+                UndoType.Weapon => entry.Weapon == weapon,
+                UndoType.Door => entry.Position == position,
+                UndoType.Troop => entry.Position == position,
+                _ => false,
+            };
+            if (match)
+            {
+                entry.Cancelled = true;
+                return;
+            }
+        }
     }
 
     private void OnWeaponSellRequested(WeaponType type)
@@ -6455,6 +7480,8 @@ public partial class GameManager : Node
             return;
         }
 
+        CancelUndoEntry(UndoType.Weapon, weapon: target);
+
         // Refund the cost
         int refund = GetWeaponCost(type);
         player.Refund(refund);
@@ -6500,6 +7527,7 @@ public partial class GameManager : Node
         {
             case PowerupType.SmokeScreen:
                 success = _powerupExecutor.ActivateSmokeScreen(player, alivePlayerCount);
+                if (success) _powerupExecutor.ReenforceSmokeScreens(_players);
                 break;
 
             case PowerupType.Medkit:
@@ -6637,12 +7665,32 @@ public partial class GameManager : Node
     {
         EventBus.Instance?.EmitPowerupActivated(new PowerupActivatedEvent(type, slot, position));
         GD.Print($"[GameManager] Powerup {type} activated by {slot} at {position}");
+
+        // Smoke screen: hide this player's weapons so the fortress looks fully invisible
+        if (type == PowerupType.SmokeScreen)
+            SetWeaponsVisible(slot, false);
     }
 
     private void OnPowerupExpired(PowerupType type, PlayerSlot slot)
     {
         EventBus.Instance?.EmitPowerupExpired(new PowerupExpiredEvent(type, slot));
         GD.Print($"[GameManager] Powerup {type} expired for {slot}");
+
+        // Smoke screen cleared: show weapons again
+        if (type == PowerupType.SmokeScreen)
+            SetWeaponsVisible(slot, true);
+    }
+
+    private void SetWeaponsVisible(PlayerSlot slot, bool visible)
+    {
+        if (_weapons.TryGetValue(slot, out var weaponList))
+        {
+            foreach (var weapon in weaponList)
+            {
+                if (weapon != null && IsInstanceValid(weapon))
+                    weapon.Visible = visible;
+            }
+        }
     }
 
     private T CreateNode<T>(string name)

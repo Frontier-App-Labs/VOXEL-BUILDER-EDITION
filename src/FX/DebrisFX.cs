@@ -106,6 +106,7 @@ public partial class DebrisFX : Node3D
         public int Count;
         public VoxelMaterialType Material;
         public float VoxelScale; // 0 = use default MicrovoxelMeters
+        public Color? EmissionColor; // non-null = enable emission with this color
     }
 
     // ── Shared physics materials ────────────────────────────────────────
@@ -239,6 +240,17 @@ public partial class DebrisFX : Node3D
         Core.AudioDirector.Instance?.PlaySFX("debris_impact", position);
     }
 
+    /// <summary>
+    /// Spawns debris with emission enabled (used for blood so red pops through tonemapping).
+    /// </summary>
+    public static void SpawnDebrisWithEmission(Node parent, Vector3 position, Color materialColor, Vector3 explosionCenter, int count, VoxelMaterialType material, float voxelScale, Color emissionColor)
+    {
+        DebrisFX manager = GetOrCreateManager(parent);
+        manager.EnqueueSpawn(position, materialColor, explosionCenter, count, material, voxelScale, emissionColor);
+
+        Core.AudioDirector.Instance?.PlaySFX("debris_impact", position);
+    }
+
     // ── Manager singleton ───────────────────────────────────────────────
 
     private static DebrisFX GetOrCreateManager(Node parent)
@@ -352,7 +364,7 @@ public partial class DebrisFX : Node3D
     /// are set so the BoxMesh's 0-1 UVs map to the correct atlas tile, keeping textures
     /// on flying debris pieces.
     /// </summary>
-    private StandardMaterial3D CreateDebrisMaterial(DebrisShape shape, Color color, VoxelMaterialType voxelMat = VoxelMaterialType.Stone)
+    private StandardMaterial3D CreateDebrisMaterial(DebrisShape shape, Color color, VoxelMaterialType voxelMat = VoxelMaterialType.Stone, Color? emissionColor = null)
     {
         StandardMaterial3D mat = new StandardMaterial3D();
         mat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Nearest;
@@ -381,7 +393,8 @@ public partial class DebrisFX : Node3D
         }
 
         // Apply atlas texture if available so debris keeps its voxel texture
-        if (_cachedAtlas != null && _cachedAtlas.HasGeneratedTextures && _cachedAtlas.AtlasTexture != null)
+        // Skip atlas for emission debris (blood) — pure albedo color keeps reds vivid
+        if (emissionColor == null && _cachedAtlas != null && _cachedAtlas.HasGeneratedTextures && _cachedAtlas.AtlasTexture != null)
         {
             mat.AlbedoTexture = _cachedAtlas.AtlasTexture;
             Rect2 uvRect = _cachedAtlas.GetUvRect(voxelMat, VoxelFaceDirection.Front);
@@ -425,6 +438,14 @@ public partial class DebrisFX : Node3D
                 break;
         }
 
+        // Apply emission if requested (used for blood debris so red pops through tonemapping)
+        if (emissionColor.HasValue)
+        {
+            mat.EmissionEnabled = true;
+            mat.Emission = emissionColor.Value;
+            mat.EmissionEnergyMultiplier = 0.6f;
+        }
+
         return mat;
     }
 
@@ -455,7 +476,7 @@ public partial class DebrisFX : Node3D
 
     // ── Spawn queuing ───────────────────────────────────────────────────
 
-    private void EnqueueSpawn(Vector3 position, Color color, Vector3 explosionCenter, int count, VoxelMaterialType material, float voxelScale = 0f)
+    private void EnqueueSpawn(Vector3 position, Color color, Vector3 explosionCenter, int count, VoxelMaterialType material, float voxelScale = 0f, Color? emissionColor = null)
     {
         _spawnQueue.Enqueue(new QueuedSpawn
         {
@@ -464,11 +485,12 @@ public partial class DebrisFX : Node3D
             ExplosionCenter = explosionCenter,
             Count = count,
             Material = material,
-            VoxelScale = voxelScale
+            VoxelScale = voxelScale,
+            EmissionColor = emissionColor
         });
     }
 
-    private void SpawnDebrisInternal(Vector3 position, Color materialColor, Vector3 explosionCenter, int count, VoxelMaterialType material, float voxelScale = 0f)
+    private void SpawnDebrisInternal(Vector3 position, Color materialColor, Vector3 explosionCenter, int count, VoxelMaterialType material, float voxelScale = 0f, Color? emissionColor = null)
     {
         Vector3 outwardDir = (position - explosionCenter).Normalized();
         if (outwardDir.LengthSquared() < 0.01f)
@@ -499,7 +521,8 @@ public partial class DebrisFX : Node3D
                         ExplosionCenter = explosionCenter,
                         Count = count - i,
                         Material = material,
-                        VoxelScale = voxelScale
+                        VoxelScale = voxelScale,
+                        EmissionColor = emissionColor
                     });
                 }
                 return;
@@ -551,7 +574,7 @@ public partial class DebrisFX : Node3D
             {
                 // Scale mass proportionally to debris volume (cube of size ratio)
                 float scaledMass = mass * sizeRatio * sizeRatio * sizeRatio;
-                DebrisEntry entry = AcquireDebris(materialColor, shape, debrisSize, gravityScale, scaledMass, material);
+                DebrisEntry entry = AcquireDebris(materialColor, shape, debrisSize, gravityScale, scaledMass, material, emissionColor);
                 entry.SpawnTime = now;
                 entry.Lifetime = lifetime;
                 entry.IsSettled = false;
@@ -578,7 +601,7 @@ public partial class DebrisFX : Node3D
                     _activeVisual.RemoveAt(0);
                 }
 
-                VisualDebrisEntry vEntry = AcquireVisualDebris(materialColor, shape, debrisSize, material);
+                VisualDebrisEntry vEntry = AcquireVisualDebris(materialColor, shape, debrisSize, material, emissionColor);
                 vEntry.SpawnTime = now;
                 vEntry.Lifetime = lifetime;
                 vEntry.Velocity = impulse * 0.8f;
@@ -610,7 +633,7 @@ public partial class DebrisFX : Node3D
         while (_spawnQueue.Count > 0 && _spawnsThisFrame < MaxSpawnsPerFrame)
         {
             QueuedSpawn queued = _spawnQueue.Dequeue();
-            SpawnDebrisInternal(queued.Position, queued.Color, queued.ExplosionCenter, queued.Count, queued.Material, queued.VoxelScale);
+            SpawnDebrisInternal(queued.Position, queued.Color, queued.ExplosionCenter, queued.Count, queued.Material, queued.VoxelScale, queued.EmissionColor);
         }
 
         // Update physics debris
@@ -936,7 +959,7 @@ public partial class DebrisFX : Node3D
         _visualPool.Enqueue(ruin.Root);
     }
 
-    private DebrisEntry AcquireDebris(Color color, DebrisShape shape, Vector3 size, float gravityScale, float mass, VoxelMaterialType voxelMat = VoxelMaterialType.Stone)
+    private DebrisEntry AcquireDebris(Color color, DebrisShape shape, Vector3 size, float gravityScale, float mass, VoxelMaterialType voxelMat = VoxelMaterialType.Stone, Color? emissionColor = null)
     {
         DebrisEntry entry;
 
@@ -950,7 +973,7 @@ public partial class DebrisFX : Node3D
             boxMesh.Size = size;
             mesh.Mesh = boxMesh;
 
-            StandardMaterial3D mat = CreateDebrisMaterial(shape, color, voxelMat);
+            StandardMaterial3D mat = CreateDebrisMaterial(shape, color, voxelMat, emissionColor);
             mesh.SetSurfaceOverrideMaterial(0, mat);
 
             // Update physics properties for this material type
@@ -983,7 +1006,7 @@ public partial class DebrisFX : Node3D
             DebrisEntry oldest = _active[0];
             _active.RemoveAt(0);
             ReturnDebris(oldest);
-            return AcquireDebris(color, shape, size, gravityScale, mass);
+            return AcquireDebris(color, shape, size, gravityScale, mass, voxelMat, emissionColor);
         }
 
         RigidBody3D rb = new RigidBody3D();
@@ -1006,7 +1029,7 @@ public partial class DebrisFX : Node3D
         newBoxMesh.Size = size;
         meshInst.Mesh = newBoxMesh;
 
-        StandardMaterial3D material = CreateDebrisMaterial(shape, color, voxelMat);
+        StandardMaterial3D material = CreateDebrisMaterial(shape, color, voxelMat, emissionColor);
         meshInst.SetSurfaceOverrideMaterial(0, material);
         rb.AddChild(meshInst);
 
@@ -1026,7 +1049,7 @@ public partial class DebrisFX : Node3D
         return entry;
     }
 
-    private VisualDebrisEntry AcquireVisualDebris(Color color, DebrisShape shape, Vector3 size, VoxelMaterialType voxelMat = VoxelMaterialType.Stone)
+    private VisualDebrisEntry AcquireVisualDebris(Color color, DebrisShape shape, Vector3 size, VoxelMaterialType voxelMat = VoxelMaterialType.Stone, Color? emissionColor = null)
     {
         VisualDebrisEntry entry;
 
@@ -1039,7 +1062,7 @@ public partial class DebrisFX : Node3D
             boxMesh.Size = size;
             mesh.Mesh = boxMesh;
 
-            StandardMaterial3D mat = CreateDebrisMaterial(shape, color, voxelMat);
+            StandardMaterial3D mat = CreateDebrisMaterial(shape, color, voxelMat, emissionColor);
             mesh.SetSurfaceOverrideMaterial(0, mat);
 
             entry.Root = root;
@@ -1059,7 +1082,7 @@ public partial class DebrisFX : Node3D
             VisualDebrisEntry oldest = _activeVisual[0];
             _activeVisual.RemoveAt(0);
             ReturnVisualDebris(oldest);
-            return AcquireVisualDebris(color, shape, size);
+            return AcquireVisualDebris(color, shape, size, voxelMat, emissionColor);
         }
 
         Node3D node = new Node3D();
@@ -1069,7 +1092,7 @@ public partial class DebrisFX : Node3D
         newBoxMesh.Size = size;
         meshInst.Mesh = newBoxMesh;
 
-        StandardMaterial3D material = CreateDebrisMaterial(shape, color, voxelMat);
+        StandardMaterial3D material = CreateDebrisMaterial(shape, color, voxelMat, emissionColor);
         meshInst.SetSurfaceOverrideMaterial(0, material);
         node.AddChild(meshInst);
 

@@ -156,6 +156,14 @@ public sealed class PowerupInventory
     }
 
     /// <summary>
+    /// Adds a powerup for free (no cost). Used to seed bot inventories.
+    /// </summary>
+    public void AddFree(PowerupType type)
+    {
+        _owned.Add(type);
+    }
+
+    /// <summary>
     /// Clears all owned and active powerups (for match reset).
     /// </summary>
     public void Clear()

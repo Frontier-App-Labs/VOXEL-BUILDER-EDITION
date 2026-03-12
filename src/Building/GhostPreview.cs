@@ -33,14 +33,14 @@ public partial class GhostPreview : Node3D
 
         // Green semi-transparent for valid placement
         _validMaterial = new StandardMaterial3D();
-        _validMaterial.AlbedoColor = new Color(0.2f, 0.9f, 0.2f, 0.45f);
+        _validMaterial.AlbedoColor = new Color(0.2f, 0.9f, 0.2f, 0.6f);
         _validMaterial.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
         _validMaterial.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
         _validMaterial.NoDepthTest = true;
 
         // Red semi-transparent for invalid placement
         _invalidMaterial = new StandardMaterial3D();
-        _invalidMaterial.AlbedoColor = new Color(0.9f, 0.2f, 0.2f, 0.45f);
+        _invalidMaterial.AlbedoColor = new Color(0.9f, 0.2f, 0.2f, 0.6f);
         _invalidMaterial.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
         _invalidMaterial.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
         _invalidMaterial.NoDepthTest = true;
