@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Godot;
 using VoxelSiege.Core;
 using VoxelSiege.FX;
@@ -52,6 +53,7 @@ public partial class Railgun : WeaponBase
         Vector3 endPoint = start;
         int penetrationCount = 0;
         bool wasInsideSolid = false;
+        List<Vector3I> destroyedPositions = new();
 
         // Walk the ray step by step, penetrating up to MaxPenetrationDepth solid blocks
         for (int step = 1; step <= MaxRangeMicrovoxels; step++)
@@ -96,6 +98,7 @@ public partial class Railgun : WeaponBase
                 // Spawn debris flying outward from destroyed voxels
                 if (destroyed)
                 {
+                    destroyedPositions.Add(micro);
                     Color debrisColor = VoxelMaterials.GetPreviewColor(voxel.Material);
                     DebrisFX.SpawnDebris(GetTree().Root, point, debrisColor, point - direction * 0.5f, 2, voxel.Material);
                 }
@@ -118,6 +121,44 @@ public partial class Railgun : WeaponBase
                 wasInsideSolid = false;
                 endPoint = point;
             }
+        }
+
+        // Structural disconnection check — detect and collapse unsupported voxels
+        // (trees, overhangs, etc.) after the railgun punches through supports.
+        if (destroyedPositions.Count > 0)
+        {
+            // Build search bounds around all destroyed positions
+            Vector3I min = destroyedPositions[0];
+            Vector3I max = destroyedPositions[0];
+            foreach (Vector3I pos in destroyedPositions)
+            {
+                min = new Vector3I(Mathf.Min(min.X, pos.X), Mathf.Min(min.Y, pos.Y), Mathf.Min(min.Z, pos.Z));
+                max = new Vector3I(Mathf.Max(max.X, pos.X), Mathf.Max(max.Y, pos.Y), Mathf.Max(max.Z, pos.Z));
+            }
+            float mvM = GameConfig.MicrovoxelMeters;
+            float horizontalPad = 10f; // 10m search radius around beam path
+            float maxBuildHeight = 30f;
+            Vector3 boundsMin = new Vector3(min.X * mvM - horizontalPad, 0f, min.Z * mvM - horizontalPad);
+            Vector3 boundsMax = new Vector3((max.X + 1) * mvM + horizontalPad, maxBuildHeight, (max.Z + 1) * mvM + horizontalPad);
+            Aabb searchBounds = new Aabb(boundsMin, boundsMax - boundsMin);
+            List<Vector3I> disconnected = world.FindDisconnectedVoxels(searchBounds);
+
+            if (disconnected.Count > 0)
+            {
+                Vector3 center = (start + endPoint) * 0.5f;
+                List<List<Vector3I>> components = FallingChunk.GroupConnectedComponents(
+                    new HashSet<Vector3I>(disconnected), world);
+                foreach (List<Vector3I> component in components)
+                {
+                    FallingChunk.Create(component, world, center);
+                }
+            }
+
+            world.ReturnList(disconnected);
+            FallingChunk.UnfreezeUnsupportedRuins(world);
+
+            // Remove grass above destroyed voxels
+            TerrainDecorator.RemoveGrassInRadius((start + endPoint) * 0.5f, start.DistanceTo(endPoint) * 0.5f + 1f);
         }
 
         // Damage commanders along the beam path

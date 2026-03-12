@@ -464,19 +464,20 @@ public static class TroopModelGenerator
                     upperArm[x, y, z] = uniform;
 
         // Left forearm with grenade in hand
+        // z=0 is front-facing (grenade held on top/front of hand), z=1,2 are arm/hand
         Color?[,,] leftForearm = new Color?[2, 2, 3];
         for (int x = 0; x < 2; x++)
-            for (int z = 0; z < 2; z++)
+            for (int z = 1; z < 3; z++)
             {
                 leftForearm[x, 1, z] = uniform;
                 leftForearm[x, 0, z] = Skin;
             }
-        // Grenade (olive green sphere at z=2, hand level)
+        // Grenade (olive green at z=0, front/top of hand — visible to player)
         Color grenadeOlive = new Color(0.30f, 0.35f, 0.15f);
-        leftForearm[0, 0, 2] = grenadeOlive;
-        leftForearm[1, 0, 2] = grenadeOlive;
-        leftForearm[0, 1, 2] = grenadeOlive;
-        leftForearm[1, 1, 2] = new Color(0.45f, 0.40f, 0.18f); // grenade top/pin
+        leftForearm[0, 0, 0] = grenadeOlive;
+        leftForearm[1, 0, 0] = grenadeOlive;
+        leftForearm[0, 1, 0] = grenadeOlive;
+        leftForearm[1, 1, 0] = new Color(0.45f, 0.40f, 0.18f); // grenade top/pin
 
         // Right forearm (normal)
         Color?[,,] rightForearm = new Color?[2, 2, 2];

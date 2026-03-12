@@ -279,15 +279,15 @@ public partial class VoxelAnimator : Node
             float kick = Mathf.Sin(p * Mathf.Pi); // spike up then back down
             shoulderX = Deg(75) + kick * Deg(25); // arm kicks up from recoil
             elbowX = kick * Deg(12); // elbow flexes from recoil
-            spineX = Deg(3) + kick * Deg(6); // spine rocks backward
+            spineX = Deg(3) - kick * Deg(6); // spine rocks backward (less forward lean)
         }
         else if (t < 0.50f)
         {
-            // Recoil settle — arm drifts back to aim from overshoot
+            // Recoil settle — spine recovers from backward lean, arm from overshoot
             float p = (t - 0.35f) / 0.15f;
             shoulderX = Mathf.Lerp(Deg(75) + Deg(8), Deg(75), p); // settling from overshoot
             elbowX = Mathf.Lerp(Deg(5), Deg(0), p);
-            spineX = Mathf.Lerp(Deg(5), Deg(3), p);
+            spineX = Mathf.Lerp(Deg(1), Deg(3), p); // recovering from backward lean
         }
         else
         {

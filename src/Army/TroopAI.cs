@@ -129,9 +129,9 @@ public static class TroopAI
     {
         TroopStats stats = TroopDefinitions.Get(troop.Type);
         float rangeMeters = stats.AttackRange * GameConfig.MicrovoxelMeters;
-        Vector3 troopPos = troop.GlobalPosition;
+        Vector3 troopPos = troop.GlobalPosition + Vector3.Up * 0.2f; // eye height
 
-        // Priority 1: Enemy troops within attack range
+        // Priority 1: Enemy troops within attack range + LOS
         if (allTroops != null)
         {
             TroopEntity? closestTroop = null;
@@ -143,7 +143,7 @@ public static class TroopAI
                 {
                     if (!GodotObject.IsInstanceValid(enemy) || enemy.CurrentHP <= 0) continue;
                     float dist = troopPos.DistanceTo(enemy.GlobalPosition);
-                    if (dist <= rangeMeters && dist < closestDist)
+                    if (dist <= rangeMeters && dist < closestDist && HasLineOfSight(world, troopPos, enemy.GlobalPosition, dist))
                     {
                         closestDist = dist;
                         closestTroop = enemy;
@@ -157,7 +157,7 @@ public static class TroopAI
             }
         }
 
-        // Priority 2: Enemy commander within attack range
+        // Priority 2: Enemy commander within attack range + LOS
         if (commanders != null)
         {
             CommanderActor? closestCmd = null;
@@ -168,7 +168,7 @@ public static class TroopAI
                 if (alivePlayers != null && !alivePlayers.Contains(player)) continue;
                 if (!GodotObject.IsInstanceValid(cmd) || cmd.IsDead) continue;
                 float dist = troopPos.DistanceTo(cmd.GlobalPosition);
-                if (dist <= rangeMeters && dist < closestDist)
+                if (dist <= rangeMeters && dist < closestDist && HasLineOfSight(world, troopPos, cmd.GlobalPosition, dist))
                 {
                     closestDist = dist;
                     closestCmd = cmd;
@@ -181,7 +181,7 @@ public static class TroopAI
             }
         }
 
-        // Priority 3: Enemy weapons within attack range
+        // Priority 3: Enemy weapons within attack range + LOS
         if (weapons != null)
         {
             WeaponBase? closestWpn = null;
@@ -194,7 +194,7 @@ public static class TroopAI
                 {
                     if (wpn == null || !GodotObject.IsInstanceValid(wpn) || wpn.IsDestroyed) continue;
                     float dist = troopPos.DistanceTo(wpn.GlobalPosition);
-                    if (dist <= rangeMeters && dist < closestDist)
+                    if (dist <= rangeMeters && dist < closestDist && HasLineOfSight(world, troopPos, wpn.GlobalPosition, dist))
                     {
                         closestDist = dist;
                         closestWpn = wpn;
@@ -380,5 +380,18 @@ public static class TroopAI
         int spreadX = (troopIndex % 3) - 1; // -1, 0, 1
         int spreadZ = (troopIndex / 3) - 1;
         return bestCenter + new Vector3I(spreadX * 2, 0, spreadZ * 2);
+    }
+
+    /// <summary>
+    /// Checks if there is a clear line of sight between two world positions.
+    /// Uses voxel DDA raycast — returns false if any solid voxel blocks the path.
+    /// </summary>
+    private static bool HasLineOfSight(VoxelWorld world, Vector3 from, Vector3 to, float distance)
+    {
+        Vector3 dir = (to - from).Normalized();
+        // Raycast the full distance minus a small margin so we don't hit the target's own voxel
+        float checkDist = distance - GameConfig.MicrovoxelMeters * 1.5f;
+        if (checkDist <= 0f) return true; // point-blank range, always visible
+        return !world.RaycastVoxel(from, dir, checkDist, out _, out _);
     }
 }
