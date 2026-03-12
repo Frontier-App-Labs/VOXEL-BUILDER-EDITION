@@ -487,7 +487,7 @@ public partial class TroopEntity : Node3D
     }
 
     /// <summary>Faces the model toward a world position.</summary>
-    private void FaceTarget(Vector3 targetWorld)
+    public void FaceTarget(Vector3 targetWorld)
     {
         if (_modelRoot != null)
         {

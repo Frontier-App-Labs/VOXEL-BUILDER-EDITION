@@ -6267,9 +6267,10 @@ public partial class GameManager : Node
 
         // Use the true map center (all zones, not just alive) so the camera stays
         // fixed over the middle of the map and doesn't shift as players die.
+        // Straight top-down view showing the entire map — no Z offset.
         Vector3 mapCenter = ComputeMapCenter();
-        float overviewHeight = 100f;
-        Vector3 cameraPos = mapCenter + new Vector3(0f, overviewHeight, 25f);
+        float overviewHeight = 150f;
+        Vector3 cameraPos = mapCenter + new Vector3(0f, overviewHeight, 0.1f); // tiny Z to avoid gimbal lock
         Vector3 lookTarget = mapCenter;
 
         _camera.GlobalPosition = cameraPos;
@@ -6539,10 +6540,34 @@ public partial class GameManager : Node
                 var (troop, target) = attacks[idx];
                 if (!GodotObject.IsInstanceValid(troop) || troop.CurrentHP <= 0) return;
 
-                // Execute the attack based on target kind
+                // Re-find target if the original was destroyed by an earlier troop in sequence
+                var liveTarget = target;
+                if (_voxelWorld != null && _armyManager != null)
+                {
+                    bool targetStale = target.Kind switch
+                    {
+                        Army.TroopTargetKind.EnemyTroop => target.EnemyTroop == null || !IsInstanceValid(target.EnemyTroop) || target.EnemyTroop.CurrentHP <= 0,
+                        Army.TroopTargetKind.Commander => target.EnemyCommander == null || !IsInstanceValid(target.EnemyCommander) || target.EnemyCommander.IsDead,
+                        Army.TroopTargetKind.Weapon => target.EnemyWeapon == null || !IsInstanceValid(target.EnemyWeapon) || target.EnemyWeapon.IsDestroyed,
+                        Army.TroopTargetKind.Voxel => !_voxelWorld.GetVoxel(target.VoxelPos).IsSolid,
+                        _ => false
+                    };
+                    if (targetStale)
+                    {
+                        var aliveNow = new HashSet<PlayerSlot>();
+                        foreach (var (s, d) in _players) { if (d.IsAlive) aliveNow.Add(s); }
+                        var fresh = Army.TroopAI.FindBestTarget(troop, _voxelWorld, _buildZones,
+                            _armyManager.GetDeployedTroops(), _commanders, _weapons, aliveNow);
+                        if (fresh.HasValue) liveTarget = fresh.Value;
+                        else return; // truly nothing to attack
+                    }
+                }
+
+                // Execute the attack
+                troop.FaceTarget(liveTarget.WorldPosition);
                 troop.SetAIState(TroopAIState.Attacking);
                 if (_voxelWorld != null)
-                    TroopAI.ExecuteAttack(troop, _voxelWorld, target);
+                    Army.TroopAI.ExecuteAttack(troop, _voxelWorld, liveTarget);
                 troop.PauseForAttack(0.4f);
 
                 // Play SFX at the attack location

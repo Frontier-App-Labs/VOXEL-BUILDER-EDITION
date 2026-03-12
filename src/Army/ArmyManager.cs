@@ -454,6 +454,9 @@ public partial class ArmyManager : Node
         return troops;
     }
 
+    /// <summary>Returns the full deployed troops dictionary (all players).</summary>
+    public Dictionary<PlayerSlot, List<TroopEntity>> GetDeployedTroops() => _deployedTroops;
+
     /// <summary>Returns true if the player has at least one alive deployed troop.</summary>
     public bool HasAliveTroops(PlayerSlot player)
     {

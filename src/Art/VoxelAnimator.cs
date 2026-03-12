@@ -252,51 +252,52 @@ public partial class VoxelAnimator : Node
 
     private void AnimateShoot(float dt)
     {
-        float t = Mathf.Min(_stateTime / 0.5f, 1f); // 0.5s total
+        float t = Mathf.Min(_stateTime / 0.6f, 1f); // 0.6s total
 
         float shoulderX;
         float elbowX;
         float spineX;
-        if (t < 0.15f)
+        if (t < 0.12f)
         {
-            // Raise arm to aiming pose (forward)
-            float p = t / 0.15f;
-            shoulderX = Mathf.Lerp(0, Deg(75), p);
+            // Quick aim — snap arm up to firing pose
+            float p = t / 0.12f;
+            shoulderX = Mathf.Lerp(0, Deg(80), p);
             elbowX = Mathf.Lerp(Deg(10), Deg(0), p);
-            spineX = Mathf.Lerp(0, Deg(3), p);
+            spineX = Mathf.Lerp(0, Deg(5), p);
         }
-        else if (t < 0.25f)
+        else if (t < 0.18f)
         {
             // Brief hold on target before firing
-            shoulderX = Deg(75);
+            shoulderX = Deg(80);
             elbowX = Deg(0);
-            spineX = Deg(3);
+            spineX = Deg(5);
         }
-        else if (t < 0.35f)
+        else if (t < 0.28f)
         {
-            // FIRE — sharp recoil kick: barrel kicks UP, spine rocks BACK
-            float p = (t - 0.25f) / 0.1f; // fast 0→1 over 10% of anim
-            float kick = Mathf.Sin(p * Mathf.Pi); // spike up then back down
-            shoulderX = Deg(75) + kick * Deg(25); // arm kicks up from recoil
-            elbowX = kick * Deg(12); // elbow flexes from recoil
-            spineX = Deg(3) - kick * Deg(6); // spine rocks backward (less forward lean)
+            // FIRE — big recoil kick: barrel snaps UP, spine rocks BACK hard
+            float p = (t - 0.18f) / 0.1f;
+            float kick = Mathf.Min(p * 3f, 1f); // snap to peak fast, hold there
+            shoulderX = Deg(80) + kick * Deg(40); // arm kicks UP hard (80→120°, well past horizontal)
+            elbowX = kick * Deg(15); // elbow flexes
+            spineX = Deg(5) - kick * Deg(12); // spine rocks backward hard
         }
-        else if (t < 0.50f)
+        else if (t < 0.45f)
         {
-            // Recoil settle — spine recovers from backward lean, arm from overshoot
-            float p = (t - 0.35f) / 0.15f;
-            shoulderX = Mathf.Lerp(Deg(75) + Deg(8), Deg(75), p); // settling from overshoot
-            elbowX = Mathf.Lerp(Deg(5), Deg(0), p);
-            spineX = Mathf.Lerp(Deg(1), Deg(3), p); // recovering from backward lean
+            // Hold at recoil peak briefly, then settle back to aim
+            float p = (t - 0.28f) / 0.17f;
+            float ease = p * p; // slow start, accelerate
+            shoulderX = Mathf.Lerp(Deg(120), Deg(80), ease); // settle from peak back to aim
+            elbowX = Mathf.Lerp(Deg(15), Deg(0), ease);
+            spineX = Mathf.Lerp(Deg(-7), Deg(5), ease); // recover from backward lean
         }
         else
         {
             // Return to idle
-            float p = (t - 0.50f) / 0.50f;
+            float p = (t - 0.45f) / 0.55f;
             float ease = p * p;
-            shoulderX = Mathf.Lerp(Deg(75), 0, ease);
+            shoulderX = Mathf.Lerp(Deg(80), 0, ease);
             elbowX = Mathf.Lerp(Deg(0), Deg(10), ease);
-            spineX = Mathf.Lerp(Deg(3), 0, ease);
+            spineX = Mathf.Lerp(Deg(5), 0, ease);
         }
 
         SetRotation(_rightShoulder, new Vector3(shoulderX, 0, 0));
