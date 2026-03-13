@@ -17,35 +17,33 @@ public class SteamConnectionManager : ConnectionManager
     /// <summary>
     /// With relay connections, OnConnected/OnConnecting/OnDisconnected may never
     /// be called directly (Facepunch issue #568). Only OnConnectionChanged fires.
-    /// We call the base virtual methods explicitly to ensure Facepunch's internal
-    /// state (Connected property, etc.) is maintained properly.
+    /// We MUST call base.OnConnectionChanged first — that's where Facepunch sets
+    /// the ConnectionInfo property (needed for message sender identity) and the
+    /// Connected/Connecting flags. The base also dispatches to the empty virtuals
+    /// OnConnected/OnConnecting/OnDisconnected, which is harmless.
     /// </summary>
     public override void OnConnectionChanged(ConnectionInfo info)
     {
         GD.Print($"[SteamConnMgr] ConnectionChanged: state={info.State}, endReason={info.EndReason}, identity={info.Identity.SteamId}");
 
+        // Let base class set ConnectionInfo, Connected, Connecting properties.
+        base.OnConnectionChanged(info);
+
         switch (info.State)
         {
             case ConnectionState.Connected:
-                GD.Print($"[SteamConnMgr] CONNECTED to {info.Identity.SteamId}");
-                // base.OnConnected sets Connected=true, Connecting=false
-                base.OnConnected(info);
+                GD.Print($"[SteamConnMgr] CONNECTED to {info.Identity.SteamId} (Connected={Connected})");
                 OnConnectionEstablished?.Invoke(info);
                 break;
 
             case ConnectionState.Connecting:
             case ConnectionState.FindingRoute:
                 GD.Print($"[SteamConnMgr] Connecting/FindingRoute to {info.Identity.SteamId}...");
-                if (info.State == ConnectionState.Connecting)
-                {
-                    base.OnConnecting(info);
-                }
                 break;
 
             case ConnectionState.ClosedByPeer:
             case ConnectionState.ProblemDetectedLocally:
                 GD.Print($"[SteamConnMgr] DISCONNECTED from {info.Identity.SteamId}, state={info.State}, endReason={info.EndReason}");
-                base.OnDisconnected(info);
                 OnConnectionLost?.Invoke(info);
                 break;
 

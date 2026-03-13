@@ -399,17 +399,22 @@ public abstract partial class WeaponBase : Node3D
             GameConfig.BuildUnitMeters * 0.5f);
         Vector3I microBase = MathHelpers.WorldToMicrovoxel(cornerPos);
 
-        // Only check directly below the weapon (y = -1), matching Explosion.cs logic.
-        // Don't check the weapon's own footprint (y >= 0) — weapons are meshes, not voxels.
+        // Check below AND within the weapon's base row, matching WeaponPlacer's
+        // ValidatePlacement logic. A thin 1-voxel floor sits at the weapon's base
+        // row (y=0), not below it (y=-1). Weapons are meshes, not voxels, so any
+        // solid found here is genuine structural support.
         bool hasSupport = false;
-        for (int z = 0; z < GameConfig.MicrovoxelsPerBuildUnit && !hasSupport; z++)
+        for (int y = -1; y < GameConfig.MicrovoxelsPerBuildUnit && !hasSupport; y++)
         {
-            for (int x = 0; x < GameConfig.MicrovoxelsPerBuildUnit && !hasSupport; x++)
+            for (int z = 0; z < GameConfig.MicrovoxelsPerBuildUnit && !hasSupport; z++)
             {
-                Vector3I below = microBase + new Vector3I(x, -1, z);
-                if (world.GetVoxel(below).IsSolid)
+                for (int x = 0; x < GameConfig.MicrovoxelsPerBuildUnit && !hasSupport; x++)
                 {
-                    hasSupport = true;
+                    Vector3I check = microBase + new Vector3I(x, y, z);
+                    if (world.GetVoxel(check).IsSolid)
+                    {
+                        hasSupport = true;
+                    }
                 }
             }
         }
