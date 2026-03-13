@@ -1891,9 +1891,22 @@ public partial class GameManager : Node
     {
         if (_loadingSplash == null) return;
 
-        _activeBuilderIndex = 0;
-        _activeBuilder = BuildOrder[_activeBuilderIndex];
-        PositionCameraAtBuildZone(PlayerSlot.Player1);
+        // In online mode, each player builds simultaneously in their own zone.
+        if (_networkManager != null && _networkManager.IsOnline)
+        {
+            _localBuildReady = false;
+            _remoteBuildSnapshots.Clear();
+            PlayerSlot localSlot = GetLocalPlayerSlot();
+            _activeBuilderIndex = Array.IndexOf(BuildOrder, localSlot);
+            _activeBuilder = localSlot;
+            GD.Print($"[Online] Active builder set to {localSlot} (index {_activeBuilderIndex}) for local peer {_networkManager.LocalPeerId}");
+        }
+        else
+        {
+            _activeBuilderIndex = 0;
+            _activeBuilder = BuildOrder[_activeBuilderIndex];
+        }
+        PositionCameraAtBuildZone(_activeBuilder);
 
         // Signal loading complete -- triggers castle explosion, then fade, then SplashFinished
         _loadingSplash.SetLoadingProgress(1.0f);
@@ -2202,7 +2215,15 @@ public partial class GameManager : Node
         foreach ((PlayerSlot slot, PlayerData data) in _players)
         {
             if (data.PeerId == localPeer)
+            {
+                GD.Print($"[Online] GetLocalPlayerSlot: peer {localPeer} → {slot}");
                 return slot;
+            }
+        }
+        GD.PrintErr($"[Online] GetLocalPlayerSlot: peer {localPeer} NOT found in _players ({_players.Count} entries). Falling back to Player1.");
+        foreach ((PlayerSlot slot, PlayerData data) in _players)
+        {
+            GD.PrintErr($"  → {slot}: PeerId={data.PeerId}, Name={data.DisplayName}");
         }
         return PlayerSlot.Player1;
     }
@@ -3734,7 +3755,26 @@ public partial class GameManager : Node
         // If in block mode and nothing else erased, erase block.
         if (@event.IsActionPressed("place_secondary"))
         {
-            bool erased = TryEraseWeaponAtCursor() || TryEraseTroopAtCursor() || TryEraseDoorAtCursor();
+            // Compute the distance to the nearest solid block along the cursor ray.
+            // Entities behind a block should not be erased (the block occludes them).
+            float blockRayT = float.MaxValue;
+            if (_camera != null && _voxelWorld != null)
+            {
+                Vector2 mp = GetViewport().GetMousePosition();
+                Vector3 ro = _camera.ProjectRayOrigin(mp);
+                Vector3 rd = _camera.ProjectRayNormal(mp);
+                if (_voxelWorld.RaycastVoxel(ro, rd, MaxRaycastDistance, out Vector3I hitVox, out Vector3I _))
+                {
+                    float microMeters = GameConfig.MicrovoxelMeters;
+                    Vector3 hitCenter = new Vector3(
+                        hitVox.X * microMeters + microMeters * 0.5f,
+                        hitVox.Y * microMeters + microMeters * 0.5f,
+                        hitVox.Z * microMeters + microMeters * 0.5f);
+                    blockRayT = (hitCenter - ro).Dot(rd);
+                }
+            }
+
+            bool erased = TryEraseWeaponAtCursor(blockRayT) || TryEraseTroopAtCursor(blockRayT) || TryEraseDoorAtCursor();
             if (!erased)
             {
                 if (_placementMode != PlacementMode.Block)
@@ -4051,7 +4091,7 @@ public partial class GameManager : Node
     /// Right-click erase: removes the nearest weapon under the cursor.
     /// Returns true if a weapon was found and removed.
     /// </summary>
-    private bool TryEraseWeaponAtCursor()
+    private bool TryEraseWeaponAtCursor(float blockRayT = float.MaxValue)
     {
         if (_camera == null || !_weapons.TryGetValue(_activeBuilder, out var weaponList) || weaponList.Count == 0)
             return false;
@@ -4062,9 +4102,8 @@ public partial class GameManager : Node
         Vector2 mousePos = GetViewport().GetMousePosition();
         Vector3 rayOrigin = _camera.ProjectRayOrigin(mousePos);
         Vector3 rayDir = _camera.ProjectRayNormal(mousePos);
-        Vector3 worldTarget = rayOrigin + rayDir * 20f; // approximate target
 
-        // Find nearest weapon to cursor ray
+        // Find nearest weapon to cursor ray (only if in front of the nearest block)
         WeaponBase? closest = null;
         float closestDist = 2.0f; // max selection distance in meters
         for (int i = weaponList.Count - 1; i >= 0; i--)
@@ -4076,7 +4115,7 @@ public partial class GameManager : Node
             Vector3 wPos = w.GlobalPosition;
             Vector3 toWeapon = wPos - rayOrigin;
             float t = toWeapon.Dot(rayDir);
-            if (t < 0) continue;
+            if (t < 0 || t > blockRayT) continue; // skip if behind a solid block
             Vector3 closestPointOnRay = rayOrigin + rayDir * t;
             float dist = closestPointOnRay.DistanceTo(wPos);
             if (dist < closestDist)
@@ -4114,7 +4153,7 @@ public partial class GameManager : Node
     /// Right-click erase: removes the nearest troop marker under the cursor.
     /// Returns true if a troop marker was found and removed.
     /// </summary>
-    private bool TryEraseTroopAtCursor()
+    private bool TryEraseTroopAtCursor(float blockRayT = float.MaxValue)
     {
         if (_camera == null || _armyManager == null) return false;
         if (!_players.TryGetValue(_activeBuilder, out PlayerData? player)) return false;
@@ -4123,7 +4162,7 @@ public partial class GameManager : Node
         Vector3 rayOrigin = _camera.ProjectRayOrigin(mousePos);
         Vector3 rayDir = _camera.ProjectRayNormal(mousePos);
 
-        // Find nearest troop marker to cursor ray
+        // Find nearest troop marker to cursor ray (only if in front of the nearest block)
         Node? closestMarker = null;
         float closestDist = 1.5f;
         string prefix = $"TroopMarker_{_activeBuilder}_";
@@ -4136,7 +4175,7 @@ public partial class GameManager : Node
             Vector3 mPos = marker.GlobalPosition;
             Vector3 toMarker = mPos - rayOrigin;
             float t = toMarker.Dot(rayDir);
-            if (t < 0) continue;
+            if (t < 0 || t > blockRayT) continue; // skip if behind a solid block
             Vector3 closestPointOnRay = rayOrigin + rayDir * t;
             float dist = closestPointOnRay.DistanceTo(mPos);
             if (dist < closestDist)
@@ -4632,6 +4671,9 @@ public partial class GameManager : Node
         model.Name = $"TroopMarker_{_activeBuilder}_{type}_{microPos}";
         model.AddToGroup("TroopMarkers");
 
+        // Add to tree BEFORE setting GlobalPosition to avoid !is_inside_tree() error
+        AddChild(model);
+
         float microMeters = GameConfig.MicrovoxelMeters;
         // Offset Y upward by leg depth so feet sit on ground (same as TroopEntity)
         const float legOffset = 4f * 0.06f; // 4 voxels * troop voxelSize
@@ -4642,8 +4684,6 @@ public partial class GameManager : Node
 
         // Apply rotation from R key
         model.RotationDegrees = new Vector3(0, rotation * 90f, 0);
-
-        AddChild(model);
     }
 
     private void UpdateBuildUITroopCounts()
