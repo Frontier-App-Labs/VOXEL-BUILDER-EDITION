@@ -3793,10 +3793,24 @@ public partial class GameManager : Node
                     }
                 }
                 Vector3I widthStep = doorFacesX ? new Vector3I(0, 0, 1) : new Vector3I(1, 0, 0);
+                // Snap preview to bottom of wall column (same logic as DoorRegistry.TryPlaceDoor)
+                Vector3I doorBase = _buildCursorMicrovoxel;
+                if (_voxelWorld != null)
+                {
+                    int scanY = doorBase.Y;
+                    while (scanY > 0)
+                    {
+                        Vector3I below = new Vector3I(doorBase.X, scanY - 1, doorBase.Z);
+                        if (!_voxelWorld.GetVoxel(below).IsSolid)
+                            break;
+                        scanY--;
+                    }
+                    doorBase = new Vector3I(doorBase.X, scanY, doorBase.Z);
+                }
                 var doorMicros = new List<Vector3I>();
                 for (int dw = 0; dw < DoorRegistry.DoorWidth; dw++)
                     for (int dy = 0; dy < DoorRegistry.DoorHeight; dy++)
-                        doorMicros.Add(_buildCursorMicrovoxel + widthStep * dw + new Vector3I(0, dy, 0));
+                        doorMicros.Add(doorBase + widthStep * dw + new Vector3I(0, dy, 0));
                 _ghostPreview.SetPreview(doorMicros, _buildCursorValid);
             }
             else

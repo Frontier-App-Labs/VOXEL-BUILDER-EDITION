@@ -72,6 +72,21 @@ public class DoorRegistry
             return false;
         }
 
+        // Snap the door base to the bottom of the wall column at the clicked position.
+        // Without this, clicking the middle or top of a short wall makes the door
+        // extend above the wall into empty air (floating door).
+        {
+            int scanY = baseMicrovoxel.Y;
+            while (scanY > zoneMin.Y - 1)
+            {
+                Vector3I below = new Vector3I(baseMicrovoxel.X, scanY - 1, baseMicrovoxel.Z);
+                if (!world.GetVoxel(below).IsSolid)
+                    break;
+                scanY--;
+            }
+            baseMicrovoxel = new Vector3I(baseMicrovoxel.X, scanY, baseMicrovoxel.Z);
+        }
+
         // Check: Y range is within build zone (with a small margin)
         if (baseMicrovoxel.Y < zoneMin.Y - 1 || baseMicrovoxel.Y + DoorHeight - 1 > zoneMax.Y + 1)
         {
