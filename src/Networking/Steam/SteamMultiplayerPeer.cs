@@ -4,6 +4,7 @@ using Steamworks.Data;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 
 namespace VoxelSiege.Networking.Steam;
 
@@ -218,7 +219,19 @@ public partial class SteamMultiplayerPeer : MultiplayerPeerExtension
 
     public override void _Poll()
     {
-        _steamSocketManager?.Receive();
+        if (_steamSocketManager != null)
+        {
+            // Server mode: SocketManager.Receive() pumps SteamNetworkingSockets
+            // RunCallbacks internally, dispatching OnConnectionChanged for all connections.
+            _steamSocketManager.Receive();
+        }
+        else
+        {
+            // Client mode: no SocketManager exists, so we must explicitly pump
+            // SteamNetworkingSockets callbacks. Without this, the ConnectionManager's
+            // OnConnectionChanged never fires and the client stays stuck in Connecting.
+            PumpNetworkingSocketsCallbacks();
+        }
 
         // IMPORTANT: Always call Receive() on the connection manager, even before
         // Connected is true. With relay connections, OnConnectionChanged (which sets
@@ -227,6 +240,16 @@ public partial class SteamMultiplayerPeer : MultiplayerPeerExtension
         if (_steamConnectionManager != null)
         {
             _steamConnectionManager.Receive();
+
+            // Safety net: if ConnectionManager reports Connected but our status hasn't
+            // updated (e.g. event handler didn't fire), force the transition so Godot
+            // can emit ConnectedToServer.
+            if (_steamConnectionManager.Connected && _connectionStatus == ConnectionStatus.Connecting
+                && _mode == Mode.Client)
+            {
+                GD.Print("[SteamMultiplayerPeer] Safety net: ConnectionManager.Connected=true but status still Connecting — forcing transition");
+                _connectionStatus = ConnectionStatus.Connected;
+            }
 
             if (!_steamConnectionManager.Connected)
             {
@@ -377,4 +400,61 @@ public partial class SteamMultiplayerPeer : MultiplayerPeerExtension
         };
         _connectionsBySteamId[steamId] = connectionData;
     }
+
+    #region Networking Sockets Callback Pump
+
+    // SocketManager.Receive() internally calls SteamNetworkingSockets.Internal.RunCallbacks()
+    // which dispatches OnConnectionChanged for ALL connections (both socket and connection managers).
+    // On the client there's no SocketManager, so we must call RunCallbacks ourselves via reflection
+    // since the Internal property has internal access in Facepunch.Steamworks.
+    private static bool _callbackPumpResolved;
+    private static object? _networkingSocketsInternal;
+    private static MethodInfo? _runCallbacksMethod;
+
+    private static void PumpNetworkingSocketsCallbacks()
+    {
+        if (!_callbackPumpResolved)
+        {
+            _callbackPumpResolved = true;
+            try
+            {
+                PropertyInfo? prop = typeof(SteamNetworkingSockets).GetProperty("Internal",
+                    BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+                if (prop != null)
+                {
+                    _networkingSocketsInternal = prop.GetValue(null);
+                    _runCallbacksMethod = _networkingSocketsInternal?.GetType()
+                        .GetMethod("RunCallbacks", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+
+                    if (_runCallbacksMethod != null)
+                    {
+                        GD.Print("[SteamMultiplayerPeer] Resolved SteamNetworkingSockets.Internal.RunCallbacks via reflection");
+                    }
+                    else
+                    {
+                        GD.PrintErr("[SteamMultiplayerPeer] Could not resolve RunCallbacks method on ISteamNetworkingSockets");
+                    }
+                }
+                else
+                {
+                    GD.PrintErr("[SteamMultiplayerPeer] Could not resolve SteamNetworkingSockets.Internal property");
+                }
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[SteamMultiplayerPeer] Reflection setup failed: {ex.Message}");
+            }
+        }
+
+        try
+        {
+            _runCallbacksMethod?.Invoke(_networkingSocketsInternal, null);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"[SteamMultiplayerPeer] RunCallbacks invoke failed: {ex.Message}");
+        }
+    }
+
+    #endregion
 }
