@@ -71,7 +71,7 @@ public partial class MainMenu : Control
     private float _time;
     private float _subtitleRevealTimer;
     private int _subtitleRevealIndex;
-    private const string SubtitleFull = "BUILD.  HIDE.  DESTROY.";
+    private const string SubtitleFull = "BUILDER'S EDITION";
     private RandomNumberGenerator _rng = new RandomNumberGenerator();
 
     // Play Online sub-menu panels
@@ -283,8 +283,8 @@ public partial class MainMenu : Control
         _subtitleLabel.Text = "";
         _subtitleLabel.HorizontalAlignment = HorizontalAlignment.Center;
         _subtitleLabel.AddThemeFontOverride("font", PixelFont);
-        _subtitleLabel.AddThemeFontSizeOverride("font_size", 16);
-        _subtitleLabel.AddThemeColorOverride("font_color", AccentGold);
+        _subtitleLabel.AddThemeFontSizeOverride("font_size", 20);
+        _subtitleLabel.AddThemeColorOverride("font_color", AccentRed);
         _subtitleLabel.MouseFilter = MouseFilterEnum.Ignore;
 
         // Wrap in an HBoxContainer that centers horizontally
@@ -294,6 +294,26 @@ public partial class MainMenu : Control
         subtitleWrapper.MouseFilter = MouseFilterEnum.Ignore;
         subtitleWrapper.AddChild(_subtitleLabel);
         centerBox.AddChild(subtitleWrapper);
+
+        // Thank you message
+        Control tySpacer = new Control();
+        tySpacer.CustomMinimumSize = new Vector2(0, 6);
+        tySpacer.MouseFilter = MouseFilterEnum.Ignore;
+        centerBox.AddChild(tySpacer);
+
+        Label tyLabel = new Label();
+        tyLabel.Text = "Thank you for your contribution to the game!";
+        tyLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        tyLabel.AddThemeFontOverride("font", PixelFont);
+        tyLabel.AddThemeFontSizeOverride("font_size", 11);
+        tyLabel.AddThemeColorOverride("font_color", TextPrimary);
+        tyLabel.MouseFilter = MouseFilterEnum.Ignore;
+        HBoxContainer tyWrapper = new HBoxContainer();
+        tyWrapper.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        tyWrapper.Alignment = BoxContainer.AlignmentMode.Center;
+        tyWrapper.MouseFilter = MouseFilterEnum.Ignore;
+        tyWrapper.AddChild(tyLabel);
+        centerBox.AddChild(tyWrapper);
 
         // Wallet display (deferred to bottom-right corner, added after content container)
 
@@ -445,24 +465,36 @@ public partial class MainMenu : Control
 
         AddSubMenuHeader(_sandboxSlotsPanel, "SANDBOX BUILDS");
 
-        // Wallet display inside the panel
-        _sandboxWalletLabel = new Label();
-        _sandboxWalletLabel.HorizontalAlignment = HorizontalAlignment.Center;
-        _sandboxWalletLabel.AddThemeFontOverride("font", PixelFont);
-        _sandboxWalletLabel.AddThemeFontSizeOverride("font_size", 10);
-        _sandboxWalletLabel.AddThemeColorOverride("font_color", AccentGold);
-        _sandboxWalletLabel.MouseFilter = MouseFilterEnum.Ignore;
-        _sandboxSlotsPanel.AddChild(_sandboxWalletLabel);
+        // Builder's Edition label
+        Label builderLabel = new Label();
+        builderLabel.Text = "BUILDER'S EDITION — UNLIMITED SLOTS";
+        builderLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        builderLabel.AddThemeFontOverride("font", PixelFont);
+        builderLabel.AddThemeFontSizeOverride("font_size", 8);
+        builderLabel.AddThemeColorOverride("font_color", AccentGold);
+        builderLabel.MouseFilter = MouseFilterEnum.Ignore;
+        _sandboxSlotsPanel.AddChild(builderLabel);
 
-        // Scrollable slot list
+        // "+ NEW BUILD" button (always visible, above the scroll list)
+        AddMenuButton(_sandboxSlotsPanel, "+ NEW BUILD", AccentGreen, () => OnSandboxSlotSelected(null));
+
+        // Scrollable slot list for saved builds
+        ScrollContainer sandboxScroll = new ScrollContainer();
+        sandboxScroll.SizeFlagsVertical = SizeFlags.ExpandFill;
+        sandboxScroll.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        sandboxScroll.CustomMinimumSize = new Vector2(0, 400);
+        sandboxScroll.VerticalScrollMode = ScrollContainer.ScrollMode.Auto;
+        sandboxScroll.HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled;
+        sandboxScroll.MouseFilter = MouseFilterEnum.Stop;
+        _sandboxSlotsPanel.AddChild(sandboxScroll);
+
         _sandboxSlotList = new VBoxContainer();
         _sandboxSlotList.AddThemeConstantOverride("separation", 4);
         _sandboxSlotList.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         _sandboxSlotList.MouseFilter = MouseFilterEnum.Ignore;
-        _sandboxSlotsPanel.AddChild(_sandboxSlotList);
+        sandboxScroll.AddChild(_sandboxSlotList);
 
-        // Buy new slot button + back button (added after slot list)
-        AddMenuButton(_sandboxSlotsPanel, $"+ NEW SLOT (${GameConfig.SandboxSlotCost:N0})", AccentGold, OnBuySandboxSlot);
+        // Back button
         AddMenuButton(_sandboxSlotsPanel, "BACK", TextSecondary, OnBackToMainMenu);
 
         // Bottom spacer
@@ -492,7 +524,7 @@ public partial class MainMenu : Control
         versionMargin.AddChild(versionContent);
 
         Label versionLabel = new Label();
-        versionLabel.Text = "VOXEL SIEGE  v0.1.0-alpha";
+        versionLabel.Text = "VOXEL SIEGE  v0.1.0-alpha  BUILDER'S EDITION";
         versionLabel.AddThemeFontOverride("font", PixelFont);
         versionLabel.AddThemeFontSizeOverride("font_size", 12);
         versionLabel.AddThemeColorOverride("font_color", TextSecondary);
@@ -1295,23 +1327,125 @@ public partial class MainMenu : Control
         foreach (Node child in _sandboxSlotList.GetChildren())
             child.QueueFree();
 
-        ProgressionManager? pm = GetTree().Root.FindChild("ProgressionManager", true, false) as ProgressionManager;
-        PlayerProfile? profile = pm?.Profile;
-        int slotCount = profile?.SandboxSlots ?? 1;
+        // Read profile directly from disk to always get the latest saved builds
+        PlayerProfile? profile = SaveSystem.LoadJson<PlayerProfile>("user://profile/player_profile.json");
         List<string> savedBuilds = profile?.SavedBuilds ?? new List<string>();
-        long wallet = profile?.WalletBalance ?? 0;
 
-        if (_sandboxWalletLabel != null)
-            _sandboxWalletLabel.Text = $"WALLET: ${wallet:N0}";
-
-        for (int i = 0; i < slotCount; i++)
+        // Fallback: scan disk for blueprint files not listed in profile
+        string bpDir = ProjectSettings.GlobalizePath("user://blueprints");
+        if (System.IO.Directory.Exists(bpDir))
         {
-            string? buildName = i < savedBuilds.Count ? savedBuilds[i] : null;
-            string label = buildName ?? $"EMPTY SLOT {i + 1}";
-            Color slotColor = buildName != null ? AccentGreen : TextSecondary;
-            string? captured = buildName; // capture for lambda
+            foreach (string file in System.IO.Directory.GetFiles(bpDir, "*.json"))
+            {
+                try
+                {
+                    string json = System.IO.File.ReadAllText(file);
+                    var bp = System.Text.Json.JsonSerializer.Deserialize<Building.BlueprintData>(json, new System.Text.Json.JsonSerializerOptions { IncludeFields = true });
+                    if (bp != null && !string.IsNullOrEmpty(bp.Name) && !savedBuilds.Contains(bp.Name))
+                    {
+                        GD.Print($"[MainMenu] Recovered orphaned build '{bp.Name}' from {file}");
+                        savedBuilds.Add(bp.Name);
+                    }
+                }
+                catch { /* skip unreadable files */ }
+            }
+        }
 
-            AddMenuButton(_sandboxSlotList, label, slotColor, () => OnSandboxSlotSelected(captured));
+        // Show all saved builds with load + delete buttons
+        foreach (string buildName in savedBuilds)
+        {
+            string captured = buildName;
+
+            HBoxContainer row = new HBoxContainer();
+            row.AddThemeConstantOverride("separation", 6);
+            row.SizeFlagsHorizontal = SizeFlags.ShrinkCenter;
+            row.MouseFilter = MouseFilterEnum.Ignore;
+
+            // Load button (the build name)
+            PanelContainer btnPanel = new PanelContainer();
+            btnPanel.CustomMinimumSize = new Vector2(300, 48);
+            StyleBoxFlat slotStyle = CreatePanelStyle(ButtonNormal, 0);
+            slotStyle.BorderWidthLeft = 4;
+            slotStyle.BorderWidthTop = 2;
+            slotStyle.BorderWidthRight = 2;
+            slotStyle.BorderWidthBottom = 4;
+            slotStyle.BorderColor = AccentCyan;
+            slotStyle.ContentMarginLeft = 20;
+            slotStyle.ContentMarginRight = 20;
+            slotStyle.ContentMarginTop = 10;
+            slotStyle.ContentMarginBottom = 10;
+            btnPanel.AddThemeStyleboxOverride("panel", slotStyle);
+
+            Button btn = new Button();
+            btn.Text = captured;
+            btn.Flat = true;
+            btn.AddThemeFontOverride("font", PixelFont);
+            btn.AddThemeFontSizeOverride("font_size", 14);
+            btn.AddThemeColorOverride("font_color", TextPrimary);
+            btn.AddThemeColorOverride("font_hover_color", AccentCyan);
+            btn.AddThemeColorOverride("font_pressed_color", AccentCyan);
+            btn.Alignment = HorizontalAlignment.Center;
+            btn.MouseFilter = MouseFilterEnum.Stop;
+            btn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); OnSandboxSlotSelected(captured); };
+            btn.MouseEntered += () => { AudioDirector.Instance?.PlaySFX("ui_hover"); OnButtonHover(btnPanel, AccentCyan, true); };
+            btn.MouseExited += () => OnButtonHover(btnPanel, AccentCyan, false);
+            btnPanel.AddChild(btn);
+            row.AddChild(btnPanel);
+
+            // Delete button
+            PanelContainer delPanel = new PanelContainer();
+            delPanel.CustomMinimumSize = new Vector2(48, 48);
+            StyleBoxFlat delStyle = CreatePanelStyle(ButtonNormal, 0);
+            delStyle.BorderWidthLeft = 2;
+            delStyle.BorderWidthTop = 2;
+            delStyle.BorderWidthRight = 4;
+            delStyle.BorderWidthBottom = 4;
+            delStyle.BorderColor = AccentRed;
+            delStyle.ContentMarginLeft = 4;
+            delStyle.ContentMarginRight = 4;
+            delStyle.ContentMarginTop = 10;
+            delStyle.ContentMarginBottom = 10;
+            delPanel.AddThemeStyleboxOverride("panel", delStyle);
+
+            Button delBtn = new Button();
+            delBtn.Text = "\u2716";
+            delBtn.Flat = true;
+            delBtn.AddThemeFontOverride("font", PixelFont);
+            delBtn.AddThemeFontSizeOverride("font_size", 14);
+            delBtn.AddThemeColorOverride("font_color", AccentRed);
+            delBtn.AddThemeColorOverride("font_hover_color", new Color("ff6666"));
+            delBtn.Alignment = HorizontalAlignment.Center;
+            delBtn.MouseFilter = MouseFilterEnum.Stop;
+            delBtn.Pressed += () =>
+            {
+                AudioDirector.Instance?.PlaySFX("ui_click");
+                GameManager? gm = GetTree().Root.GetNodeOrNull<GameManager>("Main");
+                gm?.DeleteSandboxBuild(captured);
+                RefreshSandboxSlots();
+            };
+            delBtn.MouseEntered += () => { AudioDirector.Instance?.PlaySFX("ui_hover"); OnButtonHover(delPanel, AccentRed, true); };
+            delBtn.MouseExited += () => OnButtonHover(delPanel, AccentRed, false);
+            delPanel.AddChild(delBtn);
+            row.AddChild(delPanel);
+
+            HBoxContainer wrapper = new HBoxContainer();
+            wrapper.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            wrapper.Alignment = BoxContainer.AlignmentMode.Center;
+            wrapper.MouseFilter = MouseFilterEnum.Ignore;
+            wrapper.AddChild(row);
+            _sandboxSlotList.AddChild(wrapper);
+        }
+
+        if (savedBuilds.Count == 0)
+        {
+            Label emptyLabel = new Label();
+            emptyLabel.Text = "No saved builds yet";
+            emptyLabel.HorizontalAlignment = HorizontalAlignment.Center;
+            emptyLabel.AddThemeFontOverride("font", PixelFont);
+            emptyLabel.AddThemeFontSizeOverride("font_size", 8);
+            emptyLabel.AddThemeColorOverride("font_color", TextSecondary);
+            emptyLabel.MouseFilter = MouseFilterEnum.Ignore;
+            _sandboxSlotList.AddChild(emptyLabel);
         }
     }
 
@@ -1327,33 +1461,8 @@ public partial class MainMenu : Control
 
     private void OnBuySandboxSlot()
     {
-        ProgressionManager? pm = GetTree().Root.FindChild("ProgressionManager", true, false) as ProgressionManager;
-        PlayerProfile? profile = pm?.Profile;
-        if (profile == null) return;
-
-        if (profile.WalletBalance < GameConfig.SandboxSlotCost)
-        {
-            // Can't afford — flash the wallet label red briefly
-            if (_sandboxWalletLabel != null)
-            {
-                _sandboxWalletLabel.AddThemeColorOverride("font_color", AccentRed);
-                var timer = GetTree().CreateTimer(0.5);
-                timer.Timeout += () =>
-                {
-                    if (_sandboxWalletLabel != null)
-                        _sandboxWalletLabel.AddThemeColorOverride("font_color", AccentGold);
-                };
-            }
-            return;
-        }
-
-        profile.WalletBalance -= GameConfig.SandboxSlotCost;
-        profile.SandboxSlots++;
-        SaveSystem.SaveJson("user://profile/player_profile.json", profile);
-
-        AudioDirector.Instance?.PlaySFX("ui_click");
-        RefreshSandboxSlots();
-        RefreshWalletDisplay();
+        // Builder's Edition: slots are unlimited, no purchase needed.
+        // This method is retained for compatibility but does nothing.
     }
 
     private void OnHostPressed()

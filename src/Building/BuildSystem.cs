@@ -435,7 +435,7 @@ public partial class BuildSystem : Node
 
                 break;
             case BuildToolMode.Wall:
-                foreach (Vector3I point in GenerateWall(min, max))
+                foreach (Vector3I point in GenerateWall(start, end))
                 {
                     yield return point;
                 }
@@ -497,14 +497,17 @@ public partial class BuildSystem : Node
         }
     }
 
-    private static IEnumerable<Vector3I> GenerateWall(Vector3I min, Vector3I max)
+    private static IEnumerable<Vector3I> GenerateWall(Vector3I start, Vector3I end)
     {
+        Vector3I min = new Vector3I(Math.Min(start.X, end.X), Math.Min(start.Y, end.Y), Math.Min(start.Z, end.Z));
+        Vector3I max = new Vector3I(Math.Max(start.X, end.X), Math.Max(start.Y, end.Y), Math.Max(start.Z, end.Z));
         int sizeX = max.X - min.X;
-        int sizeY = max.Y - min.Y;
         int sizeZ = max.Z - min.Z;
+
         if (sizeX <= sizeZ)
         {
-            int x = min.X;
+            // Wall runs along Z — anchor at the start position's X
+            int x = start.X;
             for (int z = min.Z; z <= max.Z; z++)
             {
                 for (int y = min.Y; y <= max.Y; y++)
@@ -516,7 +519,8 @@ public partial class BuildSystem : Node
             yield break;
         }
 
-        int zFixed = min.Z;
+        // Wall runs along X — anchor at the start position's Z
+        int zFixed = start.Z;
         for (int x = min.X; x <= max.X; x++)
         {
             for (int y = min.Y; y <= max.Y; y++)
@@ -677,8 +681,9 @@ public partial class BuildSystem : Node
         int spanZ = Math.Abs(end.Z - start.Z);
 
         // Determine thin axis: wall running along X is thin in Z, wall running along Z is thin in X.
-        // When spans are equal or zero (single click), default to thin in Z.
-        bool thinInZ = spanX >= spanZ;
+        // Must match GenerateWall logic: sizeX <= sizeZ → wall along Z (thin in X).
+        // When spans are equal or zero (single click), default to thin in X (wall along Z).
+        bool thinInZ = spanX > spanZ;
 
         // Width on the non-thin axis is always full build unit width (2 microvoxels).
         // Thickness on the thin axis is always 1 microvoxel.

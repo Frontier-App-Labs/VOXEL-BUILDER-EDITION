@@ -161,8 +161,12 @@ public partial class Railgun : WeaponBase
             TerrainDecorator.RemoveGrassInRadius((start + endPoint) * 0.5f, start.DistanceTo(endPoint) * 0.5f + 1f);
         }
 
+        // For commander/weapon hit checks, extend the beam to full range.
+        // The beam continues past penetrated blocks — it just can't destroy more.
+        Vector3 hitCheckEnd = start + (direction * MaxRangeMicrovoxels * GameConfig.MicrovoxelMeters);
+        float hitCheckLength = start.DistanceTo(hitCheckEnd);
+
         // Damage commanders along the beam path
-        float beamLength = start.DistanceTo(endPoint);
         foreach (Node node in GetTree().GetNodesInGroup("Commanders"))
         {
             if (node is not Commander.Commander commander)
@@ -176,17 +180,17 @@ public partial class Railgun : WeaponBase
                 continue;
             }
 
-            // Point-to-line distance from commander to beam
+            // Point-to-line distance from commander to beam (full range)
             Vector3 toCommander = commander.GlobalPosition - start;
             float projection = toCommander.Dot(direction);
-            if (projection < 0 || projection > beamLength)
+            if (projection < 0 || projection > hitCheckLength)
             {
                 continue;
             }
 
             Vector3 closestPoint = start + direction * projection;
             float distance = commander.GlobalPosition.DistanceTo(closestPoint) / GameConfig.MicrovoxelMeters;
-            if (distance < 3.5f) // within 3.5 microvoxels of the beam
+            if (distance < 5.0f) // within 5 microvoxels of the beam
             {
                 // Railgun commander damage: tuned for a 3-shot kill (Commander HP=15).
                 // 2 direct hits = 12 damage (3 HP left, super low), 3rd hit finishes.
@@ -218,10 +222,10 @@ public partial class Railgun : WeaponBase
                 continue;
             }
 
-            // Point-to-line distance from weapon to beam
+            // Point-to-line distance from weapon to beam (full range)
             Vector3 toWeapon = weapon.GlobalPosition - start;
             float projection = toWeapon.Dot(direction);
-            if (projection < 0 || projection > beamLength)
+            if (projection < 0 || projection > hitCheckLength)
             {
                 continue;
             }
@@ -239,6 +243,8 @@ public partial class Railgun : WeaponBase
         SpawnBeamEffect(start, endPoint, direction);
 
         LastFiredRound = currentRound;
+
+        RecordFireDirection(direction);
 
         // Railgun-specific FX: cyan flash + electric arcs + capacitor discharge
         SpawnWeaponFireFX(direction);

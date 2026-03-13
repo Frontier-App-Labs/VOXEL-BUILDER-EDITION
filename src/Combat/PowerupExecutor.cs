@@ -369,10 +369,15 @@ public partial class PowerupExecutor : Node
 
     /// <summary>
     /// Calls in fighter jets that drop 3 bombardment shells on an 8x8 build unit
-    /// area of an enemy's fortress.
+    /// area of an enemy's fortress. Returns the computed impact positions and plane
+    /// count via out parameters so they can be synced to remote clients.
     /// </summary>
-    public bool ActivateAirstrike(PlayerData player, Vector3I targetBuildUnit, PlayerSlot targetEnemy)
+    public bool ActivateAirstrike(PlayerData player, Vector3I targetBuildUnit, PlayerSlot targetEnemy,
+        out Vector3[] outImpacts, out int outPlaneCount)
     {
+        outImpacts = System.Array.Empty<Vector3>();
+        outPlaneCount = 0;
+
         if (!player.Powerups.TryConsume(PowerupType.AirstrikeBeacon))
         {
             return false;
@@ -402,7 +407,58 @@ public partial class PowerupExecutor : Node
             impactPositions[shell] = MathHelpers.MicrovoxelToWorld(impactMicro);
         }
 
-        VoxelWorld capturedWorld = _voxelWorld;
+        outImpacts = impactPositions;
+        outPlaneCount = planeCount;
+
+        SpawnAirstrikeVisuals(player, targetWorld, impactPositions, planeCount);
+
+        PowerupActivated?.Invoke(PowerupType.AirstrikeBeacon, player.Slot, targetWorld);
+        GD.Print($"[Powerup] {player.Slot}: Airstrike called on {targetBuildUnit} targeting {targetEnemy}.");
+        return true;
+    }
+
+    /// <summary>
+    /// Backward-compatible overload that discards the out parameters.
+    /// Used by bot AI which doesn't need sync data.
+    /// </summary>
+    public bool ActivateAirstrike(PlayerData player, Vector3I targetBuildUnit, PlayerSlot targetEnemy)
+    {
+        return ActivateAirstrike(player, targetBuildUnit, targetEnemy, out _, out _);
+    }
+
+    /// <summary>
+    /// Replays an airstrike with pre-computed impact positions and plane count.
+    /// Used by remote clients to ensure deterministic bomb placement.
+    /// </summary>
+    public bool ActivateAirstrikeRemote(PlayerData player, Vector3I targetBuildUnit, PlayerSlot targetEnemy,
+        Vector3[] impactPositions, int planeCount)
+    {
+        if (!player.Powerups.TryConsume(PowerupType.AirstrikeBeacon))
+        {
+            return false;
+        }
+
+        if (_voxelWorld == null)
+        {
+            return false;
+        }
+
+        Vector3 targetWorld = MathHelpers.MicrovoxelToWorld(
+            MathHelpers.BuildToMicrovoxel(targetBuildUnit));
+
+        SpawnAirstrikeVisuals(player, targetWorld, impactPositions, planeCount);
+
+        PowerupActivated?.Invoke(PowerupType.AirstrikeBeacon, player.Slot, targetWorld);
+        GD.Print($"[Powerup] {player.Slot}: Airstrike replayed on {targetBuildUnit} targeting {targetEnemy} ({impactPositions.Length} impacts).");
+        return true;
+    }
+
+    /// <summary>
+    /// Shared logic for spawning airstrike flyover and falling bombs.
+    /// </summary>
+    private void SpawnAirstrikeVisuals(PlayerData player, Vector3 targetWorld, Vector3[] impactPositions, int planeCount)
+    {
+        VoxelWorld capturedWorld = _voxelWorld!;
         PlayerSlot capturedInstigator = player.Slot;
         SceneTree capturedTree = GetTree();
         Node capturedRoot = GetTree().Root;
@@ -416,7 +472,7 @@ public partial class PowerupExecutor : Node
             {
                 // Spawn falling bomb meshes that drop from plane altitude to impact
                 float dropAltitude = targetWorld.Y + 20f; // matches AirstrikeFlyover.FlyoverAltitude
-                for (int shell = 0; shell < 3; shell++)
+                for (int shell = 0; shell < impactPositions.Length; shell++)
                 {
                     float delay = shell * 0.3f;
                     int capturedShell = shell;
@@ -430,10 +486,6 @@ public partial class PowerupExecutor : Node
                     };
                 }
             });
-
-        PowerupActivated?.Invoke(PowerupType.AirstrikeBeacon, player.Slot, targetWorld);
-        GD.Print($"[Powerup] {player.Slot}: Airstrike called on {targetBuildUnit} targeting {targetEnemy}.");
-        return true;
     }
 
     /// <summary>

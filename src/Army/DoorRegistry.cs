@@ -400,6 +400,21 @@ public class DoorRegistry
     }
 
     /// <summary>
+    /// Removes all doors for a specific player. Used when loading a blueprint.
+    /// </summary>
+    public void ClearPlayerDoors(PlayerSlot owner)
+    {
+        if (_doors.TryGetValue(owner, out List<DoorPlacement>? ownerDoors))
+        {
+            foreach (DoorPlacement door in ownerDoors)
+            {
+                FreeDoorMesh(door);
+            }
+            ownerDoors.Clear();
+        }
+    }
+
+    /// <summary>
     /// Resets all door data for a new match.
     /// </summary>
     public void Clear()

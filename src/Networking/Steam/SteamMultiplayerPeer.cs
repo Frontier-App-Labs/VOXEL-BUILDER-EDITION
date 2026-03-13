@@ -214,13 +214,30 @@ public partial class SteamMultiplayerPeer : MultiplayerPeerExtension
 
     public override bool _IsServerRelaySupported() => _mode == Mode.Server || _mode == Mode.Client;
 
+    private float _pollLogTimer;
+
     public override void _Poll()
     {
         _steamSocketManager?.Receive();
 
-        if (_steamConnectionManager != null && _steamConnectionManager.Connected)
+        // IMPORTANT: Always call Receive() on the connection manager, even before
+        // Connected is true. With relay connections, OnConnectionChanged (which sets
+        // Connected=true) fires DURING Receive(). If we only call Receive() when
+        // already Connected, the client can never transition to Connected state.
+        if (_steamConnectionManager != null)
         {
             _steamConnectionManager.Receive();
+
+            if (!_steamConnectionManager.Connected)
+            {
+                // Log periodically while waiting for connection (every 2s)
+                _pollLogTimer += 0.016f; // approximate frame time
+                if (_pollLogTimer > 2f)
+                {
+                    _pollLogTimer = 0f;
+                    GD.Print($"[SteamMultiplayerPeer] _Poll: still waiting for connection... mode={_mode}, status={_connectionStatus}, connMgr.Connected={_steamConnectionManager.Connected}, peers={_connectionsBySteamId.Count}");
+                }
+            }
         }
 
         System.Collections.Generic.IEnumerable<SteamNetworkingMessage> steamNetworkingMessages =
@@ -254,8 +271,12 @@ public partial class SteamMultiplayerPeer : MultiplayerPeerExtension
 
     private void ProcessPing(SteamConnection.SetupPeerPayload receive, ulong sender)
     {
+        GD.Print($"[SteamMultiplayerPeer] ProcessPing: peerId={receive.PeerId} from steamId={sender}");
         if (!_connectionsBySteamId.TryGetValue(sender, out SteamConnection? connection))
+        {
+            GD.PrintErr($"[SteamMultiplayerPeer] ProcessPing: sender {sender} not found in connections!");
             return;
+        }
 
         if (receive.PeerId != -1)
         {

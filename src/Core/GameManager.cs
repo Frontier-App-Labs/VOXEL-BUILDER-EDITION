@@ -46,6 +46,10 @@ public partial class GameManager : Node
     private LobbyUI? _lobbyUI;
     private CanvasLayer? _lobbyUILayer;
 
+    // Multiplayer build phase sync
+    private readonly Dictionary<PlayerSlot, string> _remoteBuildSnapshots = new();
+    private bool _localBuildReady;
+
     // Build phase interaction state
     private Vector3I _buildCursorBuildUnit;
     private Vector3I _buildCursorMicrovoxel; // exact microvoxel for HalfBlock mode
@@ -165,6 +169,9 @@ public partial class GameManager : Node
     // Skip powerup tick on the next turn change caused by a player death removal
     private bool _skipNextPowerupTick;
     private PlayerSlot? _pendingWinner;
+    // Set when a commander kill cancels an active troop sequence — tells
+    // OnCombatCameraCinematicFinished to advance the turn after the kill cam.
+    private bool _advanceTurnAfterKillCam;
 
     // Sandbox mode: build freely with no opponents, save/load builds
     private bool _isSandbox;
@@ -331,6 +338,20 @@ public partial class GameManager : Node
             _networkManager.MatchStartReceived += OnMatchStartReceived;
             _networkManager.ConnectedToServer += OnConnectedToServer;
             _networkManager.ConnectionFailed += OnConnectionFailed;
+        }
+
+        if (_syncManager != null)
+        {
+            _syncManager.BuildCompleteReceived += OnRemoteBuildComplete;
+            _syncManager.WeaponFireReceived += OnRemoteWeaponFire;
+            _syncManager.SkipTurnReceived += OnRemoteSkipTurn;
+            _syncManager.TurnOrderReceived += OnRemoteTurnOrder;
+            _syncManager.TroopMoveReceived += OnRemoteTroopMove;
+            _syncManager.PowerupUsedReceived += OnRemotePowerupUsed;
+            _syncManager.EmpResultReceived += OnRemoteEmpResult;
+            _syncManager.AirstrikeResultReceived += OnRemoteAirstrikeResult;
+            _syncManager.GameOverReceived += OnRemoteGameOver;
+            _syncManager.DisconnectReceived += OnRemoteDisconnect;
         }
 
         // Look for splash screen — if present, hide main menu and let splash play first
@@ -1082,6 +1103,80 @@ public partial class GameManager : Node
         }
 
         BlueprintData blueprint = _blueprintSystem.Capture(_voxelWorld, zone, buildName);
+
+        // Capture weapons (including rotation)
+        blueprint.Weapons.Clear();
+        if (_weapons.TryGetValue(PlayerSlot.Player1, out List<WeaponBase>? weaponList))
+        {
+            foreach (WeaponBase w in weaponList)
+            {
+                if (w == null || !GodotObject.IsInstanceValid(w)) continue;
+                Vector3I microPos = MathHelpers.WorldToMicrovoxel(w.GlobalPosition);
+                Vector3I buildPos = MathHelpers.MicrovoxelToBuild(microPos);
+                Vector3I relPos = buildPos - zone.OriginBuildUnits;
+                blueprint.Weapons.Add(new BlueprintWeaponData
+                {
+                    WeaponId = w.WeaponId,
+                    BuildUnitPosition = relPos,
+                    RotationY = w.Rotation.Y,
+                });
+            }
+        }
+
+        // Capture doors
+        blueprint.Doors.Clear();
+        if (_armyManager != null)
+        {
+            var doors = _armyManager.Doors.GetDoors(PlayerSlot.Player1);
+            foreach (var door in doors)
+            {
+                Vector3I relMicro = door.BaseMicrovoxel - zone.OriginMicrovoxels;
+                int rotHint = NormalToRotationHint(door.OutwardNormal);
+                blueprint.Doors.Add(new BlueprintDoorData
+                {
+                    RelativeMicrovoxel = relMicro,
+                    RotationHint = rotHint,
+                });
+            }
+        }
+
+        // Capture troops
+        blueprint.Troops.Clear();
+        if (_armyManager != null)
+        {
+            var troops = _armyManager.GetPurchasedTroops(PlayerSlot.Player1);
+            foreach (var t in troops)
+            {
+                Vector3I? relPos = t.PlacedPosition.HasValue
+                    ? t.PlacedPosition.Value - zone.OriginMicrovoxels
+                    : null;
+                blueprint.Troops.Add(new BlueprintTroopData
+                {
+                    Type = t.Type,
+                    RelativeMicrovoxel = relPos,
+                });
+            }
+        }
+
+        // Capture powerups
+        blueprint.Powerups.Clear();
+        if (_players.TryGetValue(PlayerSlot.Player1, out PlayerData? p1Save))
+        {
+            foreach (PowerupType pt in p1Save.Powerups.OwnedPowerups)
+            {
+                blueprint.Powerups.Add(pt);
+            }
+        }
+
+        // Capture commander
+        blueprint.CommanderBuildUnitPosition = null;
+        if (_commanders.TryGetValue(PlayerSlot.Player1, out CommanderActor? cmd) && GodotObject.IsInstanceValid(cmd))
+        {
+            Vector3I relCmd = cmd.BuildUnitPosition - zone.OriginBuildUnits;
+            blueprint.CommanderBuildUnitPosition = relCmd;
+            blueprint.CommanderRotationY = cmd.Rotation.Y;
+        }
+
         _blueprintSystem.SaveBlueprint(blueprint);
 
         // Track in player profile (use ProgressionManager's save path)
@@ -1093,9 +1188,17 @@ public partial class GameManager : Node
                 profile.SavedBuilds.Add(buildName);
             }
             SaveSystem.SaveJson("user://profile/player_profile.json", profile);
+
+            // Verify the profile was saved with the build name
+            string profilePath = ProjectSettings.GlobalizePath("user://profile/player_profile.json");
+            GD.Print($"[Sandbox] Profile saved to {profilePath} — SavedBuilds: [{string.Join(", ", profile.SavedBuilds)}]");
+        }
+        else
+        {
+            GD.PrintErr("[Sandbox] WARNING: _progressionManager or Profile is null — build name NOT saved to profile!");
         }
 
-        GD.Print($"[Sandbox] Build '{buildName}' saved ({blueprint.Voxels.Count} voxels).");
+        GD.Print($"[Sandbox] Build '{buildName}' saved ({blueprint.Voxels.Count} voxels, {blueprint.Weapons.Count} weapons, {blueprint.Doors.Count} doors, {blueprint.Troops.Count} troops, {blueprint.Powerups.Count} powerups, commander={blueprint.CommanderBuildUnitPosition.HasValue}).");
     }
 
     /// <summary>
@@ -1144,9 +1247,11 @@ public partial class GameManager : Node
                 }
             }
         }
+        PlayerSlot slot = _isSandbox ? PlayerSlot.Player1 : _activeBuilder;
+
         if (clearChanges.Count > 0)
         {
-            _voxelWorld.ApplyBulkChanges(clearChanges, PlayerSlot.Player1);
+            _voxelWorld.ApplyBulkChanges(clearChanges, slot);
         }
 
         // Place the blueprint voxels
@@ -1162,18 +1267,506 @@ public partial class GameManager : Node
         }
         if (placeChanges.Count > 0)
         {
-            _voxelWorld.ApplyBulkChanges(placeChanges, PlayerSlot.Player1);
+            _voxelWorld.ApplyBulkChanges(placeChanges, slot);
         }
 
-        GD.Print($"[Sandbox] Build '{buildName}' loaded ({placeChanges.Count} voxels placed).");
+        // Remove existing weapons for this player
+        if (_weapons.TryGetValue(slot, out List<WeaponBase>? existingWeapons))
+        {
+            foreach (WeaponBase w in existingWeapons)
+            {
+                if (w != null && GodotObject.IsInstanceValid(w))
+                    w.QueueFree();
+            }
+            existingWeapons.Clear();
+        }
+
+        // Restore weapons from blueprint (with rotation)
+        if (_weaponPlacer != null && blueprint.Weapons.Count > 0)
+        {
+            if (!_weapons.ContainsKey(slot))
+                _weapons[slot] = new List<WeaponBase>();
+
+            foreach (BlueprintWeaponData wd in blueprint.Weapons)
+            {
+                Vector3I absBuildPos = wd.BuildUnitPosition + zone.OriginBuildUnits;
+                WeaponBase? weapon = wd.WeaponId switch
+                {
+                    "cannon" => _weaponPlacer.PlaceWeapon<Cannon>(this, _voxelWorld, absBuildPos, slot),
+                    "mortar" => _weaponPlacer.PlaceWeapon<Mortar>(this, _voxelWorld, absBuildPos, slot),
+                    "missile" => _weaponPlacer.PlaceWeapon<MissileLauncher>(this, _voxelWorld, absBuildPos, slot),
+                    "railgun" => _weaponPlacer.PlaceWeapon<Railgun>(this, _voxelWorld, absBuildPos, slot),
+                    "drill" => _weaponPlacer.PlaceWeapon<Drill>(this, _voxelWorld, absBuildPos, slot),
+                    _ => null,
+                };
+                if (weapon != null)
+                {
+                    // Apply saved rotation AFTER PlaceWeapon (which auto-orients)
+                    weapon.Rotation = new Vector3(0f, wd.RotationY, 0f);
+                    _weapons[slot].Add(weapon);
+                }
+            }
+        }
+
+        // Remove existing doors for this player and restore from blueprint
+        if (_armyManager != null)
+        {
+            _armyManager.Doors.ClearPlayerDoors(slot);
+            foreach (BlueprintDoorData dd in blueprint.Doors)
+            {
+                Vector3I absMicro = dd.RelativeMicrovoxel + zone.OriginMicrovoxels;
+                _armyManager.Doors.TryPlaceDoor(
+                    _voxelWorld, absMicro, slot,
+                    zone.OriginMicrovoxels, zone.MaxMicrovoxelsInclusive,
+                    dd.RotationHint, out _);
+            }
+        }
+
+        // Remove existing troop markers and purchased troops, then restore
+        if (_armyManager != null)
+        {
+            // Clear existing troop markers for this player
+            string markerPrefix = $"TroopMarker_{slot}_";
+            foreach (Node child in GetTree().GetNodesInGroup("TroopMarkers"))
+            {
+                if (child.Name.ToString().StartsWith(markerPrefix))
+                    child.QueueFree();
+            }
+
+            _armyManager.ClearPurchasedTroops(slot);
+            foreach (BlueprintTroopData td in blueprint.Troops)
+            {
+                Vector3I? absPos = td.RelativeMicrovoxel.HasValue
+                    ? td.RelativeMicrovoxel.Value + zone.OriginMicrovoxels
+                    : null;
+                _armyManager.RestoreTroop(slot, td.Type, absPos);
+                if (absPos.HasValue)
+                {
+                    SpawnTroopMarker(absPos.Value, td.Type);
+                }
+            }
+        }
+
+        // Restore powerups
+        if (_players.TryGetValue(slot, out PlayerData? pLoad))
+        {
+            pLoad.Powerups.Clear();
+            foreach (PowerupType pt in blueprint.Powerups)
+            {
+                pLoad.Powerups.AddFree(pt);
+            }
+        }
+
+        // Remove existing commander for this player
+        if (_commanders.TryGetValue(slot, out CommanderActor? existingCmd) && GodotObject.IsInstanceValid(existingCmd))
+        {
+            existingCmd.QueueFree();
+            _commanders.Remove(slot);
+        }
+
+        // Restore commander from blueprint
+        if (blueprint.CommanderBuildUnitPosition.HasValue)
+        {
+            Vector3I absCmdPos = blueprint.CommanderBuildUnitPosition.Value + zone.OriginBuildUnits;
+            CommanderActor commander = new CommanderActor();
+            commander.Name = $"Commander_{slot}";
+            AddChild(commander);
+            commander.OwnerSlot = slot;
+            commander.PlaceCommander(_voxelWorld, absCmdPos);
+            commander.Rotation = new Vector3(0f, blueprint.CommanderRotationY, 0f);
+            _commanders[slot] = commander;
+
+            if (_players.TryGetValue(slot, out PlayerData? player))
+            {
+                player.CommanderMicrovoxelPosition = absCmdPos * GameConfig.MicrovoxelsPerBuildUnit;
+                player.CommanderHealth = GameConfig.CommanderHP;
+            }
+        }
+
+        GD.Print($"[Sandbox] Build '{buildName}' loaded ({placeChanges.Count} voxels, {blueprint.Weapons.Count} weapons, {blueprint.Doors.Count} doors, {blueprint.Troops.Count} troops, {blueprint.Powerups.Count} powerups, commander={blueprint.CommanderBuildUnitPosition.HasValue}).");
     }
 
     /// <summary>
-    /// Returns the list of saved sandbox build names from the player profile.
+    /// Returns the list of saved sandbox build names, cross-referencing the
+    /// player profile with actual blueprint files on disk. If files exist
+    /// but aren't listed in the profile, they're recovered automatically.
     /// </summary>
     public List<string> GetSavedBuildNames()
     {
-        return _progressionManager?.Profile?.SavedBuilds ?? new List<string>();
+        PlayerProfile? profile = _progressionManager?.Profile;
+        List<string> profileBuilds = profile?.SavedBuilds ?? new List<string>();
+
+        // Scan disk for actual blueprint files as a fallback
+        if (_blueprintSystem == null)
+            _blueprintSystem = new BlueprintSystem();
+        List<string> diskBuilds = _blueprintSystem.ScanBlueprintFiles();
+
+        // Recover any builds that exist on disk but are missing from the profile
+        bool dirty = false;
+        foreach (string diskName in diskBuilds)
+        {
+            if (profile != null && !profileBuilds.Contains(diskName))
+            {
+                GD.Print($"[Sandbox] Recovering orphaned build '{diskName}' from disk into profile");
+                profileBuilds.Add(diskName);
+                dirty = true;
+            }
+        }
+
+        // Save the recovered entries back to disk
+        if (dirty && profile != null)
+        {
+            SaveSystem.SaveJson("user://profile/player_profile.json", profile);
+        }
+
+        return profileBuilds;
+    }
+
+    /// <summary>
+    /// Deletes a saved build by name — removes the blueprint file and the profile entry.
+    /// </summary>
+    public bool DeleteSandboxBuild(string buildName)
+    {
+        if (_blueprintSystem == null)
+            _blueprintSystem = new BlueprintSystem();
+
+        // Delete the blueprint JSON file
+        string path = _blueprintSystem.MakeBlueprintPath(buildName);
+        string globalPath = ProjectSettings.GlobalizePath(path);
+        if (System.IO.File.Exists(globalPath))
+        {
+            System.IO.File.Delete(globalPath);
+        }
+
+        // Remove from player profile
+        PlayerProfile? profile = _progressionManager?.Profile;
+        if (profile != null && profile.SavedBuilds.Remove(buildName))
+        {
+            SaveSystem.SaveJson("user://profile/player_profile.json", profile);
+            GD.Print($"[Sandbox] Build '{buildName}' deleted.");
+            return true;
+        }
+
+        // Also try reading directly from disk if ProgressionManager isn't available
+        PlayerProfile? diskProfile = SaveSystem.LoadJson<PlayerProfile>("user://profile/player_profile.json");
+        if (diskProfile != null && diskProfile.SavedBuilds.Remove(buildName))
+        {
+            SaveSystem.SaveJson("user://profile/player_profile.json", diskProfile);
+            GD.Print($"[Sandbox] Build '{buildName}' deleted (from disk profile).");
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Exports the current sandbox build to a .vsbuild file at the given path.
+    /// </summary>
+    public void ExportSandboxBuild(string absolutePath, UI.BuildUI? buildUI)
+    {
+        if (!_isSandbox || _voxelWorld == null)
+        {
+            GD.Print("[Export] Cannot export: not in sandbox mode.");
+            buildUI?.ShowExportStatus("Not in sandbox mode", new Color("d73a49"));
+            return;
+        }
+
+        if (!_buildZones.TryGetValue(PlayerSlot.Player1, out BuildZone zone))
+        {
+            GD.Print("[Export] Cannot export: no build zone found.");
+            buildUI?.ShowExportStatus("No build zone found", new Color("d73a49"));
+            return;
+        }
+
+        if (_blueprintSystem == null)
+        {
+            _blueprintSystem = new BlueprintSystem();
+        }
+
+        // Capture fresh from the current world state
+        string name = System.IO.Path.GetFileNameWithoutExtension(absolutePath);
+        BlueprintData blueprint = _blueprintSystem.Capture(_voxelWorld, zone, name);
+
+        // Capture weapons (including rotation)
+        blueprint.Weapons.Clear();
+        if (_weapons.TryGetValue(PlayerSlot.Player1, out List<WeaponBase>? weaponList))
+        {
+            foreach (WeaponBase w in weaponList)
+            {
+                if (w == null || !GodotObject.IsInstanceValid(w)) continue;
+                Vector3I microPos = MathHelpers.WorldToMicrovoxel(w.GlobalPosition);
+                Vector3I buildPos = MathHelpers.MicrovoxelToBuild(microPos);
+                Vector3I relPos = buildPos - zone.OriginBuildUnits;
+                blueprint.Weapons.Add(new BlueprintWeaponData
+                {
+                    WeaponId = w.WeaponId,
+                    BuildUnitPosition = relPos,
+                    RotationY = w.Rotation.Y,
+                });
+            }
+        }
+
+        // Capture doors
+        blueprint.Doors.Clear();
+        if (_armyManager != null)
+        {
+            var doors = _armyManager.Doors.GetDoors(PlayerSlot.Player1);
+            foreach (var door in doors)
+            {
+                Vector3I relMicro = door.BaseMicrovoxel - zone.OriginMicrovoxels;
+                int rotHint = NormalToRotationHint(door.OutwardNormal);
+                blueprint.Doors.Add(new BlueprintDoorData
+                {
+                    RelativeMicrovoxel = relMicro,
+                    RotationHint = rotHint,
+                });
+            }
+        }
+
+        // Capture troops
+        blueprint.Troops.Clear();
+        if (_armyManager != null)
+        {
+            var troops = _armyManager.GetPurchasedTroops(PlayerSlot.Player1);
+            foreach (var t in troops)
+            {
+                Vector3I? relPos = t.PlacedPosition.HasValue
+                    ? t.PlacedPosition.Value - zone.OriginMicrovoxels
+                    : null;
+                blueprint.Troops.Add(new BlueprintTroopData
+                {
+                    Type = t.Type,
+                    RelativeMicrovoxel = relPos,
+                });
+            }
+        }
+
+        // Capture powerups
+        blueprint.Powerups.Clear();
+        if (_players.TryGetValue(PlayerSlot.Player1, out PlayerData? p1Export))
+        {
+            foreach (PowerupType pt in p1Export.Powerups.OwnedPowerups)
+            {
+                blueprint.Powerups.Add(pt);
+            }
+        }
+
+        // Capture commander
+        blueprint.CommanderBuildUnitPosition = null;
+        if (_commanders.TryGetValue(PlayerSlot.Player1, out CommanderActor? cmd) && GodotObject.IsInstanceValid(cmd))
+        {
+            Vector3I relCmd = cmd.BuildUnitPosition - zone.OriginBuildUnits;
+            blueprint.CommanderBuildUnitPosition = relCmd;
+            blueprint.CommanderRotationY = cmd.Rotation.Y;
+        }
+
+        if (_blueprintSystem.ExportBlueprint(blueprint, absolutePath))
+        {
+            buildUI?.ShowExportStatus($"Exported! ({blueprint.Voxels.Count} voxels, {blueprint.Weapons.Count} weapons, {blueprint.Doors.Count} doors, {blueprint.Troops.Count} troops)", new Color("2ea043"));
+        }
+        else
+        {
+            buildUI?.ShowExportStatus("Export failed — check logs", new Color("d73a49"));
+        }
+    }
+
+    /// <summary>
+    /// Imports a .vsbuild file and loads it into the current sandbox build zone.
+    /// </summary>
+    public void ImportSandboxBuild(string absolutePath, UI.BuildUI? buildUI)
+    {
+        if (_voxelWorld == null)
+        {
+            GD.Print("[Import] Cannot import: no voxel world.");
+            buildUI?.ShowExportStatus("No voxel world", new Color("d73a49"));
+            return;
+        }
+
+        if (!_buildZones.TryGetValue(_isSandbox ? PlayerSlot.Player1 : _activeBuilder, out BuildZone zone))
+        {
+            GD.Print("[Import] Cannot import: no build zone found.");
+            buildUI?.ShowExportStatus("No build zone found", new Color("d73a49"));
+            return;
+        }
+
+        if (_blueprintSystem == null)
+        {
+            _blueprintSystem = new BlueprintSystem();
+        }
+
+        BlueprintData? blueprint = _blueprintSystem.ImportBlueprint(absolutePath);
+        if (blueprint == null)
+        {
+            buildUI?.ShowExportStatus("Import failed — invalid or corrupted file", new Color("d73a49"));
+            return;
+        }
+
+        // Clear existing voxels in the zone (only player-placed, not foundation)
+        var clearChanges = new List<(Vector3I Position, Voxel.Voxel NewVoxel)>();
+        for (int z = zone.OriginMicrovoxels.Z; z <= zone.MaxMicrovoxelsInclusive.Z; z++)
+        {
+            for (int y = zone.OriginMicrovoxels.Y; y <= zone.MaxMicrovoxelsInclusive.Y; y++)
+            {
+                for (int x = zone.OriginMicrovoxels.X; x <= zone.MaxMicrovoxelsInclusive.X; x++)
+                {
+                    Vector3I pos = new Vector3I(x, y, z);
+                    Voxel.Voxel v = _voxelWorld.GetVoxel(pos);
+                    if (!v.IsAir && v.Material != VoxelMaterialType.Foundation)
+                    {
+                        clearChanges.Add((pos, Voxel.Voxel.Air));
+                    }
+                }
+            }
+        }
+        if (clearChanges.Count > 0)
+        {
+            _voxelWorld.ApplyBulkChanges(clearChanges, PlayerSlot.Player1);
+        }
+
+        // Place the imported blueprint voxels
+        var placeChanges = new List<(Vector3I Position, Voxel.Voxel NewVoxel)>();
+        foreach (BlueprintVoxelData bv in blueprint.Voxels)
+        {
+            Vector3I worldPos = zone.OriginMicrovoxels + new Vector3I(bv.X, bv.Y, bv.Z);
+            Voxel.Voxel voxel = new Voxel.Voxel(bv.Data);
+            if (voxel.Material != VoxelMaterialType.Foundation)
+            {
+                placeChanges.Add((worldPos, voxel));
+            }
+        }
+        if (placeChanges.Count > 0)
+        {
+            _voxelWorld.ApplyBulkChanges(placeChanges, PlayerSlot.Player1);
+        }
+
+        PlayerSlot slot = _isSandbox ? PlayerSlot.Player1 : _activeBuilder;
+
+        // Remove existing weapons for this player
+        if (_weapons.TryGetValue(slot, out List<WeaponBase>? existingWeapons))
+        {
+            foreach (WeaponBase w in existingWeapons)
+            {
+                if (w != null && GodotObject.IsInstanceValid(w))
+                    w.QueueFree();
+            }
+            existingWeapons.Clear();
+        }
+
+        // Restore weapons from blueprint (with rotation)
+        if (_weaponPlacer != null && blueprint.Weapons.Count > 0)
+        {
+            if (!_weapons.ContainsKey(slot))
+                _weapons[slot] = new List<WeaponBase>();
+
+            foreach (BlueprintWeaponData wd in blueprint.Weapons)
+            {
+                Vector3I absBuildPos = wd.BuildUnitPosition + zone.OriginBuildUnits;
+                WeaponBase? weapon = wd.WeaponId switch
+                {
+                    "cannon" => _weaponPlacer.PlaceWeapon<Cannon>(this, _voxelWorld, absBuildPos, slot),
+                    "mortar" => _weaponPlacer.PlaceWeapon<Mortar>(this, _voxelWorld, absBuildPos, slot),
+                    "missile" => _weaponPlacer.PlaceWeapon<MissileLauncher>(this, _voxelWorld, absBuildPos, slot),
+                    "railgun" => _weaponPlacer.PlaceWeapon<Railgun>(this, _voxelWorld, absBuildPos, slot),
+                    "drill" => _weaponPlacer.PlaceWeapon<Drill>(this, _voxelWorld, absBuildPos, slot),
+                    _ => null,
+                };
+                if (weapon != null)
+                {
+                    // Apply saved rotation AFTER PlaceWeapon (which auto-orients)
+                    weapon.Rotation = new Vector3(0f, wd.RotationY, 0f);
+                    _weapons[slot].Add(weapon);
+                }
+            }
+        }
+
+        // Remove existing doors for this player and restore from blueprint
+        if (_armyManager != null)
+        {
+            _armyManager.Doors.ClearPlayerDoors(slot);
+            foreach (BlueprintDoorData dd in blueprint.Doors)
+            {
+                Vector3I absMicro = dd.RelativeMicrovoxel + zone.OriginMicrovoxels;
+                _armyManager.Doors.TryPlaceDoor(
+                    _voxelWorld, absMicro, slot,
+                    zone.OriginMicrovoxels, zone.MaxMicrovoxelsInclusive,
+                    dd.RotationHint, out _);
+            }
+        }
+
+        // Remove existing troop markers and purchased troops, then restore
+        if (_armyManager != null)
+        {
+            string markerPrefix = $"TroopMarker_{slot}_";
+            foreach (Node child in GetTree().GetNodesInGroup("TroopMarkers"))
+            {
+                if (child.Name.ToString().StartsWith(markerPrefix))
+                    child.QueueFree();
+            }
+
+            _armyManager.ClearPurchasedTroops(slot);
+            foreach (BlueprintTroopData td in blueprint.Troops)
+            {
+                Vector3I? absPos = td.RelativeMicrovoxel.HasValue
+                    ? td.RelativeMicrovoxel.Value + zone.OriginMicrovoxels
+                    : null;
+                _armyManager.RestoreTroop(slot, td.Type, absPos);
+                if (absPos.HasValue)
+                {
+                    SpawnTroopMarker(absPos.Value, td.Type);
+                }
+            }
+        }
+
+        // Restore powerups
+        if (_players.TryGetValue(slot, out PlayerData? pImport))
+        {
+            pImport.Powerups.Clear();
+            foreach (PowerupType pt in blueprint.Powerups)
+            {
+                pImport.Powerups.AddFree(pt);
+            }
+        }
+
+        // Remove existing commander for this player
+        if (_commanders.TryGetValue(slot, out CommanderActor? existingCmd) && GodotObject.IsInstanceValid(existingCmd))
+        {
+            existingCmd.QueueFree();
+            _commanders.Remove(slot);
+        }
+
+        // Restore commander from blueprint
+        if (blueprint.CommanderBuildUnitPosition.HasValue)
+        {
+            Vector3I absCmdPos = blueprint.CommanderBuildUnitPosition.Value + zone.OriginBuildUnits;
+            CommanderActor commander = new CommanderActor();
+            commander.Name = $"Commander_{slot}";
+            AddChild(commander);
+            commander.OwnerSlot = slot;
+            commander.PlaceCommander(_voxelWorld, absCmdPos);
+            commander.Rotation = new Vector3(0f, blueprint.CommanderRotationY, 0f);
+            _commanders[slot] = commander;
+
+            if (_players.TryGetValue(slot, out PlayerData? player))
+            {
+                player.CommanderMicrovoxelPosition = absCmdPos * GameConfig.MicrovoxelsPerBuildUnit;
+                player.CommanderHealth = GameConfig.CommanderHP;
+            }
+        }
+
+        // Also save to local blueprints and profile so it appears in the build list
+        _blueprintSystem.SaveBlueprint(blueprint);
+        PlayerProfile? profile = _progressionManager?.Profile;
+        if (profile != null)
+        {
+            if (!profile.SavedBuilds.Contains(blueprint.Name))
+            {
+                profile.SavedBuilds.Add(blueprint.Name);
+            }
+            SaveSystem.SaveJson("user://profile/player_profile.json", profile);
+        }
+
+        buildUI?.ShowExportStatus($"Imported '{blueprint.Name}' ({placeChanges.Count} voxels, {blueprint.Weapons.Count} weapons)", new Color("2ea043"));
+        GD.Print($"[Import] Build '{blueprint.Name}' imported and loaded ({placeChanges.Count} voxels, {blueprint.Weapons.Count} weapons, {blueprint.Doors.Count} doors, {blueprint.Troops.Count} troops, {blueprint.Powerups.Count} powerups, commander={blueprint.CommanderBuildUnitPosition.HasValue}).");
     }
 
     /// <summary>
@@ -1341,7 +1934,7 @@ public partial class GameManager : Node
             BuildUI? buildUI = GetNodeOrNull<BuildUI>("BuildHUD")
                 ?? GetNodeOrNull<BuildUI>("%BuildUI")
                 ?? GetTree().Root.FindChild("BuildHUD", true, false) as BuildUI;
-            buildUI?.EnableSandboxMode(GetSavedBuildNames());
+            buildUI?.EnableSandboxMode(GetSavedBuildNames(), _sandboxLoadBuildName);
 
             // Auto-load a saved build if one was selected from the slot menu
             if (!string.IsNullOrEmpty(_sandboxLoadBuildName))
@@ -1378,6 +1971,16 @@ public partial class GameManager : Node
             }
         }
         _commanders.Clear();
+
+        // Catch-all: free any Commander children that might have escaped the dict
+        // (e.g. if a commander was created but the dict entry was overwritten)
+        foreach (Node child in GetChildren())
+        {
+            if (child is CommanderActor stray && GodotObject.IsInstanceValid(stray))
+            {
+                stray.QueueFree();
+            }
+        }
 
         // Clean up existing weapons
         foreach (List<WeaponBase> weaponList in _weapons.Values)
@@ -1432,6 +2035,14 @@ public partial class GameManager : Node
             _loadingSplashLayer = null;
         }
 
+        // Reset pending game-over state so it doesn't bleed into the next match
+        _pendingGameOver = false;
+        _pendingWinner = null;
+
+        // Reset multiplayer sync state
+        _localBuildReady = false;
+        _remoteBuildSnapshots.Clear();
+
         // Reset turn manager
         _turnManager?.StopTurnClock();
 
@@ -1449,6 +2060,19 @@ public partial class GameManager : Node
 
         // Clean up all powerup FX (smoke clouds, shields, EMP) so they don't persist to menu
         _powerupExecutor?.CleanupAllFX();
+
+        // Clean up army manager (troops, doors) so they don't carry over between matches
+        _armyManager?.ClearAll();
+
+        // Clean up troop markers
+        foreach (Node child in GetTree().GetNodesInGroup("TroopMarkers"))
+        {
+            child.QueueFree();
+        }
+
+        // Restore normal time scale (commander death slow-mo may still be active
+        // if the user quits during the kill cam before the async reset fires)
+        Engine.TimeScale = 1.0;
     }
 
     /// <summary>
@@ -1462,6 +2086,15 @@ public partial class GameManager : Node
         // Restore normal time scale (may have been slowed for bombardment)
         Engine.TimeScale = 1.0;
         _artilleryDominanceActive = false;
+
+        // Always clear sandbox flag so the next match doesn't think it's sandbox
+        _isSandbox = false;
+
+        // Clean up sandbox UI if it's still showing
+        BuildUI? sandboxBuildUI = GetNodeOrNull<BuildUI>("BuildHUD")
+            ?? GetNodeOrNull<BuildUI>("%BuildUI")
+            ?? GetTree().Root.FindChild("BuildHUD", true, false) as BuildUI;
+        sandboxBuildUI?.DisableSandboxMode();
 
         // 1. Clean up all match objects (commanders, weapons, bots, projectiles, FX, etc.)
         CleanupMatchState();
@@ -1551,6 +2184,588 @@ public partial class GameManager : Node
         SetPhase(GamePhase.Menu);
     }
 
+    // ─────────────────────────────────────────────────
+    //  MULTIPLAYER SYNC HANDLERS
+    // ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns the PlayerSlot assigned to the local machine's peer ID.
+    /// Falls back to Player1 if offline or not found.
+    /// </summary>
+    private PlayerSlot GetLocalPlayerSlot()
+    {
+        if (_networkManager == null || !_networkManager.IsOnline)
+            return PlayerSlot.Player1;
+
+        long localPeer = _networkManager.LocalPeerId;
+        foreach ((PlayerSlot slot, PlayerData data) in _players)
+        {
+            if (data.PeerId == localPeer)
+                return slot;
+        }
+        return PlayerSlot.Player1;
+    }
+
+    /// <summary>
+    /// Captures the current build state for a player as BlueprintData JSON.
+    /// Generalizes the SaveSandboxBuild logic for any player slot.
+    /// </summary>
+    private string CapturePlayerBuildJson(PlayerSlot slot)
+    {
+        if (_voxelWorld == null || !_buildZones.TryGetValue(slot, out BuildZone zone))
+            return "{}";
+
+        if (_blueprintSystem == null) _blueprintSystem = new BlueprintSystem();
+
+        BlueprintData blueprint = _blueprintSystem.Capture(_voxelWorld, zone, $"online_{slot}");
+
+        // Capture weapons
+        blueprint.Weapons.Clear();
+        if (_weapons.TryGetValue(slot, out List<WeaponBase>? weaponList))
+        {
+            foreach (WeaponBase w in weaponList)
+            {
+                if (w == null || !GodotObject.IsInstanceValid(w)) continue;
+                Vector3I microPos = MathHelpers.WorldToMicrovoxel(w.GlobalPosition);
+                Vector3I buildPos = MathHelpers.MicrovoxelToBuild(microPos);
+                Vector3I relPos = buildPos - zone.OriginBuildUnits;
+                blueprint.Weapons.Add(new BlueprintWeaponData
+                {
+                    WeaponId = w.WeaponId,
+                    BuildUnitPosition = relPos,
+                    RotationY = w.Rotation.Y,
+                });
+            }
+        }
+
+        // Capture doors
+        blueprint.Doors.Clear();
+        if (_armyManager != null)
+        {
+            var doors = _armyManager.Doors.GetDoors(slot);
+            foreach (var door in doors)
+            {
+                Vector3I relMicro = door.BaseMicrovoxel - zone.OriginMicrovoxels;
+                int rotHint = NormalToRotationHint(door.OutwardNormal);
+                blueprint.Doors.Add(new BlueprintDoorData
+                {
+                    RelativeMicrovoxel = relMicro,
+                    RotationHint = rotHint,
+                });
+            }
+        }
+
+        // Capture troops
+        blueprint.Troops.Clear();
+        if (_armyManager != null)
+        {
+            var troops = _armyManager.GetPurchasedTroops(slot);
+            foreach (var t in troops)
+            {
+                Vector3I? relPos = t.PlacedPosition.HasValue
+                    ? t.PlacedPosition.Value - zone.OriginMicrovoxels
+                    : null;
+                blueprint.Troops.Add(new BlueprintTroopData
+                {
+                    Type = t.Type,
+                    RelativeMicrovoxel = relPos,
+                });
+            }
+        }
+
+        // Capture powerups
+        blueprint.Powerups.Clear();
+        if (_players.TryGetValue(slot, out PlayerData? pSave))
+        {
+            foreach (PowerupType pt in pSave.Powerups.OwnedPowerups)
+            {
+                blueprint.Powerups.Add(pt);
+            }
+        }
+
+        // Capture commander
+        blueprint.CommanderBuildUnitPosition = null;
+        if (_commanders.TryGetValue(slot, out CommanderActor? cmd) && GodotObject.IsInstanceValid(cmd))
+        {
+            Vector3I relCmd = cmd.BuildUnitPosition - zone.OriginBuildUnits;
+            blueprint.CommanderBuildUnitPosition = relCmd;
+            blueprint.CommanderRotationY = cmd.Rotation.Y;
+        }
+
+        string json = System.Text.Json.JsonSerializer.Serialize(blueprint, new System.Text.Json.JsonSerializerOptions { WriteIndented = false, IncludeFields = true });
+        GD.Print($"[Online] Captured build for {slot}: {blueprint.Voxels.Count} voxels, {blueprint.Weapons.Count} weapons, commander={blueprint.CommanderBuildUnitPosition.HasValue}");
+        return json;
+    }
+
+    /// <summary>
+    /// Applies a remote player's build snapshot to their build zone.
+    /// Reuses the same logic as LoadSandboxBuild.
+    /// </summary>
+    private void ApplyRemoteBuild(PlayerSlot slot, string blueprintJson)
+    {
+        if (_voxelWorld == null || !_buildZones.TryGetValue(slot, out BuildZone zone))
+        {
+            GD.PrintErr($"[Online] Cannot apply remote build for {slot}: no world or zone.");
+            return;
+        }
+
+        BlueprintData? blueprint = System.Text.Json.JsonSerializer.Deserialize<BlueprintData>(
+            blueprintJson, new System.Text.Json.JsonSerializerOptions { IncludeFields = true });
+        if (blueprint == null)
+        {
+            GD.PrintErr($"[Online] Failed to deserialize remote build for {slot}.");
+            return;
+        }
+
+        // Place voxels
+        var placeChanges = new List<(Vector3I Position, Voxel.Voxel NewVoxel)>();
+        foreach (BlueprintVoxelData bv in blueprint.Voxels)
+        {
+            Vector3I worldPos = zone.OriginMicrovoxels + new Vector3I(bv.X, bv.Y, bv.Z);
+            Voxel.Voxel voxel = new Voxel.Voxel(bv.Data);
+            if (voxel.Material != VoxelMaterialType.Foundation)
+            {
+                placeChanges.Add((worldPos, voxel));
+            }
+        }
+        if (placeChanges.Count > 0)
+        {
+            _voxelWorld.ApplyBulkChanges(placeChanges, slot);
+        }
+
+        // Restore weapons
+        if (_weaponPlacer != null && blueprint.Weapons.Count > 0)
+        {
+            if (!_weapons.ContainsKey(slot))
+                _weapons[slot] = new List<WeaponBase>();
+
+            foreach (BlueprintWeaponData wd in blueprint.Weapons)
+            {
+                Vector3I absBuildPos = wd.BuildUnitPosition + zone.OriginBuildUnits;
+                WeaponBase? weapon = wd.WeaponId switch
+                {
+                    "cannon" => _weaponPlacer.PlaceWeapon<Cannon>(this, _voxelWorld, absBuildPos, slot),
+                    "mortar" => _weaponPlacer.PlaceWeapon<Mortar>(this, _voxelWorld, absBuildPos, slot),
+                    "missile" => _weaponPlacer.PlaceWeapon<MissileLauncher>(this, _voxelWorld, absBuildPos, slot),
+                    "railgun" => _weaponPlacer.PlaceWeapon<Railgun>(this, _voxelWorld, absBuildPos, slot),
+                    "drill" => _weaponPlacer.PlaceWeapon<Drill>(this, _voxelWorld, absBuildPos, slot),
+                    _ => null,
+                };
+                if (weapon != null)
+                {
+                    weapon.Rotation = new Vector3(0f, wd.RotationY, 0f);
+                    _weapons[slot].Add(weapon);
+                }
+            }
+        }
+
+        // Restore doors
+        if (_armyManager != null)
+        {
+            foreach (BlueprintDoorData dd in blueprint.Doors)
+            {
+                Vector3I absMicro = dd.RelativeMicrovoxel + zone.OriginMicrovoxels;
+                _armyManager.Doors.TryPlaceDoor(
+                    _voxelWorld, absMicro, slot,
+                    zone.OriginMicrovoxels, zone.MaxMicrovoxelsInclusive,
+                    dd.RotationHint, out _);
+            }
+        }
+
+        // Restore troops
+        if (_armyManager != null)
+        {
+            foreach (BlueprintTroopData td in blueprint.Troops)
+            {
+                Vector3I? absPos = td.RelativeMicrovoxel.HasValue
+                    ? td.RelativeMicrovoxel.Value + zone.OriginMicrovoxels
+                    : null;
+                _armyManager.RestoreTroop(slot, td.Type, absPos);
+            }
+        }
+
+        // Restore powerups
+        if (_players.TryGetValue(slot, out PlayerData? pLoad))
+        {
+            pLoad.Powerups.Clear();
+            foreach (PowerupType pt in blueprint.Powerups)
+            {
+                pLoad.Powerups.AddFree(pt);
+            }
+        }
+
+        // Restore commander
+        if (blueprint.CommanderBuildUnitPosition.HasValue)
+        {
+            if (_commanders.TryGetValue(slot, out CommanderActor? existingCmd) && GodotObject.IsInstanceValid(existingCmd))
+            {
+                existingCmd.QueueFree();
+                _commanders.Remove(slot);
+            }
+
+            Vector3I absCmdPos = blueprint.CommanderBuildUnitPosition.Value + zone.OriginBuildUnits;
+            CommanderActor commander = new CommanderActor();
+            commander.Name = $"Commander_{slot}";
+            AddChild(commander);
+            commander.OwnerSlot = slot;
+            commander.PlaceCommander(_voxelWorld, absCmdPos);
+            commander.Rotation = new Vector3(0f, blueprint.CommanderRotationY, 0f);
+            _commanders[slot] = commander;
+
+            if (_players.TryGetValue(slot, out PlayerData? player))
+            {
+                player.CommanderMicrovoxelPosition = absCmdPos * GameConfig.MicrovoxelsPerBuildUnit;
+                player.CommanderHealth = GameConfig.CommanderHP;
+            }
+        }
+
+        GD.Print($"[Online] Applied remote build for {slot}: {blueprint.Voxels.Count} voxels, {blueprint.Weapons.Count} weapons");
+    }
+
+    /// <summary>
+    /// Called when a remote player's build snapshot arrives via RPC.
+    /// </summary>
+    private void OnRemoteBuildComplete(BuildCompleteSyncPayload payload)
+    {
+        PlayerSlot slot = (PlayerSlot)payload.PlayerSlotIndex;
+        GD.Print($"[Online] Received build snapshot from {slot}");
+        _remoteBuildSnapshots[slot] = payload.BlueprintJson;
+        CheckAllPlayersReadyForCombat();
+    }
+
+    /// <summary>
+    /// Checks if all players have submitted their builds. If so, applies remote builds
+    /// and starts combat.
+    /// </summary>
+    private void CheckAllPlayersReadyForCombat()
+    {
+        if (!_localBuildReady) return;
+
+        PlayerSlot localSlot = GetLocalPlayerSlot();
+        foreach (PlayerSlot slot in _players.Keys)
+        {
+            if (slot == localSlot) continue; // We already have our own build
+            if (!_remoteBuildSnapshots.ContainsKey(slot))
+            {
+                GD.Print($"[Online] Still waiting for build from {slot}");
+                return;
+            }
+        }
+
+        // All builds received — apply remote snapshots and start combat
+        GD.Print("[Online] All players ready! Applying remote builds and starting combat...");
+        foreach ((PlayerSlot slot, string json) in _remoteBuildSnapshots)
+        {
+            ApplyRemoteBuild(slot, json);
+        }
+
+        StartCombatCountdown();
+    }
+
+    /// <summary>
+    /// Called when a remote player fires a weapon. Replays the fire locally.
+    /// </summary>
+    private void OnRemoteWeaponFire(WeaponFireSyncPayload payload)
+    {
+        PlayerSlot slot = (PlayerSlot)payload.PlayerSlotIndex;
+        if (IsLocalPlayer(slot)) return; // Ignore our own echoes
+
+        if (_voxelWorld == null) return;
+        if (!_weapons.TryGetValue(slot, out List<WeaponBase>? weaponList) || weaponList.Count == 0) return;
+
+        // Build the same alive-weapons list as the firing client
+        List<WeaponBase> aliveWeapons = weaponList.FindAll(w =>
+            w != null && GodotObject.IsInstanceValid(w) && !w.IsDestroyed);
+        if (aliveWeapons.Count == 0) return;
+
+        int safeIndex = payload.WeaponIndex % aliveWeapons.Count;
+        WeaponBase? weapon = aliveWeapons[safeIndex];
+        if (weapon == null || !GodotObject.IsInstanceValid(weapon)) return;
+
+        Vector3 launchVelocity = new Vector3(payload.VelocityX, payload.VelocityY, payload.VelocityZ);
+        int round = _turnManager?.RoundNumber ?? 0;
+        ProjectileBase? projectile = weapon.FireRemote(launchVelocity, _voxelWorld, round);
+
+        GD.Print($"[Online] Replayed weapon fire from {slot}: weapon {payload.WeaponIndex}, velocity={launchVelocity}");
+
+        // Track stats for the remote player
+        if (_players.TryGetValue(slot, out PlayerData? remotePlayer))
+            remotePlayer.Stats.ShotsFired++;
+
+        // Hide attack UI and skip button during remote fire (same as local fire)
+        {
+            CombatUI? combatUI2 = GetNodeOrNull<CombatUI>("%CombatUI")
+                ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
+            combatUI2?.HideAttackUI();
+        }
+        if (_skipTurnButton != null) _skipTurnButton.Visible = false;
+
+        // Set up troop sequence deferral same as local fire path
+        _deferTurnAdvanceForTroops = _armyManager?.HasAliveTroops(slot) ?? false;
+        _troopSequencePlayer = slot;
+
+        // Follow the remote projectile with the combat camera
+        if (_combatCamera != null && projectile != null && GodotObject.IsInstanceValid(projectile))
+        {
+            _camera?.Deactivate();
+            _combatCamera.FollowProjectile(projectile);
+        }
+    }
+
+    /// <summary>
+    /// Called when a remote player skips their turn.
+    /// </summary>
+    private void OnRemoteSkipTurn(SkipTurnSyncPayload payload)
+    {
+        PlayerSlot slot = (PlayerSlot)payload.PlayerSlotIndex;
+        if (IsLocalPlayer(slot)) return; // Ignore our own echoes
+
+        GD.Print($"[Online] Remote player {slot} skipped turn");
+
+        // Use a deferred call to avoid re-entrancy from AdvanceTurn → TurnChanged
+        GetTree().CreateTimer(0.0).Timeout += () =>
+        {
+            if (CurrentPhase != GamePhase.Combat || _turnManager?.CurrentPlayer != slot)
+                return;
+            _turnManager.SkipTurn(Settings.TurnTimeSeconds);
+        };
+    }
+
+    /// <summary>
+    /// Called when the host broadcasts the turn order for combat.
+    /// </summary>
+    private void OnRemoteTurnOrder(TurnOrderSyncPayload payload)
+    {
+        if (_networkManager?.IsHost == true) return; // Host already has the order
+
+        List<PlayerSlot> order = new();
+        foreach (int slotIndex in payload.SlotOrder)
+            order.Add((PlayerSlot)slotIndex);
+
+        GD.Print($"[Online] Received turn order from host: {string.Join(", ", order)}");
+        _turnManager?.ConfigureWithOrder(order, Settings.TurnTimeSeconds);
+        _turnManager?.StopTurnClock(); // Don't tick during countdown
+    }
+
+    /// <summary>
+    /// Called when a remote player moves their troops.
+    /// </summary>
+    private void OnRemoteTroopMove(TroopMoveSyncPayload payload)
+    {
+        PlayerSlot slot = (PlayerSlot)payload.PlayerSlotIndex;
+        if (IsLocalPlayer(slot)) return;
+
+        Vector3I target = new Vector3I(payload.TargetX, payload.TargetY, payload.TargetZ);
+        GD.Print($"[Online] Remote player {slot} moved troops to {target}");
+        _armyManager?.MoveTroopsToward(slot, target);
+    }
+
+    /// <summary>
+    /// Called when a remote player activates a powerup.
+    /// Replays the powerup activation locally.
+    /// </summary>
+    private void OnRemotePowerupUsed(PowerupUsedSyncPayload payload)
+    {
+        PlayerSlot slot = (PlayerSlot)payload.PlayerSlotIndex;
+        if (IsLocalPlayer(slot)) return;
+
+        if (!_players.TryGetValue(slot, out PlayerData? player) || _powerupExecutor == null)
+            return;
+
+        PowerupType type = (PowerupType)payload.PowerupTypeId;
+        int alivePlayerCount = _players.Values.Count(p => p.IsAlive);
+
+        GD.Print($"[Online] Remote player {slot} used powerup {type}");
+
+        bool success = false;
+        switch (type)
+        {
+            case PowerupType.SmokeScreen:
+                success = _powerupExecutor.ActivateSmokeScreen(player, alivePlayerCount);
+                if (success) _powerupExecutor.ReenforceSmokeScreens(_players, _commanders);
+                break;
+            case PowerupType.Medkit:
+                success = _powerupExecutor.ActivateMedkit(player);
+                break;
+            case PowerupType.ShieldGenerator:
+                success = _powerupExecutor.ActivateShieldGenerator(player, alivePlayerCount);
+                break;
+            case PowerupType.AirstrikeBeacon:
+                // Airstrike is non-deterministic (random impact positions).
+                // The activating client sends the result via AirstrikeResultReceived.
+                // Don't activate locally here; wait for that RPC.
+                break;
+            case PowerupType.EmpBlast:
+                // EMP is non-deterministic — the activating client sends the result separately
+                // via EmpResultReceived. Don't activate locally here; wait for that RPC.
+                break;
+        }
+
+        if (success)
+        {
+            CombatUI? combatUI = GetNodeOrNull<CombatUI>("%CombatUI")
+                ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
+            if (_turnManager?.CurrentPlayer == slot)
+                combatUI?.UpdatePowerupSlots(player.Powerups);
+        }
+    }
+
+    /// <summary>
+    /// Called when a remote EMP result is received. Applies the exact same weapon
+    /// disables that the activating client rolled, ensuring deterministic state.
+    /// </summary>
+    private void OnRemoteEmpResult(EmpResultSyncPayload payload)
+    {
+        PlayerSlot activator = (PlayerSlot)payload.ActivatorSlotIndex;
+        if (IsLocalPlayer(activator)) return; // We already applied it locally
+
+        if (!_players.TryGetValue(activator, out PlayerData? activatorData) || _powerupExecutor == null)
+            return;
+
+        // Consume the EMP from inventory on the remote side
+        activatorData.Powerups.TryConsume(PowerupType.EmpBlast);
+
+        GD.Print($"[Online] Applying remote EMP result from {activator}: {payload.DisabledWeaponIndices.Length} weapons");
+
+        for (int i = 0; i < payload.DisabledWeaponIndices.Length && i < payload.DisabledWeaponOwnerSlots.Length; i++)
+        {
+            PlayerSlot ownerSlot = (PlayerSlot)payload.DisabledWeaponOwnerSlots[i];
+            int weaponIdx = payload.DisabledWeaponIndices[i];
+
+            if (!_weapons.TryGetValue(ownerSlot, out List<WeaponBase>? weaponList)) continue;
+
+            // Build same alive-weapons list
+            List<WeaponBase> aliveWeapons = weaponList.FindAll(w =>
+                w != null && GodotObject.IsInstanceValid(w) && !w.IsDestroyed);
+            if (weaponIdx < 0 || weaponIdx >= aliveWeapons.Count) continue;
+
+            WeaponBase weapon = aliveWeapons[weaponIdx];
+            var empData = new PowerupExecutor.EmpData(weapon.GetInstanceId(), weapon.WeaponId, ownerSlot);
+            activatorData.Powerups.AddActiveEffect(PowerupType.EmpBlast, activator, 2, empData);
+            PowerupFX.SpawnEmpEffect(GetTree().Root, weapon.GlobalPosition);
+            GD.Print($"[Online] EMP disabled {weapon.WeaponId} on {ownerSlot}");
+        }
+    }
+
+    /// <summary>
+    /// Captures the current EMP result (which weapons were disabled) and sends
+    /// it to remote clients so they apply the exact same disables.
+    /// </summary>
+    private void SendEmpResultToRemote(PlayerSlot activator)
+    {
+        if (!_players.TryGetValue(activator, out PlayerData? activatorData)) return;
+
+        List<int> ownerSlots = new();
+        List<int> weaponIndices = new();
+
+        foreach (ActivePowerup effect in activatorData.Powerups.GetActiveEffects(PowerupType.EmpBlast))
+        {
+            if (effect.TargetData is PowerupExecutor.EmpData emp)
+            {
+                // Find the weapon's index in the owner's alive-weapons list
+                if (!_weapons.TryGetValue(emp.TargetPlayer, out List<WeaponBase>? weaponList)) continue;
+                List<WeaponBase> aliveWeapons = weaponList.FindAll(w =>
+                    w != null && GodotObject.IsInstanceValid(w) && !w.IsDestroyed);
+
+                for (int i = 0; i < aliveWeapons.Count; i++)
+                {
+                    if (aliveWeapons[i].GetInstanceId() == emp.WeaponInstanceId)
+                    {
+                        ownerSlots.Add((int)emp.TargetPlayer);
+                        weaponIndices.Add(i);
+                        break;
+                    }
+                }
+            }
+        }
+
+        _syncManager?.SendEmpResult(activator, ownerSlots.ToArray(), weaponIndices.ToArray());
+    }
+
+    /// <summary>
+    /// Called when a remote airstrike result is received. Replays the airstrike
+    /// with the exact impact positions computed by the activating client.
+    /// </summary>
+    private void OnRemoteAirstrikeResult(AirstrikeResultSyncPayload payload)
+    {
+        PlayerSlot slot = (PlayerSlot)payload.PlayerSlotIndex;
+        if (IsLocalPlayer(slot)) return; // We already activated it locally
+
+        if (!_players.TryGetValue(slot, out PlayerData? player) || _powerupExecutor == null)
+            return;
+
+        PlayerSlot targetEnemy = (PlayerSlot)payload.TargetEnemySlotIndex;
+
+        // Reconstruct impact positions
+        int count = Math.Min(payload.ImpactXs.Length, Math.Min(payload.ImpactYs.Length, payload.ImpactZs.Length));
+        Vector3[] impacts = new Vector3[count];
+        for (int i = 0; i < count; i++)
+            impacts[i] = new Vector3(payload.ImpactXs[i], payload.ImpactYs[i], payload.ImpactZs[i]);
+
+        if (!_players.TryGetValue(targetEnemy, out PlayerData? enemy) || !enemy.IsAlive)
+            return;
+
+        BuildZone enemyZone = enemy.AssignedBuildZone;
+        Vector3I target = enemyZone.OriginBuildUnits + enemyZone.SizeBuildUnits / 2;
+        bool success = _powerupExecutor.ActivateAirstrikeRemote(player, target, targetEnemy, impacts, payload.PlaneCount);
+        if (success)
+        {
+            player.AirstrikesUsedThisRound++;
+            CombatUI? combatUI = GetNodeOrNull<CombatUI>("%CombatUI")
+                ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
+            if (_turnManager?.CurrentPlayer == slot)
+                combatUI?.UpdatePowerupSlots(player.Powerups);
+        }
+
+        GD.Print($"[Online] Replayed remote airstrike from {slot}: {count} impacts, {payload.PlaneCount} planes");
+    }
+
+    /// <summary>
+    /// Called when a remote game over event is received.
+    /// </summary>
+    private void OnRemoteGameOver(GameOverSyncPayload payload)
+    {
+        if (CurrentPhase == GamePhase.GameOver) return; // Already handled
+
+        PlayerSlot? winner = payload.WinnerSlotIndex >= 0 ? (PlayerSlot)payload.WinnerSlotIndex : null;
+        GD.Print($"[Online] Remote game over: winner={winner}");
+
+        // Mark non-winners as eliminated
+        if (winner.HasValue)
+        {
+            foreach ((PlayerSlot slot, PlayerData playerData) in _players)
+            {
+                if (slot != winner.Value && playerData.IsAlive)
+                    playerData.IsAlive = false;
+            }
+        }
+
+        _turnManager?.StopTurnClock();
+        Engine.TimeScale = 1.0;
+        _artilleryDominanceActive = false;
+        SetPhase(GamePhase.GameOver);
+
+        foreach ((PlayerSlot slot, PlayerData _) in _players)
+        {
+            _progressionManager?.AwardMatchCompleted(winner.HasValue && winner.Value == slot);
+        }
+        if (winner.HasValue && IsLocalPlayer(winner.Value)
+            && _players.TryGetValue(winner.Value, out PlayerData? wp))
+        {
+            _progressionManager?.CommitMatchEarnings(wp.Stats.MatchEarnings);
+        }
+    }
+
+    /// <summary>
+    /// Called when a remote disconnect notification is received.
+    /// </summary>
+    private void OnRemoteDisconnect(DisconnectSyncPayload payload)
+    {
+        PlayerSlot disconnected = (PlayerSlot)payload.DisconnectedSlotIndex;
+        GD.Print($"[Online] Received disconnect notification for {disconnected}");
+        HandleMidGameDisconnect(disconnected);
+    }
+
     /// <summary>
     /// A new peer connected to the network session.
     /// On the host, this means a new player joined.
@@ -1586,6 +2801,81 @@ public partial class GameManager : Node
         if (_networkManager.IsHost)
         {
             BroadcastLobbyState();
+        }
+
+        // Handle mid-game disconnects: find which player slot was this peer
+        if (CurrentPhase == GamePhase.Combat || CurrentPhase == GamePhase.Building || CurrentPhase == GamePhase.FogReveal)
+        {
+            PlayerSlot? disconnectedSlot = null;
+            foreach ((PlayerSlot slot, PlayerData data) in _players)
+            {
+                if (data.PeerId == peerId)
+                {
+                    disconnectedSlot = slot;
+                    break;
+                }
+            }
+
+            if (disconnectedSlot.HasValue)
+            {
+                GD.Print($"[Online] Player {disconnectedSlot.Value} disconnected mid-game!");
+                HandleMidGameDisconnect(disconnectedSlot.Value);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Handles a player disconnecting mid-game. Marks them as dead and
+    /// checks if the game should end.
+    /// </summary>
+    private void HandleMidGameDisconnect(PlayerSlot disconnected)
+    {
+        if (_players.TryGetValue(disconnected, out PlayerData? data))
+        {
+            data.IsAlive = false;
+            data.CommanderHealth = 0;
+        }
+
+        // Surrender their troops
+        _armyManager?.SurrenderTroops(disconnected);
+
+        // Remove from turn order
+        _turnManager?.RemovePlayer(disconnected, Settings.TurnTimeSeconds);
+
+        // Check if only one player remains
+        int aliveCount = 0;
+        PlayerSlot? winner = null;
+        foreach ((PlayerSlot slot, PlayerData playerData) in _players)
+        {
+            if (playerData.IsAlive)
+            {
+                aliveCount++;
+                winner = slot;
+            }
+        }
+
+        if (aliveCount <= 1 && CurrentPhase == GamePhase.Combat)
+        {
+            GD.Print($"[Online] Only {aliveCount} player(s) remaining after disconnect. Game over.");
+            _artilleryDominanceActive = false;
+            _turnManager?.StopTurnClock();
+            Engine.TimeScale = 1.0;
+            SetPhase(GamePhase.GameOver);
+
+            foreach ((PlayerSlot slot, PlayerData _) in _players)
+            {
+                _progressionManager?.AwardMatchCompleted(winner.HasValue && winner.Value == slot);
+            }
+            if (winner.HasValue && IsLocalPlayer(winner.Value)
+                && _players.TryGetValue(winner.Value, out PlayerData? wp))
+            {
+                _progressionManager?.CommitMatchEarnings(wp.Stats.MatchEarnings);
+            }
+        }
+        else if (CurrentPhase == GamePhase.Building)
+        {
+            // If we're still in build phase, check if all remaining players are ready
+            CheckAllPlayersReadyForCombat();
         }
     }
 
@@ -1840,6 +3130,7 @@ public partial class GameManager : Node
                 Slot = member.Slot,
                 DisplayName = member.DisplayName,
                 PlayerColor = color,
+                IsBot = false, // All online players are human
             };
         }
 
@@ -1876,9 +3167,22 @@ public partial class GameManager : Node
         // Set up VoxelGI, environment lighting, and sun after terrain is in scene
         SetupVoxelGiAndLighting();
 
-        // Start with Player1 building
-        _activeBuilderIndex = 0;
-        _activeBuilder = BuildOrder[_activeBuilderIndex];
+        // In online mode, each player builds simultaneously in their own zone.
+        // Set _activeBuilder to the LOCAL player's slot.
+        if (_networkManager != null && _networkManager.IsOnline)
+        {
+            _localBuildReady = false;
+            _remoteBuildSnapshots.Clear();
+            PlayerSlot localSlot = GetLocalPlayerSlot();
+            _activeBuilderIndex = Array.IndexOf(BuildOrder, localSlot);
+            _activeBuilder = localSlot;
+        }
+        else
+        {
+            // Local mode: start with Player1 (sequential builder rotation)
+            _activeBuilderIndex = 0;
+            _activeBuilder = BuildOrder[_activeBuilderIndex];
+        }
 
         // Position camera BEFORE SetPhase so that SetBuildZoneBounds sets
         // _hasCustomBounds = true. This ensures FreeFlyCamera.Activate()
@@ -1946,13 +3250,14 @@ public partial class GameManager : Node
                 {
                     EventBus.Instance?.EmitBudgetChanged(new BudgetChangedEvent(slot, playerData.Budget, 0));
                 }
-                // Initialize powerup counts in the BuildUI for the human player
-                if (_players.TryGetValue(PlayerSlot.Player1, out PlayerData? p1Data))
+                // Initialize powerup counts in the BuildUI for the local player
+                PlayerSlot localBuildSlot = GetLocalPlayerSlot();
+                if (_players.TryGetValue(localBuildSlot, out PlayerData? localBuildData))
                 {
                     BuildUI? buildUI = GetNodeOrNull<BuildUI>("BuildHUD")
                         ?? GetNodeOrNull<BuildUI>("%BuildUI")
                         ?? GetTree().Root.FindChild("BuildHUD", true, false) as BuildUI;
-                    buildUI?.UpdatePowerupCounts(p1Data.Powerups);
+                    buildUI?.UpdatePowerupCounts(localBuildData.Powerups);
                 }
                 // Reset troop counts in BuildUI (ClearAll zeroed the army, UI must match)
                 UpdateBuildUITroopCounts();
@@ -1971,7 +3276,20 @@ public partial class GameManager : Node
                 {
                     BuildPrototypeFortresses();
                     DeployAllTroops();
-                    _turnManager?.Configure(_players.Keys, Settings.TurnTimeSeconds);
+                    // In online mode, host configures turn order and broadcasts.
+                    if (_networkManager?.IsOnline == true)
+                    {
+                        if (_networkManager.IsHost)
+                        {
+                            _turnManager?.Configure(_players.Keys, Settings.TurnTimeSeconds);
+                            if (_turnManager != null)
+                                _syncManager?.SendTurnOrder(_turnManager.TurnOrder);
+                        }
+                    }
+                    else
+                    {
+                        _turnManager?.Configure(_players.Keys, Settings.TurnTimeSeconds);
+                    }
                 }
                 _selectedWeaponIndex = -1; // No weapon selected until player clicks one
                 _isAiming = false;
@@ -3433,8 +4751,8 @@ public partial class GameManager : Node
             return;
         }
 
-        // Human players must place a commander and at least 1 weapon before readying up
-        if (!IsBot(_activeBuilder))
+        // Local human players must place a commander and at least 1 weapon before readying up
+        if (IsLocalPlayer(_activeBuilder))
         {
             bool hasCommander = _commanders.TryGetValue(_activeBuilder, out var cmd)
                                 && cmd != null
@@ -3459,9 +4777,9 @@ public partial class GameManager : Node
             }
         }
 
-        // Show naming popup for human players before advancing.
+        // Show naming popup for local human players before advancing.
         // If already awaiting a name (popup is open), ignore the second click.
-        if (!IsBot(_activeBuilder))
+        if (IsLocalPlayer(_activeBuilder))
         {
             if (!_awaitingName)
             {
@@ -3475,6 +4793,29 @@ public partial class GameManager : Node
 
     private void FinalizeBuildReady()
     {
+        // ── Online multiplayer: capture + send build snapshot, wait for all players ──
+        if (_networkManager != null && _networkManager.IsOnline)
+        {
+            if (_localBuildReady) return; // Already sent
+            _localBuildReady = true;
+
+            PlayerSlot localSlot = GetLocalPlayerSlot();
+            string blueprintJson = CapturePlayerBuildJson(localSlot);
+            _syncManager?.SendBuildComplete(localSlot, blueprintJson);
+
+            // Show "waiting" message on the ready button
+            if (_readyButton != null)
+            {
+                _readyButton.Text = "WAITING...";
+                _readyButton.Disabled = true;
+            }
+
+            GD.Print($"[Online] Local build complete for {localSlot}, waiting for other players...");
+            CheckAllPlayersReadyForCombat();
+            return;
+        }
+
+        // ── Local / bot mode: sequential builder rotation ──
         if (_activeBuilderIndex < _players.Count - 1)
         {
             // Check if all remaining players are bots — if so, skip camera
@@ -3749,7 +5090,24 @@ public partial class GameManager : Node
         // but without actually entering combat phase yet.
         BuildPrototypeFortresses();
         DeployAllTroops();
-        _turnManager?.Configure(_players.Keys, Settings.TurnTimeSeconds);
+
+        // In online mode, only the host shuffles turn order, then broadcasts to clients.
+        // Clients wait for the TurnOrder RPC and apply it via ConfigureWithOrder.
+        if (_networkManager?.IsOnline == true)
+        {
+            if (_networkManager.IsHost)
+            {
+                _turnManager?.Configure(_players.Keys, Settings.TurnTimeSeconds);
+                if (_turnManager != null)
+                    _syncManager?.SendTurnOrder(_turnManager.TurnOrder);
+            }
+            // else: client waits for OnRemoteTurnOrder to set up turn order
+        }
+        else
+        {
+            _turnManager?.Configure(_players.Keys, Settings.TurnTimeSeconds);
+        }
+
         _turnManager?.StopTurnClock(); // Don't tick the turn clock during countdown
         _selectedWeaponIndex = -1;
         _isAiming = false;
@@ -4011,11 +5369,11 @@ public partial class GameManager : Node
         if (@event is InputEventKey viewKey && viewKey.Pressed && viewKey.Keycode == Key.V)
         {
             _spectatorTopDown = !_spectatorTopDown;
-            if (IsBot(currentPlayer))
+            if (!IsLocalPlayer(currentPlayer))
             {
                 // When toggling top-down ON, always switch immediately — even during
                 // cinematic moments (projectile follow, impact, kill cam). The player
-                // wants to stay in the overhead view and not track bot projectiles.
+                // wants to stay in the overhead view and not track other players' projectiles.
                 if (_spectatorTopDown)
                 {
                     _camera?.Deactivate();
@@ -4061,6 +5419,12 @@ public partial class GameManager : Node
                     _armyManager?.MoveTroopsToward(currentPlayer, moveTarget);
                     _troopMoveMode = false;
                     _troopsMoved = true; // hide button for rest of turn
+
+                    // Sync troop movement to remote players
+                    if (_networkManager?.IsOnline == true)
+                    {
+                        _syncManager?.SendTroopMove(currentPlayer, moveTarget);
+                    }
                     CombatUI? troopUI2 = GetNodeOrNull<CombatUI>("%CombatUI")
                         ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
                     troopUI2?.HideSelectWeaponPrompt();
@@ -4317,8 +5681,22 @@ public partial class GameManager : Node
         Vector3 rayOrigin = _combatCamera.ProjectRayOrigin(mousePos);
         Vector3 rayDir = _combatCamera.ProjectRayNormal(mousePos);
 
+        // Get the weapon early so we can pass weapon info to aim assist
+        if (!_weapons.TryGetValue(currentPlayer, out List<WeaponBase>? weaponList) || weaponList.Count == 0)
+        {
+            return;
+        }
+
+        int safeIndex = _selectedWeaponIndex % weaponList.Count;
+        WeaponBase? weapon = weaponList[safeIndex];
+        if (weapon == null || !GodotObject.IsInstanceValid(weapon))
+        {
+            return;
+        }
+
         // --- Aim assist: snap to enemy commander if the click ray passes near one ---
-        Vector3? commanderSnapTarget = TrySnapToCommander(rayOrigin, rayDir, currentPlayer);
+        // Railgun penetrates walls, so skip LOS check for it
+        Vector3? commanderSnapTarget = TrySnapToCommander(rayOrigin, rayDir, currentPlayer, weapon.WeaponId);
 
         // Determine the world-space target: commander snap takes priority over voxel hit
         Vector3? targetWorld = null;
@@ -4338,18 +5716,6 @@ public partial class GameManager : Node
 
         if (targetWorld.HasValue)
         {
-            // Get the weapon for ballistic calculations
-            if (!_weapons.TryGetValue(currentPlayer, out List<WeaponBase>? weaponList) || weaponList.Count == 0)
-            {
-                return;
-            }
-
-            int safeIndex = _selectedWeaponIndex % weaponList.Count;
-            WeaponBase? weapon = weaponList[safeIndex];
-            if (weapon == null || !GodotObject.IsInstanceValid(weapon))
-            {
-                return;
-            }
 
             // Set the target on the aiming system (auto-calculates ballistic trajectory)
             bool inRange = _aimingSystem.SetTargetPoint(weapon.GlobalPosition, targetWorld.Value, weapon.ProjectileSpeed, weapon.WeaponId);
@@ -4388,12 +5754,11 @@ public partial class GameManager : Node
     /// <param name="rayDir">Camera ray direction (normalized).</param>
     /// <param name="currentPlayer">The player who is aiming (to exclude own commander).</param>
     /// <returns>Snap target position, or null if no commander is close enough.</returns>
-    private Vector3? TrySnapToCommander(Vector3 rayOrigin, Vector3 rayDir, PlayerSlot currentPlayer)
+    private Vector3? TrySnapToCommander(Vector3 rayOrigin, Vector3 rayDir, PlayerSlot currentPlayer, string weaponId = "")
     {
-        // Generous world-space threshold: ray must pass within this distance
-        // of the commander's center-mass to trigger the snap. 2.5m is generous
-        // enough to feel helpful without being jarring.
-        const float snapRadius = 1.5f;
+        // World-space threshold: ray must pass within this distance
+        // of the commander's center-mass to trigger the snap.
+        const float snapRadius = 2.5f;
 
         // Chest offset above GlobalPosition (which is at the hips).
         // The spine/torso center is roughly 0.2m above the hips for the 0.08m
@@ -4433,30 +5798,28 @@ public partial class GameManager : Node
 
         Vector3 snapTarget = bestCommander.GlobalPosition + Vector3.Up * chestOffsetY;
 
-        // LOS check: get the current weapon position and verify no solid voxels
-        // block the path from the weapon to the commander.
-        if (!_weapons.TryGetValue(currentPlayer, out List<WeaponBase>? weaponList) || weaponList.Count == 0)
+        // LOS check: verify no solid voxels block the path from weapon to commander.
+        // Railgun penetrates walls, so skip LOS check for it.
+        if (weaponId != "railgun")
         {
-            return null;
-        }
+            if (!_weapons.TryGetValue(currentPlayer, out List<WeaponBase>? weaponList) || weaponList.Count == 0)
+            {
+                return null;
+            }
 
-        int safeIndex = _selectedWeaponIndex % weaponList.Count;
-        WeaponBase? weapon = (safeIndex >= 0 && safeIndex < weaponList.Count) ? weaponList[safeIndex] : null;
-        if (weapon == null || !GodotObject.IsInstanceValid(weapon)) return null;
+            int safeIndex = _selectedWeaponIndex % weaponList.Count;
+            WeaponBase? weapon = (safeIndex >= 0 && safeIndex < weaponList.Count) ? weaponList[safeIndex] : null;
+            if (weapon == null || !GodotObject.IsInstanceValid(weapon)) return null;
 
-        Vector3 weaponPos = weapon.GlobalPosition;
-        Vector3 losDir = (snapTarget - weaponPos).Normalized();
-        float losDist = weaponPos.DistanceTo(snapTarget);
+            Vector3 weaponPos = weapon.GlobalPosition;
+            Vector3 losDir = (snapTarget - weaponPos).Normalized();
+            float losDist = weaponPos.DistanceTo(snapTarget);
 
-        // If the voxel raycast hits something before reaching the commander,
-        // LOS is blocked — don't snap.
-        if (_voxelWorld.RaycastVoxel(weaponPos, losDir, losDist, out Vector3I _, out Vector3I _2))
-        {
-            // A solid voxel was hit before the commander — check if it's closer
-            // than the commander. The raycast always returns the first hit, so
-            // if it returns true at all, something is in the way.
-            GD.Print($"[Combat] Aim assist: LOS to commander blocked by voxel.");
-            return null;
+            if (_voxelWorld.RaycastVoxel(weaponPos, losDir, losDist, out Vector3I _, out Vector3I _2))
+            {
+                GD.Print($"[Combat] Aim assist: LOS to commander blocked by voxel.");
+                return null;
+            }
         }
 
         GD.Print($"[Combat] Aim assist: clear LOS to enemy commander at {snapTarget}");
@@ -4678,9 +6041,16 @@ public partial class GameManager : Node
         }
 
         int roundBefore = weapon.LastFiredRound;
+        Vector3 launchVelocity = _aimingSystem.GetLaunchVelocity(weapon.ProjectileSpeed);
         ProjectileBase? projectile = weapon.Fire(_aimingSystem, _voxelWorld, _turnManager.RoundNumber);
         if (weapon.LastFiredRound != roundBefore)
         {
+            // Sync weapon fire to remote players
+            if (_networkManager?.IsOnline == true)
+            {
+                _syncManager?.SendWeaponFire(currentPlayer, safeIndex, launchVelocity);
+            }
+
             _players[currentPlayer].Stats.ShotsFired++;
 
             // Remember which enemy we attacked so targeting defaults to them next turn
@@ -4779,11 +6149,22 @@ public partial class GameManager : Node
             return;
         }
 
+        // In online mode, only the local player can skip their own turn
+        if (_turnManager.CurrentPlayer is PlayerSlot currentPlayer && !IsLocalPlayer(currentPlayer))
+            return;
+
         _isAiming = false;
         _hasTarget = false;
         _aimingSystem?.ClearTarget();
         _combatCamera?.ExitWeaponPOV();
         SwitchToFreeFlyCamera();
+
+        // Sync skip turn to remote players
+        if (_networkManager?.IsOnline == true && _turnManager.CurrentPlayer.HasValue)
+        {
+            _syncManager?.SendSkipTurn(_turnManager.CurrentPlayer.Value);
+        }
+
         _turnManager.SkipTurn(Settings.TurnTimeSeconds);
     }
 
@@ -5095,6 +6476,15 @@ public partial class GameManager : Node
         if (player != null && _powerupExecutor != null)
             _powerupExecutor.ExpireAllEffects(player, _players);
 
+        // If the kill happened during a troop attack sequence, cancel remaining
+        // troop attacks so we go straight to the kill cam without lingering.
+        if (_troopSequenceActive)
+        {
+            _troopSequenceActive = false;
+            _advanceTurnAfterKillCam = true;
+            GD.Print("[TroopSeq] Commander killed during troop sequence — cancelling remaining attacks");
+        }
+
         // Activate kill cam: orbit the death location.
         // Self-kills (killer == victim) use an overhead impact view instead of
         // the standard orbit cam, which glitches when there's no distinct killer.
@@ -5207,14 +6597,14 @@ public partial class GameManager : Node
                 combatUI?.ShowTurnBanner(currentPlayerData.DisplayName, bannerColor);
             }
 
-            // Show troops button only for human player with alive troops
-            bool showTroops = !IsBot(payload.CurrentPlayer)
+            // Show troops button only for local player with alive troops
+            bool showTroops = IsLocalPlayer(payload.CurrentPlayer)
                 && (_armyManager?.HasAliveTroops(payload.CurrentPlayer) ?? false);
             combatUI?.SetTroopsButtonVisible(showTroops);
 
-            // Re-show weapon bar + powerup panel on human turn (safety net — they
+            // Re-show weapon bar + powerup panel on local player's turn (safety net — they
             // get hidden by HideAttackUI after firing and must reappear next turn)
-            if (!IsBot(payload.CurrentPlayer))
+            if (IsLocalPlayer(payload.CurrentPlayer))
                 combatUI?.ShowAttackUI();
         }
 
@@ -5231,7 +6621,7 @@ public partial class GameManager : Node
 
         // Only show skip turn button on the local player's turn
         if (_skipTurnButton != null)
-            _skipTurnButton.Visible = !IsBot(payload.CurrentPlayer);
+            _skipTurnButton.Visible = IsLocalPlayer(payload.CurrentPlayer);
 
         // Hide target selector from the previous turn
         {
@@ -5296,7 +6686,7 @@ public partial class GameManager : Node
         // block camera positioning for this player.
         _combatCamera.Deactivate();
 
-        if (IsBot(payload.CurrentPlayer) && _spectatorTopDown)
+        if (!IsLocalPlayer(payload.CurrentPlayer) && _spectatorTopDown)
         {
             // Player has toggled top-down spectator mode — stay in top-down
             _camera?.Deactivate();
@@ -5424,8 +6814,9 @@ public partial class GameManager : Node
         }
         // Commit match earnings to wallet only if the local player won.
         // Losing a match earns no currency.
-        if (winner.HasValue && winner.Value == PlayerSlot.Player1
-            && _players.TryGetValue(PlayerSlot.Player1, out PlayerData? localP1))
+        PlayerSlot localSlot2 = GetLocalPlayerSlot();
+        if (winner.HasValue && winner.Value == localSlot2
+            && _players.TryGetValue(localSlot2, out PlayerData? localP1))
         {
             _progressionManager?.CommitMatchEarnings(localP1.Stats.MatchEarnings);
         }
@@ -5493,12 +6884,26 @@ public partial class GameManager : Node
     }
 
     /// <summary>
-    /// Returns true if the given player slot is controlled by a bot.
-    /// In prototype / local mode, only Player1 is human; all others are bots.
+    /// Returns true if the given player slot is controlled by AI.
+    /// In local mode, only Player1 is human; in online mode, all lobby members are human.
     /// </summary>
-    private static bool IsBot(PlayerSlot slot)
+    private bool IsBot(PlayerSlot slot)
     {
-        return slot != PlayerSlot.Player1;
+        return _players.TryGetValue(slot, out PlayerData? data) && data.IsBot;
+    }
+
+    /// <summary>
+    /// Returns true if the given player slot belongs to THIS machine's local player.
+    /// In local mode, that's always Player1. In online mode, it's whichever slot
+    /// was assigned to our network peer ID.
+    /// </summary>
+    private bool IsLocalPlayer(PlayerSlot slot)
+    {
+        if (_networkManager == null || !_networkManager.IsOnline)
+            return slot == PlayerSlot.Player1;
+
+        return _players.TryGetValue(slot, out PlayerData? data)
+            && data.PeerId == _networkManager.LocalPeerId;
     }
 
     /// <summary>
@@ -6185,7 +7590,9 @@ public partial class GameManager : Node
         Vector3 fortCenter = ComputePlayerFortressCenter(enemySlot);
 
         // Spawn projectile high above the fortress center
-        Random rng = new Random(System.Environment.TickCount ^ _bombardmentSalvoCount);
+        // Deterministic seed — TickCount differs across machines in multiplayer.
+        // Use salvo count + enemy slot hash so both clients produce the same height.
+        Random rng = new Random(_bombardmentSalvoCount * 7919 + enemySlot.GetHashCode());
         float spawnHeight = 50f + (float)rng.NextDouble() * 10f;
         Vector3 spawnPos = new Vector3(fortCenter.X, spawnHeight, fortCenter.Z);
 
@@ -6263,13 +7670,14 @@ public partial class GameManager : Node
         if (_camera == null) return;
 
         _camera.ResetToFullArenaBounds();
+        _camera.ResetZoom();
         _camera.Activate();
 
         // Use the true map center (all zones, not just alive) so the camera stays
         // fixed over the middle of the map and doesn't shift as players die.
         // Straight top-down view showing the entire map — no Z offset.
         Vector3 mapCenter = ComputeMapCenter();
-        float overviewHeight = 150f;
+        float overviewHeight = 200f;
         Vector3 cameraPos = mapCenter + new Vector3(0f, overviewHeight, 0.1f); // tiny Z to avoid gimbal lock
         Vector3 lookTarget = mapCenter;
 
@@ -6408,8 +7816,10 @@ public partial class GameManager : Node
             {
                 _progressionManager?.AwardMatchCompleted(_pendingWinner.HasValue && _pendingWinner.Value == slot);
             }
-            if (_pendingWinner.HasValue && _pendingWinner.Value == PlayerSlot.Player1
-                && _players.TryGetValue(PlayerSlot.Player1, out PlayerData? localPlayer))
+            // Award earnings to the local player (works for both online and local)
+            PlayerSlot localSlot = GetLocalPlayerSlot();
+            if (_pendingWinner.HasValue && _pendingWinner.Value == localSlot
+                && _players.TryGetValue(localSlot, out PlayerData? localPlayer))
             {
                 _progressionManager?.CommitMatchEarnings(localPlayer.Stats.MatchEarnings);
             }
@@ -6444,8 +7854,8 @@ public partial class GameManager : Node
                     // timers don't race and advance the turn during the 1.2s delay.
                     _troopSequenceActive = true;
 
-                    // Delay before switching to troop cam so impact lingers
-                    GetTree().CreateTimer(1.2).Timeout += () =>
+                    // Brief delay before switching to troop cam so impact lingers
+                    GetTree().CreateTimer(0.5).Timeout += () =>
                     {
                         if (CurrentPhase != GamePhase.Combat)
                         {
@@ -6466,10 +7876,19 @@ public partial class GameManager : Node
             // — the troop sequence owns camera control until it finishes.
             if (_troopSequenceActive) return;
 
+            // If a kill cam just finished that cancelled a troop sequence, advance the
+            // turn now — the normal troop finish handler was suppressed.
+            if (_advanceTurnAfterKillCam)
+            {
+                _advanceTurnAfterKillCam = false;
+                _turnManager?.AdvanceTurn(Settings.TurnTimeSeconds);
+                return;
+            }
+
             // After a cinematic moment, respect the spectator top-down preference
-            // so the player stays in their chosen view during bot turns.
-            bool isBotTurn = _turnManager?.CurrentPlayer is PlayerSlot current && IsBot(current);
-            if (isBotTurn && _spectatorTopDown && _combatCamera != null)
+            // so the player stays in their chosen view during non-local turns.
+            bool isNonLocalTurn = _turnManager?.CurrentPlayer is PlayerSlot current && !IsLocalPlayer(current);
+            if (isNonLocalTurn && _spectatorTopDown && _combatCamera != null)
             {
                 _camera?.Deactivate();
                 _combatCamera.TopDown(ComputeArenaMidpoint());
@@ -6528,8 +7947,8 @@ public partial class GameManager : Node
         _camera?.TransitionToLookTarget(cameraPos, lookTarget);
 
         // Stagger each troop's attack with a short delay
-        const float settleTime = 0.5f;
-        const float delayBetween = 0.3f;
+        const float settleTime = 0.3f;
+        const float delayBetween = 0.15f;
 
         for (int i = 0; i < attacks.Count; i++)
         {
@@ -6577,12 +7996,17 @@ public partial class GameManager : Node
         }
 
         // After all attacks finish, linger briefly then advance turn and return camera
-        float totalTime = settleTime + delayBetween * attacks.Count + 0.8f;
+        float totalTime = settleTime + delayBetween * attacks.Count + 0.4f;
         GetTree().CreateTimer(totalTime).Timeout += FinishTroopAttackSequence;
     }
 
     private void FinishTroopAttackSequence()
     {
+        // If the sequence was already cancelled (e.g. commander died → kill cam took over),
+        // don't advance the turn — the kill cam's CinematicFinished handles flow from here.
+        if (!_troopSequenceActive)
+            return;
+
         _troopSequenceActive = false;
 
         if (CurrentPhase != GamePhase.Combat)
@@ -6763,7 +8187,7 @@ public partial class GameManager : Node
 
     private void OnTroopMoveToggled()
     {
-        if (_turnManager?.CurrentPlayer is not PlayerSlot currentPlayer || IsBot(currentPlayer)) return;
+        if (_turnManager?.CurrentPlayer is not PlayerSlot currentPlayer || !IsLocalPlayer(currentPlayer)) return;
         if (!(_armyManager?.HasAliveTroops(currentPlayer) ?? false)) return;
         if (_troopsMoved) return; // already moved this turn
 
@@ -6818,6 +8242,8 @@ public partial class GameManager : Node
             buildUI.WeaponSellRequested += OnWeaponSellRequested;
             buildUI.SandboxSaveRequested += (name) => SaveSandboxBuild(name);
             buildUI.SandboxLoadRequested += (name) => LoadSandboxBuild(name);
+            buildUI.SandboxExportRequested += (path) => ExportSandboxBuild(path, buildUI);
+            buildUI.SandboxImportRequested += (path) => ImportSandboxBuild(path, buildUI);
             buildUI.PowerupBuyRequested += OnPowerupBuyRequested;
             buildUI.PowerupSellRequested += OnPowerupSellRequested;
             buildUI.TroopBuyRequested += OnTroopBuyRequested;
@@ -6841,6 +8267,10 @@ public partial class GameManager : Node
             return;
 
         if (_turnManager?.CurrentPlayer is not PlayerSlot currentPlayer)
+            return;
+
+        // Only the local player can fire during their turn
+        if (!IsLocalPlayer(currentPlayer))
             return;
 
         if (_hasTarget && _aimingSystem != null && _aimingSystem.HasTarget)
@@ -7180,6 +8610,7 @@ public partial class GameManager : Node
                 Slot = slot,
                 DisplayName = displayName,
                 PlayerColor = GameConfig.PlayerColors[i],
+                IsBot = i != 0, // Only Player1 (index 0) is human in local mode
             };
         }
     }
@@ -7310,9 +8741,17 @@ public partial class GameManager : Node
         // Clear stale ghost preview from previous placement mode (weapon/commander)
         _ghostPreview?.Hide();
 
+        // Clear any active blueprint so it doesn't interfere with troop placement
+        if (_buildSystem != null)
+        {
+            _buildSystem.ActiveBlueprint = null;
+            _buildSystem.CurrentToolMode = BuildToolMode.Single;
+        }
+
         // Enter troop placement mode — the troop is bought when actually placed
         _selectedTroopType = type;
         _placementMode = PlacementMode.Troop;
+        _isDragBuilding = false;
         TroopStats stats = TroopDefinitions.Get(type);
         GD.Print($"[Army] Entering {stats.Name} placement mode. Click to place.");
     }
@@ -7396,6 +8835,18 @@ public partial class GameManager : Node
             return new Vector3I(x, y, z);
         }
         return default;
+    }
+
+    /// <summary>
+    /// Converts a door OutwardNormal vector to a rotation hint integer (0-3).
+    /// 0=Forward(-Z), 1=Right(+X), 2=Back(+Z), 3=Left(-X).
+    /// </summary>
+    private static int NormalToRotationHint(Vector3 normal)
+    {
+        if (normal.X > 0.5f) return 1;  // Right
+        if (normal.X < -0.5f) return 3; // Left
+        if (normal.Z > 0.5f) return 2;  // Back
+        return 0; // Forward (default)
     }
 
     /// <summary>
@@ -7577,6 +9028,10 @@ public partial class GameManager : Node
             return;
         }
 
+        // Only the local player can activate powerups
+        if (!IsLocalPlayer(currentPlayer))
+            return;
+
         if (!_players.TryGetValue(currentPlayer, out PlayerData? player))
         {
             return;
@@ -7637,8 +9092,16 @@ public partial class GameManager : Node
                     if (soloEnemy.AssignedBuildZone is BuildZone soloZone)
                     {
                         Vector3I target = soloZone.OriginBuildUnits + soloZone.SizeBuildUnits / 2;
-                        success = _powerupExecutor.ActivateAirstrike(player, target, soloEnemy.Slot);
-                        if (success) player.AirstrikesUsedThisRound++;
+                        success = _powerupExecutor.ActivateAirstrike(player, target, soloEnemy.Slot, out Vector3[] impacts, out int planes);
+                        if (success)
+                        {
+                            player.AirstrikesUsedThisRound++;
+                            // Sync airstrike result (with exact impact positions) to remote players
+                            if (_networkManager?.IsOnline == true)
+                            {
+                                _syncManager?.SendAirstrikeResult(currentPlayer, soloEnemy.Slot, impacts, planes);
+                            }
+                        }
                     }
                 }
                 else
@@ -7666,11 +9129,23 @@ public partial class GameManager : Node
 
             case PowerupType.EmpBlast:
                 success = _powerupExecutor.ActivateEmp(player, _players, _weapons);
+                if (success && _networkManager?.IsOnline == true)
+                {
+                    // EMP is non-deterministic (random weapon selection).
+                    // Send the exact result so remote clients apply the same disables.
+                    SendEmpResultToRemote(currentPlayer);
+                }
                 break;
         }
 
         if (success)
         {
+            // Sync powerup activation to remote players (except EMP which sends its own result)
+            if (_networkManager?.IsOnline == true && type != PowerupType.EmpBlast)
+            {
+                _syncManager?.SendPowerupUsed(currentPlayer, (int)type);
+            }
+
             CombatUI? combatUI = GetNodeOrNull<CombatUI>("%CombatUI")
                 ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
             combatUI?.UpdatePowerupSlots(player.Powerups);
@@ -7719,10 +9194,17 @@ public partial class GameManager : Node
         if (enemy.AssignedBuildZone is BuildZone enemyZone)
         {
             Vector3I target = enemyZone.OriginBuildUnits + enemyZone.SizeBuildUnits / 2;
-            bool success = _powerupExecutor.ActivateAirstrike(player, target, targetEnemy);
+            bool success = _powerupExecutor.ActivateAirstrike(player, target, targetEnemy, out Vector3[] impacts, out int planes);
             if (success)
             {
                 player.AirstrikesUsedThisRound++;
+
+                // Sync airstrike result (with exact impact positions) to remote players
+                if (_networkManager?.IsOnline == true)
+                {
+                    _syncManager?.SendAirstrikeResult(currentPlayer, targetEnemy, impacts, planes);
+                }
+
                 CombatUI? combatUI = GetNodeOrNull<CombatUI>("%CombatUI")
                     ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
                 combatUI?.UpdatePowerupSlots(player.Powerups);

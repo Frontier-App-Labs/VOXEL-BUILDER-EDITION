@@ -49,6 +49,25 @@ public partial class TurnManager : Node
         EmitTurnChanged(turnTimeSeconds);
     }
 
+    /// <summary>
+    /// Sets the turn order from an explicit list (used by online clients receiving
+    /// the host's shuffled order). No randomization is performed.
+    /// </summary>
+    public void ConfigureWithOrder(IReadOnlyList<PlayerSlot> order, float turnTimeSeconds)
+    {
+        _turnOrder.Clear();
+        for (int i = 0; i < order.Count; i++)
+            _turnOrder.Add(order[i]);
+
+        _turnIndex = 0;
+        RoundNumber = 1;
+        _remainingTurnTime = turnTimeSeconds;
+        _isRunning = _turnOrder.Count > 0;
+
+        GD.Print($"[TurnManager] Received turn order: {string.Join(", ", _turnOrder)}");
+        EmitTurnChanged(turnTimeSeconds);
+    }
+
     public void StartTurnClock(float turnTimeSeconds)
     {
         _remainingTurnTime = turnTimeSeconds;

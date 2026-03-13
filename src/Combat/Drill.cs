@@ -62,11 +62,14 @@ public partial class Drill : WeaponBase
 
         LastFiredRound = currentRound;
 
+        Vector3 aimDir = aimingSystem.GetDirection();
+        RecordFireDirection(aimDir);
+
         // Drill-specific FX: activation sparks + grinding debris + vibration
-        SpawnWeaponFireFX(aimingSystem.GetDirection());
+        SpawnWeaponFireFX(aimDir);
 
         AudioDirector.Instance?.PlaySFX("drill_fire", GlobalPosition);
-        EventBus.Instance?.EmitWeaponFired(new WeaponFiredEvent(OwnerSlot, WeaponId, GlobalPosition, aimingSystem.GetDirection()));
+        EventBus.Instance?.EmitWeaponFired(new WeaponFiredEvent(OwnerSlot, WeaponId, GlobalPosition, aimDir));
         return projectile;
     }
 

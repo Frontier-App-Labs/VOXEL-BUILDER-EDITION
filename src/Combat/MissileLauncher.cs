@@ -65,6 +65,8 @@ public partial class MissileLauncher : WeaponBase
 
         LastFiredRound = currentRound;
 
+        RecordFireDirection(targetDirection);
+
         // Missile-specific FX: backblast + smoke cloud + side jets
         SpawnWeaponFireFX(targetDirection);
 

@@ -6,6 +6,7 @@
 bin/
 obj/
 export/
+EXPORT/
 *.import
 *.uid
 *.tmp

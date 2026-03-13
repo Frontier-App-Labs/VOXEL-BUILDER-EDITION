@@ -39,11 +39,14 @@ public partial class Cannon : WeaponBase
 
         LastFiredRound = currentRound;
 
+        Vector3 aimDir = aimingSystem.GetDirection();
+        RecordFireDirection(aimDir);
+
         // Cannon-specific FX: big flash + smoke ring + recoil
-        SpawnWeaponFireFX(aimingSystem.GetDirection());
+        SpawnWeaponFireFX(aimDir);
 
         AudioDirector.Instance?.PlaySFX("cannon_fire", GlobalPosition);
-        EventBus.Instance?.EmitWeaponFired(new WeaponFiredEvent(OwnerSlot, WeaponId, GlobalPosition, aimingSystem.GetDirection()));
+        EventBus.Instance?.EmitWeaponFired(new WeaponFiredEvent(OwnerSlot, WeaponId, GlobalPosition, aimDir));
         return projectile;
     }
 

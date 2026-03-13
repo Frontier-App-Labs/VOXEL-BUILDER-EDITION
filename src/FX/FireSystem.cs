@@ -1,4 +1,5 @@
 using Godot;
+using System;
 using System.Collections.Generic;
 using VoxelSiege.Core;
 using VoxelSiege.Utility;
@@ -58,6 +59,7 @@ public partial class FireSystem : Node
     // ── Real-time timers ────────────────────────────────────────────────
     private float _spreadTimer;
     private float _damageTimer;
+    private int _spreadTickCount; // monotonic counter for deterministic RNG seeding
 
     // ── Pre-computed spread offsets ──────────────────────────────────────
     // All offsets within FireSpreadRadius, sorted by distance so adjacent
@@ -88,7 +90,8 @@ public partial class FireSystem : Node
     }
 
     /// <summary>
-    /// Real-time fire tick. Runs every frame to accumulate damage and spread timers.
+    /// Real-time fire tick. Uses fixed timestep accumulation so both local and
+    /// online clients produce identical fire state (same damage, same spread).
     /// </summary>
     public override void _Process(double delta)
     {
@@ -99,20 +102,20 @@ public partial class FireSystem : Node
 
         float dt = (float)delta;
 
-        // Damage tick — runs frequently for continuous feel
+        // Damage tick — fixed timestep so fuel/intensity math is identical across clients
         _damageTimer += dt;
-        if (_damageTimer >= GameConfig.FireDamageTickInterval)
+        while (_damageTimer >= GameConfig.FireDamageTickInterval)
         {
-            float elapsed = _damageTimer;
-            _damageTimer = 0f;
-            ProcessDamageTick(elapsed);
+            _damageTimer -= GameConfig.FireDamageTickInterval;
+            ProcessDamageTick(GameConfig.FireDamageTickInterval);
         }
 
-        // Spread tick — runs less often to avoid runaway performance cost
+        // Spread tick — fixed timestep + deterministic RNG
         _spreadTimer += dt;
-        if (_spreadTimer >= GameConfig.FireSpreadInterval)
+        while (_spreadTimer >= GameConfig.FireSpreadInterval)
         {
-            _spreadTimer = 0f;
+            _spreadTimer -= GameConfig.FireSpreadInterval;
+            _spreadTickCount++;
             ProcessSpreadTick();
         }
     }
@@ -201,6 +204,9 @@ public partial class FireSystem : Node
             RecycleEffects(pos);
         }
         _burningVoxels.Clear();
+        _spreadTickCount = 0;
+        _spreadTimer = 0f;
+        _damageTimer = 0f;
     }
 
     // ── Real-time tick internals ────────────────────────────────────────
@@ -278,7 +284,22 @@ public partial class FireSystem : Node
             return;
         }
 
+        // Sort burning positions so both clients iterate in the same order.
+        // This ensures the deterministic RNG produces identical results.
         List<Vector3I> positions = new List<Vector3I>(_burningVoxels.Keys);
+        positions.Sort((a, b) =>
+        {
+            int cmp = a.X.CompareTo(b.X);
+            if (cmp != 0) return cmp;
+            cmp = a.Y.CompareTo(b.Y);
+            if (cmp != 0) return cmp;
+            return a.Z.CompareTo(b.Z);
+        });
+
+        // Deterministic RNG seeded by the monotonic tick counter.
+        // Both clients increment _spreadTickCount identically (fixed timestep).
+        Random rng = new Random(_spreadTickCount * 7919);
+
         List<(Vector3I pos, FireState state)> toIgnite = new();
 
         foreach (Vector3I pos in positions)
@@ -345,7 +366,7 @@ public partial class FireSystem : Node
                     chance = GameConfig.FireJumpChance * state.Intensity * falloff;
                 }
 
-                if (GD.Randf() < chance)
+                if ((float)rng.NextDouble() < chance)
                 {
                     toIgnite.Add((candidatePos, new FireState
                     {

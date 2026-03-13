@@ -83,6 +83,13 @@ public static class TroopAI
                 troop.PauseForAttack(0.5f);
                 return;
             }
+
+            // No standard targets — try clearing nearby debris (rubble piled around objectives)
+            if (troop.AttackNearbyDebris())
+            {
+                troop.PauseForAttack(0.5f);
+                return;
+            }
         }
     }
 
@@ -303,12 +310,23 @@ public static class TroopAI
                         // Base score: distance from troop
                         float score = dist;
 
+                        // LOS penalty: voxels behind walls get a large penalty so troops
+                        // attack the wall in front of them first instead of targeting
+                        // interior blocks they can't physically reach
+                        Vector3 troopEye = troop.GlobalPosition + Vector3.Up * 0.2f;
+                        Vector3 candidateWorld = new Vector3(
+                            candidate.X * mvMeters + mvMeters * 0.5f,
+                            candidate.Y * mvMeters + mvMeters * 0.5f,
+                            candidate.Z * mvMeters + mvMeters * 0.5f);
+                        Vector3 losDir = (candidateWorld - troopEye).Normalized();
+                        float losDist = troopEye.DistanceTo(candidateWorld) - mvMeters * 1.5f;
+                        if (losDist > 0f && world.RaycastVoxel(troopEye, losDir, losDist, out _, out _))
+                            score += 20f; // heavy penalty — prefer visible blocks
+
                         // Priority bonus: blocks near high-value targets (commanders, weapons)
                         // get a large score reduction so troops dig toward them
                         if (highValueTargets != null && highValueTargets.Count > 0)
                         {
-                            Vector3 candidateWorld = new Vector3(
-                                candidate.X * mvMeters, candidate.Y * mvMeters, candidate.Z * mvMeters);
                             float nearestHVT = float.MaxValue;
                             foreach (Vector3 hvt in highValueTargets)
                             {

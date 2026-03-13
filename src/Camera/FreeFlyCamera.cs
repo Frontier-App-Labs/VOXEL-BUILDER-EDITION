@@ -244,6 +244,13 @@ public partial class FreeFlyCamera : Camera3D
         }
     }
 
+    /// <summary>Reset zoom to default FOV (70) immediately.</summary>
+    public void ResetZoom()
+    {
+        _targetFov = 70f;
+        Fov = 70f;
+    }
+
     public override void _UnhandledInput(InputEvent @event)
     {
         if (!_isActive)

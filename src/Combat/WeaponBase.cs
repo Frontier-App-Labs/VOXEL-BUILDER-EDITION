@@ -17,6 +17,7 @@ public abstract partial class WeaponBase : Node3D
     private bool _hasFiredOnce;
     private float _idleScanTime;
     private float _idleScanAngle;
+    private float _lastFireYaw; // yaw offset from last fire direction — idle scan centers around this
     private bool _ownerAssigned;
     private bool _isHighlighted;
     private float _supportCheckTimer;
@@ -228,10 +229,37 @@ public abstract partial class WeaponBase : Node3D
         projectile.Initialize(world, OwnerSlot, aimingSystem.GetLaunchVelocity(ProjectileSpeed), BaseDamage, BlastRadiusMicrovoxels);
         LastFiredRound = currentRound;
 
+        RecordFireDirection(aimDirection);
+
         // Weapon firing FX: muzzle flash + smoke puff at barrel
         SpawnWeaponFireFX(aimDirection);
 
         EventBus.Instance?.EmitWeaponFired(new WeaponFiredEvent(OwnerSlot, WeaponId, GlobalPosition, aimDirection));
+        return projectile;
+    }
+
+    /// <summary>
+    /// Fires this weapon with an explicit launch velocity (no AimingSystem required).
+    /// Used to replay a remote player's weapon fire during multiplayer.
+    /// </summary>
+    public ProjectileBase? FireRemote(Vector3 launchVelocity, VoxelWorld world, int currentRound)
+    {
+        if (!CanFire(currentRound))
+        {
+            return null;
+        }
+
+        ProjectileBase projectile = CreateProjectile();
+        GetTree().CurrentScene.AddChild(projectile);
+        projectile.GlobalPosition = GlobalPosition;
+        projectile.Initialize(world, OwnerSlot, launchVelocity, BaseDamage, BlastRadiusMicrovoxels);
+        LastFiredRound = currentRound;
+
+        Vector3 dir = launchVelocity.Normalized();
+        RecordFireDirection(dir);
+        SpawnWeaponFireFX(dir);
+
+        EventBus.Instance?.EmitWeaponFired(new WeaponFiredEvent(OwnerSlot, WeaponId, GlobalPosition, dir));
         return projectile;
     }
 
@@ -278,6 +306,15 @@ public abstract partial class WeaponBase : Node3D
     /// Enables idle smoke wisps after the weapon has fired at least once.
     /// Called by SpawnWeaponFireFX and subclass overrides.
     /// </summary>
+    /// <summary>
+    /// Records the last fire direction yaw so idle scan animation centers around it.
+    /// Called by Fire() overrides in subclasses after computing aim direction.
+    /// </summary>
+    public void RecordFireDirection(Vector3 aimDirection)
+    {
+        _lastFireYaw = Mathf.Atan2(aimDirection.X, aimDirection.Z);
+    }
+
     protected void EnableIdleSmoke()
     {
         if (!_hasFiredOnce)
@@ -391,8 +428,8 @@ public abstract partial class WeaponBase : Node3D
         }
 
         _idleScanTime += delta;
-        // Gentle scanning rotation on Y axis
-        float targetAngle = Mathf.Sin(_idleScanTime * 0.8f) * 0.15f;
+        // Gentle scanning rotation on Y axis, centered around last fire direction
+        float targetAngle = _lastFireYaw + Mathf.Sin(_idleScanTime * 0.8f) * 0.15f;
         _idleScanAngle = Mathf.Lerp(_idleScanAngle, targetAngle, delta * 2f);
         _weaponMesh.Rotation = new Vector3(0, _idleScanAngle, 0);
     }

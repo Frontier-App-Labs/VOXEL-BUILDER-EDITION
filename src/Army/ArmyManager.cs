@@ -102,6 +102,25 @@ public partial class ArmyManager : Node
             : System.Array.Empty<(TroopType, Vector3I?)>();
     }
 
+    /// <summary>
+    /// Clears all purchased (undeployed) troops for a player. Used when loading a blueprint.
+    /// </summary>
+    public void ClearPurchasedTroops(PlayerSlot player)
+    {
+        if (_purchasedTroops.TryGetValue(player, out var list))
+            list.Clear();
+    }
+
+    /// <summary>
+    /// Adds a troop directly without spending budget. Used when restoring from a blueprint.
+    /// </summary>
+    public void RestoreTroop(PlayerSlot player, TroopType type, Vector3I? position)
+    {
+        if (!_purchasedTroops.ContainsKey(player))
+            _purchasedTroops[player] = new();
+        _purchasedTroops[player].Add((type, position));
+    }
+
     // === Combat Phase ===
     /// <summary>
     /// Deploys troops. Uses manually placed positions when available,
@@ -127,6 +146,9 @@ public partial class ArmyManager : Node
             ? FindInteriorSpawnPositions(player, autoCount)
             : new List<Vector3I>();
         int autoIdx = 0;
+
+        // Track claimed spawn positions so no two troops deploy on the same cell
+        HashSet<Vector3I> claimedSpawns = new();
 
         for (int i = 0; i < troops.Count; i++)
         {
@@ -154,6 +176,13 @@ public partial class ArmyManager : Node
                         : GetFallbackSpawnPos(player);
                 autoIdx++;
             }
+
+            // Prevent overlap: if this cell is already claimed, nudge to a neighbor
+            if (claimedSpawns.Contains(spawnPos))
+            {
+                spawnPos = FindUnclaimedNeighbor(spawnPos, claimedSpawns);
+            }
+            claimedSpawns.Add(spawnPos);
 
             TroopEntity entity = new TroopEntity();
             entity.Name = $"{player}_{troops[i].Type}_{i}";
@@ -368,7 +397,7 @@ public partial class ArmyManager : Node
             if (claimed.Contains(candidate))
             {
                 bool found = false;
-                for (int r = 1; r <= 4 && !found; r++)
+                for (int r = 1; r <= 8 && !found; r++)
                 {
                     for (int dx = -r; dx <= r && !found; dx++)
                     {
@@ -549,6 +578,28 @@ public partial class ArmyManager : Node
         foreach (var (player, list) in _purchasedTroops) purchased += list.Count;
         GD.Print($"  Purchased (undeployed): {purchased}");
         GD.Print("[Army] === END DEBUG ===");
+    }
+
+    /// <summary>
+    /// Finds the nearest unclaimed neighbor cell, spiraling outward.
+    /// Used during deployment to prevent two troops spawning on the same cell.
+    /// </summary>
+    private Vector3I FindUnclaimedNeighbor(Vector3I center, HashSet<Vector3I> claimed)
+    {
+        for (int r = 1; r <= 6; r++)
+        {
+            for (int dx = -r; dx <= r; dx++)
+            {
+                for (int dz = -r; dz <= r; dz++)
+                {
+                    if (System.Math.Abs(dx) != r && System.Math.Abs(dz) != r) continue;
+                    Vector3I candidate = center + new Vector3I(dx, 0, dz);
+                    if (!claimed.Contains(candidate) && _voxelWorld != null && _pathfinder.IsWalkable(_voxelWorld, candidate))
+                        return candidate;
+                }
+            }
+        }
+        return center; // couldn't find one
     }
 
     private Vector3I GetFallbackSpawnPos(PlayerSlot player)

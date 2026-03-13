@@ -43,7 +43,7 @@ public partial class CombatCamera : Camera3D
     public float ImpactHoldTime { get; set; } = 2.5f;
 
     [Export]
-    public float KillCamDuration { get; set; } = 2.5f;
+    public float KillCamDuration { get; set; } = 1.8f;
 
     [Export]
     public float KillCamOrbitSpeed { get; set; } = 0.6f;

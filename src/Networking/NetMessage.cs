@@ -68,9 +68,20 @@ public readonly record struct LobbyPlayerInfo(long PeerId, int SlotIndex, string
 public readonly record struct MatchStartPayload(float BuildTimeSeconds, int StartingBudget, int ArenaSize, float TurnTimeSeconds);
 
 // Combat sync payloads
-public readonly record struct WeaponFireSyncPayload(int PlayerSlotIndex, int WeaponIndex, float YawRadians, float PitchRadians, float PowerPercent);
+public readonly record struct WeaponFireSyncPayload(int PlayerSlotIndex, int WeaponIndex, float VelocityX, float VelocityY, float VelocityZ);
+public readonly record struct BuildCompleteSyncPayload(int PlayerSlotIndex, string BlueprintJson);
 public readonly record struct CommanderDamageSyncPayload(int VictimSlotIndex, int Damage, int RemainingHealth, float PosX, float PosY, float PosZ, bool IsCriticalHit);
 public readonly record struct CommanderDeathSyncPayload(int VictimSlotIndex, int KillerSlotIndex, float PosX, float PosY, float PosZ);
 public readonly record struct TurnAdvanceSyncPayload(int CurrentPlayerSlotIndex, int RoundNumber, float TurnTimeSeconds);
 public readonly record struct PhaseChangeSyncPayload(int PreviousPhase, int CurrentPhase);
 public readonly record struct WeaponDestroyedSyncPayload(int OwnerSlotIndex, string WeaponId, float PosX, float PosY, float PosZ);
+
+// Extended combat sync payloads
+public readonly record struct SkipTurnSyncPayload(int PlayerSlotIndex);
+public readonly record struct PowerupUsedSyncPayload(int PlayerSlotIndex, int PowerupTypeId, int TargetEnemySlotIndex, float TargetX, float TargetY, float TargetZ);
+public readonly record struct EmpResultSyncPayload(int ActivatorSlotIndex, int[] DisabledWeaponOwnerSlots, int[] DisabledWeaponIndices);
+public readonly record struct AirstrikeResultSyncPayload(int PlayerSlotIndex, int TargetEnemySlotIndex, float[] ImpactXs, float[] ImpactYs, float[] ImpactZs, int PlaneCount);
+public readonly record struct TroopMoveSyncPayload(int PlayerSlotIndex, int TargetX, int TargetY, int TargetZ);
+public readonly record struct TurnOrderSyncPayload(int[] SlotOrder);
+public readonly record struct GameOverSyncPayload(int WinnerSlotIndex);
+public readonly record struct DisconnectSyncPayload(int DisconnectedSlotIndex);

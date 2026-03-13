@@ -5,6 +5,7 @@ using System.Linq;
 using VoxelSiege.Army;
 using VoxelSiege.Building;
 using VoxelSiege.Core;
+using VoxelSiege.Utility;
 using VoxelSiege.Voxel;
 
 namespace VoxelSiege.UI;
@@ -105,6 +106,8 @@ public partial class BuildUI : Control
     public event Action<PowerupType>? PowerupSellRequested;
     public event Action<string>? SandboxSaveRequested;
     public event Action<string>? SandboxLoadRequested;
+    public event Action<string>? SandboxExportRequested;
+    public event Action<string>? SandboxImportRequested;
     public event Action<TroopType>? TroopBuyRequested;
     public event Action<TroopType>? TroopSellRequested;
     public event Action<BlueprintDefinition>? BlueprintSelected;
@@ -117,8 +120,14 @@ public partial class BuildUI : Control
     private bool _sandboxMode;
     private PanelContainer? _sandboxPanel;
     private LineEdit? _sandboxNameInput;
-    private VBoxContainer? _sandboxBuildList;
     private List<string> _sandboxBuildNames = new List<string>();
+    private FileDialog? _exportDialog;
+    private FileDialog? _importDialog;
+    private Label? _exportStatusLabel;
+    private VBoxContainer? _sandboxContent;
+    private Button? _sandboxToggleBtn;
+    private bool _sandboxPanelCollapsed;
+    private string? _currentBuildName; // tracks which build is currently loaded
 
     public override void _Ready()
     {
@@ -1315,6 +1324,15 @@ public partial class BuildUI : Control
         spacer.MouseFilter = MouseFilterEnum.Ignore;
         bottomContent.AddChild(spacer);
 
+        // Load Build (always available — lets builders use saved builds in any game mode)
+        Button loadBuildBtn = CreateSmallButton("\u2191 LOAD BUILD", AccentGold);
+        loadBuildBtn.Pressed += () =>
+        {
+            AudioDirector.Instance?.PlaySFX("ui_click");
+            ShowLoadBuildPopup();
+        };
+        bottomContent.AddChild(loadBuildBtn);
+
         // Undo / Redo
         Button undoBtn = CreateSmallButton("\u21b6 UNDO", TextSecondary);
         undoBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); UndoRequested?.Invoke(); };
@@ -1745,16 +1763,163 @@ public partial class BuildUI : Control
         _currentBudget = payload.NewBudget;
     }
 
+    // ========== Load Build Popup (available in all modes) ==========
+
+    private PanelContainer? _loadBuildPopup;
+
+    private void ShowLoadBuildPopup()
+    {
+        // Close existing popup if open
+        if (_loadBuildPopup != null && IsInstanceValid(_loadBuildPopup))
+        {
+            _loadBuildPopup.QueueFree();
+            _loadBuildPopup = null;
+            return; // toggle off
+        }
+
+        // Read saved builds from profile, with filesystem fallback
+        PlayerProfile? profile = SaveSystem.LoadJson<PlayerProfile>("user://profile/player_profile.json");
+        List<string> savedBuilds = profile?.SavedBuilds ?? new List<string>();
+
+        // Fallback: scan disk for blueprint files not listed in profile
+        string bpDir = ProjectSettings.GlobalizePath("user://blueprints");
+        if (System.IO.Directory.Exists(bpDir))
+        {
+            foreach (string file in System.IO.Directory.GetFiles(bpDir, "*.json"))
+            {
+                try
+                {
+                    string json = System.IO.File.ReadAllText(file);
+                    var bp = System.Text.Json.JsonSerializer.Deserialize<BlueprintData>(json, new System.Text.Json.JsonSerializerOptions { IncludeFields = true });
+                    if (bp != null && !string.IsNullOrEmpty(bp.Name) && !savedBuilds.Contains(bp.Name))
+                    {
+                        GD.Print($"[BuildUI] Recovered orphaned build '{bp.Name}' from {file}");
+                        savedBuilds.Add(bp.Name);
+                    }
+                }
+                catch { /* skip unreadable files */ }
+            }
+        }
+
+        GD.Print($"[BuildUI] ShowLoadBuildPopup: found {savedBuilds.Count} saved builds");
+
+        // Create popup panel centered on screen
+        PanelContainer popup = CreateStyledPanel(PanelBg, 0);
+        popup.AnchorLeft = 0.5f;
+        popup.AnchorRight = 0.5f;
+        popup.AnchorTop = 0.5f;
+        popup.AnchorBottom = 0.5f;
+        popup.OffsetLeft = -200;
+        popup.OffsetRight = 200;
+        popup.OffsetTop = -250;
+        popup.OffsetBottom = 250;
+        popup.MouseFilter = MouseFilterEnum.Stop;
+        AddChild(popup);
+        _loadBuildPopup = popup;
+
+        VBoxContainer content = new VBoxContainer();
+        content.AddThemeConstantOverride("separation", 6);
+        popup.AddChild(content);
+
+        // Header
+        Label header = new Label();
+        header.Text = "LOAD BUILD";
+        header.HorizontalAlignment = HorizontalAlignment.Center;
+        header.AddThemeFontOverride("font", PixelFont);
+        header.AddThemeFontSizeOverride("font_size", 12);
+        header.AddThemeColorOverride("font_color", AccentGold);
+        header.MouseFilter = MouseFilterEnum.Ignore;
+        content.AddChild(header);
+
+        if (savedBuilds.Count == 0)
+        {
+            // Show "no builds" message inside the popup itself
+            Label emptyLabel = new Label();
+            emptyLabel.Text = "No saved builds.\nSave one in Sandbox first.";
+            emptyLabel.HorizontalAlignment = HorizontalAlignment.Center;
+            emptyLabel.AddThemeFontOverride("font", PixelFont);
+            emptyLabel.AddThemeFontSizeOverride("font_size", 10);
+            emptyLabel.AddThemeColorOverride("font_color", TextSecondary);
+            emptyLabel.MouseFilter = MouseFilterEnum.Ignore;
+            emptyLabel.CustomMinimumSize = new Vector2(0, 60);
+            content.AddChild(emptyLabel);
+        }
+        else
+        {
+            // Scrollable build list
+            ScrollContainer scroll = new ScrollContainer();
+            scroll.SizeFlagsVertical = SizeFlags.ExpandFill;
+            scroll.CustomMinimumSize = new Vector2(0, 350);
+            scroll.VerticalScrollMode = ScrollContainer.ScrollMode.Auto;
+            scroll.HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled;
+            scroll.MouseFilter = MouseFilterEnum.Stop;
+            content.AddChild(scroll);
+
+            VBoxContainer buildList = new VBoxContainer();
+            buildList.AddThemeConstantOverride("separation", 4);
+            buildList.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            scroll.AddChild(buildList);
+
+            foreach (string buildName in savedBuilds)
+            {
+                string captured = buildName;
+                Button btn = new Button();
+                btn.Text = captured;
+                btn.Flat = true;
+                btn.AddThemeFontOverride("font", PixelFont);
+                btn.AddThemeFontSizeOverride("font_size", 11);
+                btn.AddThemeColorOverride("font_color", TextPrimary);
+                btn.AddThemeColorOverride("font_hover_color", AccentGold);
+                btn.Alignment = HorizontalAlignment.Center;
+                btn.CustomMinimumSize = new Vector2(0, 36);
+                btn.MouseFilter = MouseFilterEnum.Stop;
+                btn.Pressed += () =>
+                {
+                    AudioDirector.Instance?.PlaySFX("ui_click");
+                    SandboxLoadRequested?.Invoke(captured);
+                    if (_loadBuildPopup != null && IsInstanceValid(_loadBuildPopup))
+                    {
+                        _loadBuildPopup.QueueFree();
+                        _loadBuildPopup = null;
+                    }
+                };
+                buildList.AddChild(btn);
+            }
+        }
+
+        // Close button
+        Button cancelBtn = new Button();
+        cancelBtn.Text = savedBuilds.Count == 0 ? "OK" : "CANCEL";
+        cancelBtn.Flat = true;
+        cancelBtn.AddThemeFontOverride("font", PixelFont);
+        cancelBtn.AddThemeFontSizeOverride("font_size", 10);
+        cancelBtn.AddThemeColorOverride("font_color", TextSecondary);
+        cancelBtn.AddThemeColorOverride("font_hover_color", AccentRed);
+        cancelBtn.Alignment = HorizontalAlignment.Center;
+        cancelBtn.MouseFilter = MouseFilterEnum.Stop;
+        cancelBtn.Pressed += () =>
+        {
+            AudioDirector.Instance?.PlaySFX("ui_click");
+            if (_loadBuildPopup != null && IsInstanceValid(_loadBuildPopup))
+            {
+                _loadBuildPopup.QueueFree();
+                _loadBuildPopup = null;
+            }
+        };
+        content.AddChild(cancelBtn);
+    }
+
     // ========== Sandbox Mode ==========
 
     /// <summary>
     /// Enables sandbox mode: hides commander/weapon/troop sections,
     /// shows save/load panel with build name input and saved build list.
     /// </summary>
-    public void EnableSandboxMode(List<string> savedBuildNames)
+    public void EnableSandboxMode(List<string> savedBuildNames, string? loadedBuildName = null)
     {
         _sandboxMode = true;
         _sandboxBuildNames = savedBuildNames ?? new List<string>();
+        _currentBuildName = loadedBuildName;
 
         // Change ready button text to "EXIT SANDBOX"
         if (_readyBtn != null)
@@ -1778,7 +1943,8 @@ public partial class BuildUI : Control
             _sandboxPanel = null;
         }
         _sandboxNameInput = null;
-        _sandboxBuildList = null;
+        _sandboxContent = null;
+        _sandboxToggleBtn = null;
         _sandboxBuildNames.Clear();
 
         if (_readyBtn != null)
@@ -1794,166 +1960,140 @@ public partial class BuildUI : Control
             _sandboxPanel = null;
         }
 
-        // Floating panel on the LEFT side (right side has tool panel)
+        _sandboxPanelCollapsed = false;
+
+        // Compact floating panel at TOP CENTER — just save/export/import
         PanelContainer sandboxPanel = CreateStyledPanel(PanelBg, 0);
-        sandboxPanel.AnchorLeft = 0f;
-        sandboxPanel.AnchorRight = 0f;
-        sandboxPanel.AnchorTop = 0.5f;
-        sandboxPanel.AnchorBottom = 0.5f;
-        sandboxPanel.OffsetLeft = 10;
-        sandboxPanel.OffsetRight = 230;
-        sandboxPanel.OffsetTop = -180;
+        sandboxPanel.AnchorLeft = 0.5f;
+        sandboxPanel.AnchorRight = 0.5f;
+        sandboxPanel.AnchorTop = 0f;
+        sandboxPanel.AnchorBottom = 0f;
+        sandboxPanel.OffsetLeft = -160;
+        sandboxPanel.OffsetRight = 160;
+        sandboxPanel.OffsetTop = 10;
         sandboxPanel.OffsetBottom = 180;
-        sandboxPanel.CustomMinimumSize = new Vector2(220, 360);
+        sandboxPanel.CustomMinimumSize = new Vector2(320, 0);
+        sandboxPanel.ClipContents = true;
         sandboxPanel.MouseFilter = MouseFilterEnum.Stop;
         AddChild(sandboxPanel);
         _sandboxPanel = sandboxPanel;
 
-        VBoxContainer content = new VBoxContainer();
-        content.AddThemeConstantOverride("separation", 6);
-        sandboxPanel.AddChild(content);
+        VBoxContainer outerContent = new VBoxContainer();
+        outerContent.AddThemeConstantOverride("separation", 0);
+        sandboxPanel.AddChild(outerContent);
 
-        // Header
+        // Header row with title + collapse toggle
         MarginContainer headerMargin = new MarginContainer();
         headerMargin.AddThemeConstantOverride("margin_left", 10);
-        headerMargin.AddThemeConstantOverride("margin_top", 10);
+        headerMargin.AddThemeConstantOverride("margin_right", 10);
+        headerMargin.AddThemeConstantOverride("margin_top", 8);
+        headerMargin.AddThemeConstantOverride("margin_bottom", 4);
         headerMargin.MouseFilter = MouseFilterEnum.Ignore;
-        content.AddChild(headerMargin);
+        outerContent.AddChild(headerMargin);
+
+        HBoxContainer headerRow = new HBoxContainer();
+        headerRow.MouseFilter = MouseFilterEnum.Ignore;
+        headerMargin.AddChild(headerRow);
 
         Label header = new Label();
         header.Text = "SANDBOX";
         header.AddThemeFontOverride("font", PixelFont);
         header.AddThemeFontSizeOverride("font_size", 12);
         header.AddThemeColorOverride("font_color", AccentGold);
+        header.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         header.MouseFilter = MouseFilterEnum.Ignore;
-        headerMargin.AddChild(header);
+        headerRow.AddChild(header);
 
-        // Name input
+        _sandboxToggleBtn = new Button();
+        _sandboxToggleBtn.Text = "▲";
+        _sandboxToggleBtn.AddThemeFontOverride("font", PixelFont);
+        _sandboxToggleBtn.AddThemeFontSizeOverride("font_size", 10);
+        _sandboxToggleBtn.CustomMinimumSize = new Vector2(32, 28);
+        _sandboxToggleBtn.Pressed += () =>
+        {
+            AudioDirector.Instance?.PlaySFX("ui_click");
+            _sandboxPanelCollapsed = !_sandboxPanelCollapsed;
+            if (_sandboxContent != null) _sandboxContent.Visible = !_sandboxPanelCollapsed;
+            if (_sandboxToggleBtn != null) _sandboxToggleBtn.Text = _sandboxPanelCollapsed ? "▼" : "▲";
+            if (_sandboxPanel != null)
+            {
+                _sandboxPanel.OffsetBottom = _sandboxPanelCollapsed ? 54 : 180;
+            }
+        };
+        headerRow.AddChild(_sandboxToggleBtn);
+
+        // Collapsible content area
+        _sandboxContent = new VBoxContainer();
+        _sandboxContent.AddThemeConstantOverride("separation", 6);
+        outerContent.AddChild(_sandboxContent);
+
+        // Name input — pre-filled with current build name if we loaded one
         MarginContainer nameMargin = new MarginContainer();
         nameMargin.AddThemeConstantOverride("margin_left", 10);
         nameMargin.AddThemeConstantOverride("margin_right", 10);
         nameMargin.MouseFilter = MouseFilterEnum.Ignore;
-        content.AddChild(nameMargin);
+        _sandboxContent.AddChild(nameMargin);
 
         _sandboxNameInput = new LineEdit();
         _sandboxNameInput.PlaceholderText = "Build name...";
+        _sandboxNameInput.Text = _currentBuildName ?? string.Empty;
         _sandboxNameInput.AddThemeFontOverride("font", PixelFont);
         _sandboxNameInput.AddThemeFontSizeOverride("font_size", 10);
         _sandboxNameInput.CustomMinimumSize = new Vector2(0, 32);
         nameMargin.AddChild(_sandboxNameInput);
 
-        // Save button
+        // Save / Export / Import row
         MarginContainer btnMargin = new MarginContainer();
         btnMargin.AddThemeConstantOverride("margin_left", 10);
         btnMargin.AddThemeConstantOverride("margin_right", 10);
         btnMargin.MouseFilter = MouseFilterEnum.Ignore;
-        content.AddChild(btnMargin);
+        _sandboxContent.AddChild(btnMargin);
+
+        HBoxContainer btnRow = new HBoxContainer();
+        btnRow.AddThemeConstantOverride("separation", 6);
+        btnMargin.AddChild(btnRow);
 
         Button saveBtn = new Button();
-        saveBtn.Text = "SAVE BUILD";
+        saveBtn.Text = "SAVE";
         saveBtn.AddThemeFontOverride("font", PixelFont);
-        saveBtn.AddThemeFontSizeOverride("font_size", 10);
-        saveBtn.CustomMinimumSize = new Vector2(0, 32);
+        saveBtn.AddThemeFontSizeOverride("font_size", 9);
+        saveBtn.CustomMinimumSize = new Vector2(0, 30);
+        saveBtn.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         saveBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); OnSandboxSavePressed(); };
-        btnMargin.AddChild(saveBtn);
+        btnRow.AddChild(saveBtn);
 
-        // Separator
-        ColorRect sep = new ColorRect();
-        sep.CustomMinimumSize = new Vector2(0, 1);
-        sep.Color = BorderColor;
-        sep.MouseFilter = MouseFilterEnum.Ignore;
-        content.AddChild(sep);
+        Button exportBtn = new Button();
+        exportBtn.Text = "EXPORT";
+        exportBtn.AddThemeFontOverride("font", PixelFont);
+        exportBtn.AddThemeFontSizeOverride("font_size", 9);
+        exportBtn.CustomMinimumSize = new Vector2(0, 30);
+        exportBtn.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        exportBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); OnExportPressed(); };
+        btnRow.AddChild(exportBtn);
 
-        // Saved builds header
-        MarginContainer listHeaderMargin = new MarginContainer();
-        listHeaderMargin.AddThemeConstantOverride("margin_left", 10);
-        listHeaderMargin.MouseFilter = MouseFilterEnum.Ignore;
-        content.AddChild(listHeaderMargin);
+        Button importBtn = new Button();
+        importBtn.Text = "IMPORT";
+        importBtn.AddThemeFontOverride("font", PixelFont);
+        importBtn.AddThemeFontSizeOverride("font_size", 9);
+        importBtn.CustomMinimumSize = new Vector2(0, 30);
+        importBtn.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        importBtn.Pressed += () => { AudioDirector.Instance?.PlaySFX("ui_click"); OnImportPressed(); };
+        btnRow.AddChild(importBtn);
 
-        Label listHeader = new Label();
-        listHeader.Text = "SAVED BUILDS";
-        listHeader.AddThemeFontOverride("font", PixelFont);
-        listHeader.AddThemeFontSizeOverride("font_size", 10);
-        listHeader.AddThemeColorOverride("font_color", TextSecondary);
-        listHeader.MouseFilter = MouseFilterEnum.Ignore;
-        listHeaderMargin.AddChild(listHeader);
+        // Export status label (shows feedback)
+        MarginContainer statusMargin = new MarginContainer();
+        statusMargin.AddThemeConstantOverride("margin_left", 10);
+        statusMargin.MouseFilter = MouseFilterEnum.Ignore;
+        _sandboxContent.AddChild(statusMargin);
 
-        // Scrollable build list
-        ScrollContainer scroll = new ScrollContainer();
-        scroll.SizeFlagsVertical = SizeFlags.ExpandFill;
-        scroll.CustomMinimumSize = new Vector2(0, 150);
-        scroll.MouseFilter = MouseFilterEnum.Stop;
-        content.AddChild(scroll);
-
-        _sandboxBuildList = new VBoxContainer();
-        _sandboxBuildList.AddThemeConstantOverride("separation", 4);
-        scroll.AddChild(_sandboxBuildList);
-
-        RefreshSandboxBuildList();
-    }
-
-    private void RefreshSandboxBuildList()
-    {
-        if (_sandboxBuildList == null) return;
-
-        // Clear existing
-        foreach (Node child in _sandboxBuildList.GetChildren())
-        {
-            child.QueueFree();
-        }
-
-        if (_sandboxBuildNames.Count == 0)
-        {
-            MarginContainer emptyMargin = new MarginContainer();
-            emptyMargin.AddThemeConstantOverride("margin_left", 10);
-            emptyMargin.MouseFilter = MouseFilterEnum.Ignore;
-            _sandboxBuildList.AddChild(emptyMargin);
-
-            Label emptyLabel = new Label();
-            emptyLabel.Text = "No saved builds";
-            emptyLabel.AddThemeFontOverride("font", PixelFont);
-            emptyLabel.AddThemeFontSizeOverride("font_size", 8);
-            emptyLabel.AddThemeColorOverride("font_color", TextSecondary);
-            emptyLabel.MouseFilter = MouseFilterEnum.Ignore;
-            emptyMargin.AddChild(emptyLabel);
-            return;
-        }
-
-        foreach (string buildName in _sandboxBuildNames)
-        {
-            string capturedName = buildName;
-            PanelContainer buildBtn = CreateStyledPanel(new Color(0, 0, 0, 0), 0);
-            buildBtn.CustomMinimumSize = new Vector2(0, 28);
-            buildBtn.MouseFilter = MouseFilterEnum.Stop;
-
-            MarginContainer buildMargin = new MarginContainer();
-            buildMargin.AddThemeConstantOverride("margin_left", 10);
-            buildMargin.MouseFilter = MouseFilterEnum.Ignore;
-            buildBtn.AddChild(buildMargin);
-
-            Label buildLabel = new Label();
-            buildLabel.Text = buildName;
-            buildLabel.AddThemeFontOverride("font", PixelFont);
-            buildLabel.AddThemeFontSizeOverride("font_size", 9);
-            buildLabel.AddThemeColorOverride("font_color", TextPrimary);
-            buildLabel.MouseFilter = MouseFilterEnum.Ignore;
-            buildMargin.AddChild(buildLabel);
-
-            Button clickArea = new Button();
-            clickArea.Flat = true;
-            clickArea.MouseFilter = MouseFilterEnum.Stop;
-            clickArea.Modulate = new Color(1, 1, 1, 0);
-            clickArea.Pressed += () =>
-            {
-                AudioDirector.Instance?.PlaySFX("ui_click");
-                SandboxLoadRequested?.Invoke(capturedName);
-                if (_sandboxNameInput != null) _sandboxNameInput.Text = capturedName;
-            };
-            buildBtn.AddChild(clickArea);
-            clickArea.SetAnchorsPreset(LayoutPreset.FullRect);
-
-            _sandboxBuildList.AddChild(buildBtn);
-        }
+        _exportStatusLabel = new Label();
+        _exportStatusLabel.Text = "";
+        _exportStatusLabel.AddThemeFontOverride("font", PixelFont);
+        _exportStatusLabel.AddThemeFontSizeOverride("font_size", 7);
+        _exportStatusLabel.AddThemeColorOverride("font_color", AccentGold);
+        _exportStatusLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        _exportStatusLabel.MouseFilter = MouseFilterEnum.Ignore;
+        statusMargin.AddChild(_exportStatusLabel);
     }
 
     private void OnSandboxSavePressed()
@@ -1965,6 +2105,7 @@ public partial class BuildUI : Control
             if (_sandboxNameInput != null) _sandboxNameInput.Text = name;
         }
 
+        _currentBuildName = name;
         SandboxSaveRequested?.Invoke(name);
 
         // Add to local list if not already there
@@ -1972,6 +2113,97 @@ public partial class BuildUI : Control
         {
             _sandboxBuildNames.Add(name);
         }
-        RefreshSandboxBuildList();
+
+        ShowExportStatus($"Saved '{name}'", AccentGreen);
+    }
+
+    private void OnExportPressed()
+    {
+        string name = _sandboxNameInput?.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            ShowExportStatus("Enter a build name first", AccentRed);
+            return;
+        }
+
+        // First save the current build so it's up to date
+        SandboxSaveRequested?.Invoke(name);
+        if (!_sandboxBuildNames.Contains(name))
+        {
+            _sandboxBuildNames.Add(name);
+        }
+
+        // Open file dialog to choose export location
+        if (_exportDialog != null && IsInstanceValid(_exportDialog))
+        {
+            _exportDialog.QueueFree();
+        }
+
+        _exportDialog = new FileDialog();
+        _exportDialog.FileMode = FileDialog.FileModeEnum.SaveFile;
+        _exportDialog.Access = FileDialog.AccessEnum.Filesystem;
+        _exportDialog.Title = "Export Build";
+        _exportDialog.Filters = new string[] { "*.vsbuild ; VoxelSiege Build Files" };
+        _exportDialog.CurrentFile = $"{name.ToLowerInvariant().Replace(' ', '_')}.vsbuild";
+
+        // Try to open to user's Documents folder
+        string docsPath = System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments);
+        if (!string.IsNullOrEmpty(docsPath))
+        {
+            _exportDialog.CurrentDir = docsPath;
+        }
+
+        _exportDialog.FileSelected += (path) =>
+        {
+            SandboxExportRequested?.Invoke(path);
+        };
+        _exportDialog.Size = new Vector2I(800, 500);
+        AddChild(_exportDialog);
+        _exportDialog.PopupCentered();
+    }
+
+    private void OnImportPressed()
+    {
+        if (_importDialog != null && IsInstanceValid(_importDialog))
+        {
+            _importDialog.QueueFree();
+        }
+
+        _importDialog = new FileDialog();
+        _importDialog.FileMode = FileDialog.FileModeEnum.OpenFile;
+        _importDialog.Access = FileDialog.AccessEnum.Filesystem;
+        _importDialog.Title = "Import Build";
+        _importDialog.Filters = new string[] { "*.vsbuild ; VoxelSiege Build Files" };
+
+        string docsPath = System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments);
+        if (!string.IsNullOrEmpty(docsPath))
+        {
+            _importDialog.CurrentDir = docsPath;
+        }
+
+        _importDialog.FileSelected += (path) =>
+        {
+            SandboxImportRequested?.Invoke(path);
+        };
+        _importDialog.Size = new Vector2I(800, 500);
+        AddChild(_importDialog);
+        _importDialog.PopupCentered();
+    }
+
+    public void ShowExportStatus(string message, Color color)
+    {
+        if (_exportStatusLabel == null) return;
+        _exportStatusLabel.Text = message;
+        _exportStatusLabel.AddThemeColorOverride("font_color", color);
+
+        // Auto-clear after 4 seconds
+        var timer = GetTree().CreateTimer(4.0);
+        timer.Timeout += () =>
+        {
+            if (_exportStatusLabel != null && IsInstanceValid(_exportStatusLabel))
+            {
+                _exportStatusLabel.Text = "";
+            }
+        };
     }
 }

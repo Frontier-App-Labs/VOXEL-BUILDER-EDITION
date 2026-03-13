@@ -113,9 +113,9 @@ public partial class TroopEntity : Node3D
             if (_healthBar != null)
                 _healthBar.Visible = false;
 
-            // Queue free after ragdoll plays out (5 seconds)
-            var timer = GetTree().CreateTimer(5.0);
-            timer.Timeout += () => QueueFree();
+            // Dead troops stay as ragdolls — no QueueFree.
+            // Remove from Troops group so they don't interfere with AI/pathfinding.
+            RemoveFromGroup("Troops");
 
             EventBus.Instance?.EmitTroopKilled(new TroopKilledEvent(
                 OwnerSlot, Type, GlobalPosition, instigator));
@@ -254,6 +254,12 @@ public partial class TroopEntity : Node3D
             PathIndex = 0;
             if (AIState == TroopAIState.Moving)
                 SetAIState(TroopAIState.Idle);
+
+            // If we arrived on top of another troop, nudge to an adjacent empty cell
+            if (IsCellOccupiedByOtherTroop(CurrentMicrovoxel))
+            {
+                NudgeOffOverlappingCell();
+            }
         }
     }
 
@@ -365,24 +371,54 @@ public partial class TroopEntity : Node3D
     /// <summary>
     /// Attacks a voxel, reducing its HP by this troop's attack damage.
     /// Destroys the voxel if HP reaches zero.
+    /// Projectile collision: raycasts from troop to target — if a wall blocks
+    /// the path, damage is redirected to the first voxel hit (grenade/bullet
+    /// impacts the wall instead of phasing through).
     /// </summary>
     public void AttackVoxel(VoxelWorld world, Vector3I targetPos)
     {
         Voxel.Voxel voxel = world.GetVoxel(targetPos);
-        if (!voxel.IsSolid || voxel.Material == VoxelMaterialType.Foundation) return;
 
-        TroopStats stats = TroopDefinitions.Get(Type);
-
-        // Face the target
-        Vector3 targetWorld = MicrovoxelToWorld(targetPos);
-        if (_modelRoot != null)
+        // If the target voxel was already destroyed, try to find the nearest
+        // solid neighbor so the troop doesn't waste its turn doing nothing.
+        if (!voxel.IsSolid || voxel.Material == VoxelMaterialType.Foundation)
         {
-            Vector3 lookPos = targetWorld with { Y = _modelRoot.GlobalPosition.Y };
-            if (lookPos.DistanceSquaredTo(_modelRoot.GlobalPosition) > 0.01f)
-                _modelRoot.LookAt(lookPos, Vector3.Up);
+            Vector3I? fallback = FindNearestSolidNeighbor(world, targetPos);
+            if (!fallback.HasValue) return;
+            targetPos = fallback.Value;
+            voxel = world.GetVoxel(targetPos);
         }
 
-        // Spawn visible projectile from troop to target
+        TroopStats stats = TroopDefinitions.Get(Type);
+        Vector3 targetWorld = new Vector3(
+            targetPos.X * GameConfig.MicrovoxelMeters + GameConfig.MicrovoxelMeters * 0.5f,
+            targetPos.Y * GameConfig.MicrovoxelMeters + GameConfig.MicrovoxelMeters * 0.5f,
+            targetPos.Z * GameConfig.MicrovoxelMeters + GameConfig.MicrovoxelMeters * 0.5f);
+
+        // Projectile collision: raycast from troop eye-height toward the target.
+        // If a different voxel blocks the path, redirect damage to that voxel instead.
+        Vector3 eyePos = GlobalPosition + Vector3.Up * 0.2f;
+        Vector3 dir = (targetWorld - eyePos).Normalized();
+        float dist = eyePos.DistanceTo(targetWorld);
+        float checkDist = dist - GameConfig.MicrovoxelMeters * 1.5f;
+        if (checkDist > 0f && world.RaycastVoxel(eyePos, dir, checkDist, out Vector3I hitPos, out Vector3I _))
+        {
+            Voxel.Voxel hitVoxel = world.GetVoxel(hitPos);
+            if (hitVoxel.IsSolid && hitVoxel.Material != VoxelMaterialType.Foundation)
+            {
+                targetPos = hitPos;
+                voxel = hitVoxel;
+                targetWorld = new Vector3(
+                    hitPos.X * GameConfig.MicrovoxelMeters + GameConfig.MicrovoxelMeters * 0.5f,
+                    hitPos.Y * GameConfig.MicrovoxelMeters + GameConfig.MicrovoxelMeters * 0.5f,
+                    hitPos.Z * GameConfig.MicrovoxelMeters + GameConfig.MicrovoxelMeters * 0.5f);
+            }
+        }
+
+        // Face the final impact point (after any redirect), then fire
+        FaceTarget(targetWorld);
+
+        // Spawn visible projectile toward actual impact point
         SpawnAttackProjectile(targetWorld);
 
         // Apply damage to primary target
@@ -484,6 +520,75 @@ public partial class TroopEntity : Node3D
         RecordDamageDealt(stats.AttackDamage);
 
         GD.Print($"[Troop] {Name} attacked enemy weapon {weapon.WeaponId} for {stats.AttackDamage} dmg");
+    }
+
+    /// <summary>
+    /// Finds the nearest solid non-foundation voxel adjacent to the given position.
+    /// Used when the original target was already destroyed so the troop can redirect
+    /// its attack to a nearby block instead of wasting its turn.
+    /// </summary>
+    private static Vector3I? FindNearestSolidNeighbor(VoxelWorld world, Vector3I center)
+    {
+        Vector3I[] offsets = { Vector3I.Up, Vector3I.Down, Vector3I.Left, Vector3I.Right,
+                               new Vector3I(0, 0, 1), new Vector3I(0, 0, -1) };
+        foreach (Vector3I offset in offsets)
+        {
+            Vector3I candidate = center + offset;
+            Voxel.Voxel v = world.GetVoxel(candidate);
+            if (v.IsSolid && v.Material != VoxelMaterialType.Foundation)
+                return candidate;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Finds and destroys the nearest FallingChunk debris within attack range.
+    /// Used when no other targets are available so troops can clear rubble
+    /// piled around objectives (commanders, weapons, paths).
+    /// Returns true if debris was found and destroyed.
+    /// </summary>
+    public bool AttackNearbyDebris()
+    {
+        PhysicsDirectSpaceState3D? space = GetWorld3D()?.DirectSpaceState;
+        if (space == null) return false;
+
+        TroopStats stats = TroopDefinitions.Get(Type);
+        float rangeMeters = stats.AttackRange * GameConfig.MicrovoxelMeters;
+
+        PhysicsShapeQueryParameters3D query = new();
+        query.Shape = new SphereShape3D { Radius = rangeMeters };
+        query.Transform = new Transform3D(Basis.Identity, GlobalPosition + Vector3.Up * 0.3f);
+        query.CollisionMask = 1 << 3; // Layer 4 (debris/FallingChunks)
+        query.CollideWithBodies = true;
+
+        var results = space.IntersectShape(query, 8);
+        if (results.Count == 0) return false;
+
+        // Find the closest debris chunk
+        Node3D? closest = null;
+        float closestDist = float.MaxValue;
+        foreach (var result in results)
+        {
+            if (result.TryGetValue("collider", out var colliderVar) && colliderVar.Obj is Node3D debris)
+            {
+                if (!IsInstanceValid(debris)) continue;
+                float dist = GlobalPosition.DistanceTo(debris.GlobalPosition);
+                if (dist < closestDist)
+                {
+                    closestDist = dist;
+                    closest = debris;
+                }
+            }
+        }
+
+        if (closest == null) return false;
+
+        FaceTarget(closest.GlobalPosition);
+        SpawnAttackProjectile(closest.GlobalPosition);
+        SetAIState(TroopAIState.Attacking);
+        closest.QueueFree();
+        GD.Print($"[Troop] {Name} cleared debris at {closest.GlobalPosition}");
+        return true;
     }
 
     /// <summary>Faces the model toward a world position.</summary>
@@ -617,10 +722,9 @@ public partial class TroopEntity : Node3D
     }
 
     /// <summary>
-    /// Checks if a stationary troop occupies the given microvoxel cell.
-    /// Only blocks on troops that are at rest (idle/attacking) — troops that are
-    /// actively walking or have a path will vacate the cell soon, so we let
-    /// movement continue to prevent deadlocks when everyone moves at once.
+    /// Checks if another troop occupies the given microvoxel cell.
+    /// Blocks if any other troop claims this cell UNLESS that troop is
+    /// actively mid-step away from it (their destination is different).
     /// </summary>
     private bool IsCellOccupiedByOtherTroop(Vector3I cell)
     {
@@ -630,14 +734,52 @@ public partial class TroopEntity : Node3D
             if (!IsInstanceValid(other) || other.CurrentHP <= 0) continue;
             if (other.CurrentMicrovoxel != cell) continue;
 
-            // Only block if the other troop is stationary — if they're moving
-            // or have a path queued, they'll clear this cell soon
-            bool isStationary = other.AIState != TroopAIState.Moving
-                && other.CurrentPath == null
-                && !other.MoveTarget.HasValue;
-            if (isStationary) return true;
+            // Allow passing through if the other troop is actively walking
+            // to a DIFFERENT cell (they're leaving this one)
+            if (other._moveProgress < 1f)
+            {
+                Vector3I movingTo = Utility.MathHelpers.WorldToMicrovoxel(other._moveTo);
+                if (movingTo != cell) continue; // they're leaving, let us in
+            }
+
+            return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Nudges the troop to an adjacent unoccupied cell when it arrives on top of
+    /// another troop. Searches the 4 cardinal neighbors for the nearest empty cell.
+    /// </summary>
+    private void NudgeOffOverlappingCell()
+    {
+        Vector3I[] offsets = { new(1, 0, 0), new(-1, 0, 0), new(0, 0, 1), new(0, 0, -1) };
+        foreach (Vector3I offset in offsets)
+        {
+            Vector3I candidate = CurrentMicrovoxel + offset;
+            if (!IsCellOccupiedByOtherTroop(candidate))
+            {
+                StartMoveTo(candidate);
+                PathIndex = 0;
+                if (AIState != TroopAIState.Moving)
+                    SetAIState(TroopAIState.Moving);
+                return;
+            }
+        }
+        // All 4 neighbors occupied — try diagonals
+        Vector3I[] diags = { new(1, 0, 1), new(1, 0, -1), new(-1, 0, 1), new(-1, 0, -1) };
+        foreach (Vector3I offset in diags)
+        {
+            Vector3I candidate = CurrentMicrovoxel + offset;
+            if (!IsCellOccupiedByOtherTroop(candidate))
+            {
+                StartMoveTo(candidate);
+                PathIndex = 0;
+                if (AIState != TroopAIState.Moving)
+                    SetAIState(TroopAIState.Moving);
+                return;
+            }
+        }
     }
 
     /// <summary>

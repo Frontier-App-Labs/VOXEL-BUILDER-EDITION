@@ -12,6 +12,8 @@ public partial class ProgressionManager : Node
     public override void _Ready()
     {
         Profile = SaveSystem.LoadJson<PlayerProfile>(ProfilePath) ?? new PlayerProfile();
+        string globalPath = ProjectSettings.GlobalizePath(ProfilePath);
+        GD.Print($"[Progression] Profile loaded from {globalPath} — SavedBuilds: [{string.Join(", ", Profile.SavedBuilds)}], Level={Profile.Level}, XP={Profile.TotalXp}");
         if (EventBus.Instance != null)
         {
             EventBus.Instance.VoxelChanged += OnVoxelChanged;
@@ -85,5 +87,6 @@ public partial class ProgressionManager : Node
     private void Save()
     {
         SaveSystem.SaveJson(ProfilePath, Profile);
+        GD.Print($"[Progression] Profile saved — SavedBuilds: [{string.Join(", ", Profile.SavedBuilds)}]");
     }
 }

@@ -72,6 +72,8 @@ public partial class SplashScreen : Control
     private Label? _studioLabel;
     private Label? _pressAnyKeyLabel;
     private Label? _loadingLabel;
+    private Label? _builderEditionLabel;
+    private Label? _thankYouLabel;
     private ColorRect? _backdrop;
 
     private float _elapsed;
@@ -322,6 +324,36 @@ public partial class SplashScreen : Control
 
         BuildCastle();
         BuildVoxelTitle();
+
+        // "BUILDER'S EDITION" subtitle — appears with the title after explosion
+        float vpW = vpSize.X;
+        float vpH = vpSize.Y;
+
+        _builderEditionLabel = new Label();
+        _builderEditionLabel.Name = "BuilderEditionLabel";
+        _builderEditionLabel.Text = "BUILDER'S EDITION";
+        _builderEditionLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        _builderEditionLabel.AddThemeFontOverride("font", PixelFont);
+        _builderEditionLabel.AddThemeFontSizeOverride("font_size", 20);
+        _builderEditionLabel.AddThemeColorOverride("font_color", new Color("d74f4f"));
+        _builderEditionLabel.Position = new Vector2(0, vpH * 0.5f + 130f);
+        _builderEditionLabel.Size = new Vector2(vpW, 50);
+        _builderEditionLabel.MouseFilter = MouseFilterEnum.Ignore;
+        _builderEditionLabel.Modulate = new Color(1, 1, 1, 1); // visible when title layer fades in
+        _titleLayer?.AddChild(_builderEditionLabel);
+
+        _thankYouLabel = new Label();
+        _thankYouLabel.Name = "ThankYouLabel";
+        _thankYouLabel.Text = "Thank you for your contribution to the game!";
+        _thankYouLabel.HorizontalAlignment = HorizontalAlignment.Center;
+        _thankYouLabel.AddThemeFontOverride("font", PixelFont);
+        _thankYouLabel.AddThemeFontSizeOverride("font_size", 11);
+        _thankYouLabel.AddThemeColorOverride("font_color", TextWhite);
+        _thankYouLabel.Position = new Vector2(0, vpH * 0.5f + 170f);
+        _thankYouLabel.Size = new Vector2(vpW, 35);
+        _thankYouLabel.MouseFilter = MouseFilterEnum.Ignore;
+        _thankYouLabel.Modulate = new Color(1, 1, 1, 1); // visible when title layer fades in
+        _titleLayer?.AddChild(_thankYouLabel);
 
         if (IsLoadingMode)
         {

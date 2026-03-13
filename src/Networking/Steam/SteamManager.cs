@@ -15,7 +15,7 @@ namespace VoxelSiege.Networking.Steam;
 public partial class SteamManager : Node
 {
     [Export]
-    public uint SteamAppId = 480; // 480 = Spacewar (Valve test app) — replace with real ID
+    public uint SteamAppId = 4522730;
 
     public string PlayerName => _initialized ? SteamClient.Name : "Player";
     public SteamId PlayerSteamId => _initialized ? SteamClient.SteamId : default;
@@ -147,16 +147,18 @@ public partial class SteamManager : Node
         foreach (Lobby lobby in lobbies)
         {
             string? lobbyCode = lobby.GetData("game_code");
-            GD.Print($"[SteamManager] Lobby {lobby.Id}: code='{lobbyCode}'");
+            string? gameName = lobby.GetData("game_name");
+            GD.Print($"[SteamManager] Lobby {lobby.Id}: code='{lobbyCode}', game='{gameName}', owner={lobby.Owner.Id}, members={lobby.MemberCount}");
             if (string.Equals(lobbyCode, code, StringComparison.OrdinalIgnoreCase))
             {
-                GD.Print($"[SteamManager] Found matching lobby! Joining {lobby.Id}...");
+                GD.Print($"[SteamManager] Found matching lobby! Joining {lobby.Id} (owner={lobby.Owner.Id})...");
                 RoomEnter joinResult = await lobby.Join();
+                GD.Print($"[SteamManager] Lobby join result: {joinResult}");
                 if (joinResult == RoomEnter.Success)
                 {
                     CurrentLobby = lobby;
                     InLobby = true;
-                    GD.Print($"[SteamManager] Joined lobby {lobby.Id} successfully!");
+                    GD.Print($"[SteamManager] Joined lobby {lobby.Id} successfully! Owner={CurrentLobby.Owner.Id}");
                     return true;
                 }
                 else
@@ -178,6 +180,8 @@ public partial class SteamManager : Node
     /// </summary>
     public SteamId GetLobbyHostId()
     {
+        SteamId hostId = InLobby ? CurrentLobby.Owner.Id : default;
+        GD.Print($"[SteamManager] GetLobbyHostId: Owner={hostId}, InLobby={InLobby}");
         return InLobby ? CurrentLobby.Owner.Id : default;
     }
 

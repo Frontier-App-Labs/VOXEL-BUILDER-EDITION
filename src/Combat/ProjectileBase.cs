@@ -582,6 +582,10 @@ public partial class ProjectileBase : Node3D
         v[1, 0, 1] = metal; v[1, 2, 1] = metal;
         v[1, 1, 0] = metal; v[1, 1, 2] = metal;
 
+        VoxelPalette palette = new();
+        palette.AddColors(v);
+        palette.Build();
+
         VoxelModelBuilder builder = new()
         {
             VoxelSize = 0.1f,
@@ -590,9 +594,9 @@ public partial class ProjectileBase : Node3D
 
         _visual = new MeshInstance3D();
         _visual.Name = "Visual";
-        _visual.Mesh = builder.BuildMesh(v);
+        _visual.Mesh = builder.BuildMesh(v, palette);
 
-        StandardMaterial3D mat = VoxelModelBuilder.CreateVoxelMaterial(0.5f, 0.3f);
+        StandardMaterial3D mat = palette.CreateMaterial(0.5f, 0.3f);
         mat.EmissionEnabled = true;
         mat.Emission = glow;
         mat.EmissionEnergyMultiplier = 0.5f;
@@ -626,6 +630,10 @@ public partial class ProjectileBase : Node3D
         v[1, 2, 2] = shell;
         v[1, 4, 1] = nose; // nose
 
+        VoxelPalette palette = new();
+        palette.AddColors(v);
+        palette.Build();
+
         VoxelModelBuilder builder = new()
         {
             VoxelSize = 0.07f,
@@ -634,8 +642,8 @@ public partial class ProjectileBase : Node3D
 
         _visual = new MeshInstance3D();
         _visual.Name = "Visual";
-        _visual.Mesh = builder.BuildMesh(v);
-        _visual.MaterialOverride = VoxelModelBuilder.CreateVoxelMaterial(0.3f, 0.5f);
+        _visual.Mesh = builder.BuildMesh(v, palette);
+        _visual.MaterialOverride = palette.CreateMaterial(0.3f, 0.5f);
         AddChild(_visual);
     }
 
@@ -658,6 +666,10 @@ public partial class ProjectileBase : Node3D
         v[0, 5, 0] = white;
         v[1, 5, 1] = white;
 
+        VoxelPalette palette = new();
+        palette.AddColors(v);
+        palette.Build();
+
         VoxelModelBuilder builder = new()
         {
             VoxelSize = 0.05f,
@@ -666,9 +678,9 @@ public partial class ProjectileBase : Node3D
 
         _visual = new MeshInstance3D();
         _visual.Name = "Visual";
-        _visual.Mesh = builder.BuildMesh(v);
+        _visual.Mesh = builder.BuildMesh(v, palette);
 
-        StandardMaterial3D mat = VoxelModelBuilder.CreateVoxelMaterial(0.1f, 0.2f);
+        StandardMaterial3D mat = palette.CreateMaterial(0.1f, 0.2f);
         mat.EmissionEnabled = true;
         mat.Emission = cyanBright;
         mat.EmissionEnergyMultiplier = 2.0f;
@@ -710,6 +722,10 @@ public partial class ProjectileBase : Node3D
         // Red nose cone
         v[1, 6, 1] = redNose;
 
+        VoxelPalette palette = new();
+        palette.AddColors(v);
+        palette.Build();
+
         VoxelModelBuilder builder = new()
         {
             VoxelSize = 0.07f,
@@ -718,9 +734,9 @@ public partial class ProjectileBase : Node3D
 
         _visual = new MeshInstance3D();
         _visual.Name = "Visual";
-        _visual.Mesh = builder.BuildMesh(v);
+        _visual.Mesh = builder.BuildMesh(v, palette);
 
-        StandardMaterial3D mat = VoxelModelBuilder.CreateVoxelMaterial(0.2f, 0.5f);
+        StandardMaterial3D mat = palette.CreateMaterial(0.2f, 0.5f);
         mat.EmissionEnabled = true;
         mat.Emission = flame;
         mat.EmissionEnergyMultiplier = 0.3f;
@@ -762,6 +778,10 @@ public partial class ProjectileBase : Node3D
         v[0, 0, 1] = metal;
         v[2, 0, 1] = metal;
 
+        VoxelPalette palette = new();
+        palette.AddColors(v);
+        palette.Build();
+
         VoxelModelBuilder builder = new()
         {
             VoxelSize = 0.08f,
@@ -770,8 +790,8 @@ public partial class ProjectileBase : Node3D
 
         _visual = new MeshInstance3D();
         _visual.Name = "Visual";
-        _visual.Mesh = builder.BuildMesh(v);
-        _visual.MaterialOverride = VoxelModelBuilder.CreateVoxelMaterial(0.6f, 0.3f);
+        _visual.Mesh = builder.BuildMesh(v, palette);
+        _visual.MaterialOverride = palette.CreateMaterial(0.6f, 0.3f);
         AddChild(_visual);
 
         _spinSpeed = 25f; // drills spin fast

@@ -85,6 +85,8 @@ public sealed class PlayerData
     public Color PlayerColor { get; set; } = Colors.White;
     public bool IsReady { get; set; }
     public bool IsAlive { get; set; } = true;
+    /// <summary>True if this player is controlled by AI (not a human, local or remote).</summary>
+    public bool IsBot { get; set; }
     public int Budget { get; private set; } = GameConfig.DefaultBudget;
     public int CommanderHealth { get; set; } = GameConfig.CommanderHP;
     public Vector3I? CommanderMicrovoxelPosition { get; set; }
