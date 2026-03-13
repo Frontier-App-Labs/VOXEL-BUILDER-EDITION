@@ -4586,9 +4586,10 @@ public partial class GameManager : Node
             return;
         }
 
-        // Find ground level at this position — look down from top for first solid block
+        // Find ground level at this position — scan down from the cursor Y
+        // (not from zone top, which would hit the roof of enclosed rooms)
         int groundY = -1;
-        for (int y = zoneMax.Y + 4; y >= zoneMin.Y - 2; y--)
+        for (int y = microBase.Y; y >= zoneMin.Y - 2; y--)
         {
             if (_voxelWorld.GetVoxel(new Vector3I(microBase.X, y, microBase.Z)).IsSolid)
             {
