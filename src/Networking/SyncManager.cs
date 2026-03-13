@@ -143,9 +143,11 @@ public partial class SyncManager : Node
     /// <summary>
     /// Broadcasts a weapon fire event (with launch velocity) to all peers.
     /// </summary>
-    public void SendWeaponFire(PlayerSlot owner, int weaponIndex, Vector3 launchVelocity)
+    public void SendWeaponFire(PlayerSlot owner, int weaponIndex, Vector3 launchVelocity, Vector3 weaponPos)
     {
-        var payload = new WeaponFireSyncPayload((int)owner, weaponIndex, launchVelocity.X, launchVelocity.Y, launchVelocity.Z);
+        var payload = new WeaponFireSyncPayload((int)owner, weaponIndex,
+            launchVelocity.X, launchVelocity.Y, launchVelocity.Z,
+            weaponPos.X, weaponPos.Y, weaponPos.Z);
         byte[] data = JsonSerializer.SerializeToUtf8Bytes(payload);
         Rpc(nameof(ReceiveWeaponFire), data);
     }

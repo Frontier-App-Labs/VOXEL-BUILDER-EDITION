@@ -352,6 +352,7 @@ public partial class GameManager : Node
             _syncManager.PowerupUsedReceived += OnRemotePowerupUsed;
             _syncManager.EmpResultReceived += OnRemoteEmpResult;
             _syncManager.AirstrikeResultReceived += OnRemoteAirstrikeResult;
+            _syncManager.CommanderDeathReceived += OnRemoteCommanderDeath;
             _syncManager.GameOverReceived += OnRemoteGameOver;
             _syncManager.DisconnectReceived += OnRemoteDisconnect;
         }
@@ -2497,20 +2498,31 @@ public partial class GameManager : Node
         if (_voxelWorld == null) return;
         if (!_weapons.TryGetValue(slot, out List<WeaponBase>? weaponList) || weaponList.Count == 0) return;
 
-        // Build the same alive-weapons list as the firing client
-        List<WeaponBase> aliveWeapons = weaponList.FindAll(w =>
-            w != null && GodotObject.IsInstanceValid(w) && !w.IsDestroyed);
-        if (aliveWeapons.Count == 0) return;
-
-        int safeIndex = payload.WeaponIndex % aliveWeapons.Count;
-        WeaponBase? weapon = aliveWeapons[safeIndex];
-        if (weapon == null || !GodotObject.IsInstanceValid(weapon)) return;
+        // Find weapon by position (robust against list order divergence between peers)
+        Vector3 senderWeaponPos = new Vector3(payload.WeaponPosX, payload.WeaponPosY, payload.WeaponPosZ);
+        WeaponBase? weapon = null;
+        float bestDist = float.MaxValue;
+        foreach (WeaponBase w in weaponList)
+        {
+            if (w == null || !GodotObject.IsInstanceValid(w) || w.IsDestroyed) continue;
+            float dist = w.GlobalPosition.DistanceTo(senderWeaponPos);
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                weapon = w;
+            }
+        }
+        if (weapon == null || bestDist > 3f)
+        {
+            GD.PrintErr($"[Online] Could not find matching weapon for remote fire at {senderWeaponPos} (bestDist={bestDist:F1})");
+            return;
+        }
 
         Vector3 launchVelocity = new Vector3(payload.VelocityX, payload.VelocityY, payload.VelocityZ);
         int round = _turnManager?.RoundNumber ?? 0;
         ProjectileBase? projectile = weapon.FireRemote(launchVelocity, _voxelWorld, round);
 
-        GD.Print($"[Online] Replayed weapon fire from {slot}: weapon {payload.WeaponIndex}, velocity={launchVelocity}");
+        GD.Print($"[Online] Replayed weapon fire from {slot}: {weapon.WeaponId} at {weapon.GlobalPosition}, velocity={launchVelocity}");
 
         // Track stats for the remote player
         if (_players.TryGetValue(slot, out PlayerData? remotePlayer))
@@ -2533,6 +2545,23 @@ public partial class GameManager : Node
         {
             _camera?.Deactivate();
             _combatCamera.FollowProjectile(projectile);
+        }
+
+        // HOST: wait for projectile impact then advance the turn
+        // (Client fires → host must advance on their behalf since client waits for broadcast)
+        if (_networkManager?.IsHost == true && projectile != null)
+        {
+            WaitForProjectileThenAdvance(projectile, slot);
+        }
+        else if (_networkManager?.IsHost == true)
+        {
+            // Hitscan — advance after a short delay
+            PlayerSlot firedSlot = slot;
+            GetTree().CreateTimer(2.0).Timeout += () =>
+            {
+                if (CurrentPhase == GamePhase.Combat && _turnManager?.CurrentPlayer == firedSlot)
+                    AdvanceTurnAuthoritative();
+            };
         }
     }
 
@@ -2818,6 +2847,27 @@ public partial class GameManager : Node
             && _players.TryGetValue(winner.Value, out PlayerData? wp))
         {
             _progressionManager?.CommitMatchEarnings(wp.Stats.MatchEarnings);
+        }
+    }
+
+    /// <summary>
+    /// Called when the host broadcasts a commander death (authoritative).
+    /// If the local peer hasn't killed this commander yet, force the death.
+    /// </summary>
+    private void OnRemoteCommanderDeath(CommanderDeathSyncPayload payload)
+    {
+        if (_networkManager?.IsHost == true) return; // Host already processed it locally
+
+        PlayerSlot victim = (PlayerSlot)payload.VictimSlotIndex;
+        if (_players.TryGetValue(victim, out PlayerData? player) && player.IsAlive)
+        {
+            GD.Print($"[Online] Host says {victim} commander died — forcing death on client");
+            PlayerSlot? killerSlot = payload.KillerSlotIndex >= 0 ? (PlayerSlot)payload.KillerSlotIndex : null;
+            Vector3 deathPos = new Vector3(payload.PosX, payload.PosY, payload.PosZ);
+
+            // Emit the same event locally so all the death handling logic runs
+            EventBus.Instance?.EmitCommanderKilled(
+                new CommanderKilledEvent(victim, killerSlot, deathPos));
         }
     }
 
@@ -6138,7 +6188,7 @@ public partial class GameManager : Node
             // Sync weapon fire to remote players
             if (_networkManager?.IsOnline == true)
             {
-                _syncManager?.SendWeaponFire(currentPlayer, safeIndex, launchVelocity);
+                _syncManager?.SendWeaponFire(currentPlayer, safeIndex, launchVelocity, weapon.GlobalPosition);
             }
 
             _players[currentPlayer].Stats.ShotsFired++;
@@ -6551,6 +6601,13 @@ public partial class GameManager : Node
         {
             player.IsAlive = false;
             player.CommanderHealth = 0;
+        }
+
+        // Host broadcasts commander death so both peers agree on who's dead
+        if (_networkManager?.IsOnline == true && _networkManager.IsHost)
+        {
+            _syncManager?.SendCommanderDeath(payload.Victim,
+                payload.Killer ?? payload.Victim, payload.WorldPosition);
         }
 
         // Track CommanderKills for the killer

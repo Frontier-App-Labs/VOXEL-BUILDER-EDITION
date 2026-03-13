@@ -68,7 +68,7 @@ public readonly record struct LobbyPlayerInfo(long PeerId, int SlotIndex, string
 public readonly record struct MatchStartPayload(float BuildTimeSeconds, int StartingBudget, int ArenaSize, float TurnTimeSeconds);
 
 // Combat sync payloads
-public readonly record struct WeaponFireSyncPayload(int PlayerSlotIndex, int WeaponIndex, float VelocityX, float VelocityY, float VelocityZ);
+public readonly record struct WeaponFireSyncPayload(int PlayerSlotIndex, int WeaponIndex, float VelocityX, float VelocityY, float VelocityZ, float WeaponPosX, float WeaponPosY, float WeaponPosZ);
 public readonly record struct BuildCompleteSyncPayload(int PlayerSlotIndex, string BlueprintJson);
 public readonly record struct CommanderDamageSyncPayload(int VictimSlotIndex, int Damage, int RemainingHealth, float PosX, float PosY, float PosZ, bool IsCriticalHit);
 public readonly record struct CommanderDeathSyncPayload(int VictimSlotIndex, int KillerSlotIndex, float PosX, float PosY, float PosZ);
