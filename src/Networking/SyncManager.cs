@@ -1,6 +1,8 @@
 ﻿using Godot;
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using VoxelSiege.Core;
@@ -126,20 +128,23 @@ public partial class SyncManager : Node
 
     /// <summary>
     /// Broadcasts the local player's completed build to all peers.
+    /// Compresses with GZip to stay under Steam's 512 KB message limit.
     /// </summary>
     public void SendBuildComplete(PlayerSlot player, string blueprintJson)
     {
         var payload = new BuildCompleteSyncPayload((int)player, blueprintJson);
-        byte[] data = JsonSerializer.SerializeToUtf8Bytes(payload);
-        GD.Print($"[Sync] Sending build snapshot for {player} ({data.Length} bytes)");
-        Rpc(nameof(ReceiveBuildComplete), data);
+        byte[] raw = JsonSerializer.SerializeToUtf8Bytes(payload);
+        byte[] compressed = Compress(raw);
+        GD.Print($"[Sync] Sending build snapshot for {player} ({raw.Length} bytes raw, {compressed.Length} bytes compressed)");
+        Rpc(nameof(ReceiveBuildComplete), compressed);
     }
 
     [Rpc(MultiplayerApi.RpcMode.AnyPeer, CallLocal = false, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable)]
-    private void ReceiveBuildComplete(byte[] data)
+    private void ReceiveBuildComplete(byte[] compressedData)
     {
+        byte[] data = Decompress(compressedData);
         var payload = JsonSerializer.Deserialize<BuildCompleteSyncPayload>(data);
-        GD.Print($"[Sync] Received build snapshot for slot {payload.PlayerSlotIndex}");
+        GD.Print($"[Sync] Received build snapshot for slot {payload.PlayerSlotIndex} ({compressedData.Length} bytes compressed, {data.Length} bytes decompressed)");
         BuildCompleteReceived?.Invoke(payload);
     }
 
@@ -446,5 +451,28 @@ public partial class SyncManager : Node
         var payload = JsonSerializer.Deserialize<DisconnectSyncPayload>(data);
         GD.Print($"[Sync] Received disconnect for slot {payload.DisconnectedSlotIndex}");
         DisconnectReceived?.Invoke(payload);
+    }
+
+    // ─────────────────────────────────────────────────
+    //  COMPRESSION HELPERS
+    // ─────────────────────────────────────────────────
+
+    private static byte[] Compress(byte[] data)
+    {
+        using var output = new MemoryStream();
+        using (var gzip = new GZipStream(output, CompressionLevel.Fastest))
+        {
+            gzip.Write(data, 0, data.Length);
+        }
+        return output.ToArray();
+    }
+
+    private static byte[] Decompress(byte[] compressed)
+    {
+        using var input = new MemoryStream(compressed);
+        using var gzip = new GZipStream(input, CompressionMode.Decompress);
+        using var output = new MemoryStream();
+        gzip.CopyTo(output);
+        return output.ToArray();
     }
 }
