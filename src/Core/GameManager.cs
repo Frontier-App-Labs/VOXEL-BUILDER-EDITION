@@ -217,6 +217,7 @@ public partial class GameManager : Node
     public override void _Ready()
     {
         _turnManager = GetNodeOrNull<TurnManager>("TurnManager") ?? CreateNode<TurnManager>("TurnManager");
+        _turnManager.TurnTimedOut += () => AdvanceTurnAuthoritative();
         _voxelWorld = GetNodeOrNull<VoxelWorld>("GameWorld") ?? CreateNode<VoxelWorld>("GameWorld");
         _buildSystem = GetNodeOrNull<BuildSystem>("BuildSystem") ?? CreateNode<BuildSystem>("BuildSystem");
         _weaponPlacer = GetNodeOrNull<WeaponPlacer>("WeaponPlacer") ?? CreateNode<WeaponPlacer>("WeaponPlacer");
@@ -346,6 +347,7 @@ public partial class GameManager : Node
             _syncManager.WeaponFireReceived += OnRemoteWeaponFire;
             _syncManager.SkipTurnReceived += OnRemoteSkipTurn;
             _syncManager.TurnOrderReceived += OnRemoteTurnOrder;
+            _syncManager.TurnAdvanceReceived += OnRemoteTurnAdvance;
             _syncManager.TroopMoveReceived += OnRemoteTroopMove;
             _syncManager.PowerupUsedReceived += OnRemotePowerupUsed;
             _syncManager.EmpResultReceived += OnRemoteEmpResult;
@@ -2544,12 +2546,14 @@ public partial class GameManager : Node
 
         GD.Print($"[Online] Remote player {slot} skipped turn");
 
-        // Use a deferred call to avoid re-entrancy from AdvanceTurn → TurnChanged
+        // Only the host processes skip requests — it will advance and broadcast
+        if (_networkManager?.IsHost != true) return;
+
         GetTree().CreateTimer(0.0).Timeout += () =>
         {
             if (CurrentPhase != GamePhase.Combat || _turnManager?.CurrentPlayer != slot)
                 return;
-            _turnManager.SkipTurn(Settings.TurnTimeSeconds);
+            AdvanceTurnAuthoritative();
         };
     }
 
@@ -2567,6 +2571,45 @@ public partial class GameManager : Node
         GD.Print($"[Online] Received turn order from host: {string.Join(", ", order)}");
         _turnManager?.ConfigureWithOrder(order, Settings.TurnTimeSeconds);
         _turnManager?.StopTurnClock(); // Don't tick during countdown
+    }
+
+    /// <summary>
+    /// Host-authoritative turn advance. In multiplayer, only the host
+    /// actually advances the TurnManager. Clients wait for the broadcast.
+    /// </summary>
+    private void AdvanceTurnAuthoritative()
+    {
+        if (_turnManager == null) return;
+
+        // Offline / local: advance directly
+        if (_networkManager == null || !_networkManager.IsOnline)
+        {
+            _turnManager.AdvanceTurn(Settings.TurnTimeSeconds);
+            return;
+        }
+
+        // Online client: do nothing — wait for host's TurnAdvance broadcast
+        if (!_networkManager.IsHost)
+            return;
+
+        // Online host: advance locally + broadcast to clients
+        _turnManager.AdvanceTurn(Settings.TurnTimeSeconds);
+        if (_turnManager.CurrentPlayer is PlayerSlot newPlayer)
+        {
+            _syncManager?.SendTurnAdvance(newPlayer, _turnManager.RoundNumber, Settings.TurnTimeSeconds);
+        }
+    }
+
+    /// <summary>
+    /// Called when the host broadcasts a turn advance to clients.
+    /// </summary>
+    private void OnRemoteTurnAdvance(TurnAdvanceSyncPayload payload)
+    {
+        if (_networkManager?.IsHost == true) return; // Host already advanced locally
+
+        PlayerSlot player = (PlayerSlot)payload.CurrentPlayerSlotIndex;
+        GD.Print($"[Online] Host advanced turn to {player} (round {payload.RoundNumber})");
+        _turnManager?.SyncToState(player, payload.RoundNumber, payload.TurnTimeSeconds);
     }
 
     /// <summary>
@@ -5143,7 +5186,12 @@ public partial class GameManager : Node
                 if (_turnManager != null)
                     _syncManager?.SendTurnOrder(_turnManager.TurnOrder);
             }
-            // else: client waits for OnRemoteTurnOrder to set up turn order
+            else
+            {
+                // Client: host drives turn timing, client only responds to broadcasts
+                if (_turnManager != null)
+                    _turnManager.IsAuthoritative = false;
+            }
         }
         else
         {
@@ -6177,7 +6225,7 @@ public partial class GameManager : Node
 
                     if (CurrentPhase == GamePhase.Combat && _turnManager?.CurrentPlayer == firedPlayer)
                     {
-                        _turnManager.AdvanceTurn(Settings.TurnTimeSeconds);
+                        AdvanceTurnAuthoritative();
                     }
                 };
             }
@@ -6201,13 +6249,14 @@ public partial class GameManager : Node
         _combatCamera?.ExitWeaponPOV();
         SwitchToFreeFlyCamera();
 
-        // Sync skip turn to remote players
-        if (_networkManager?.IsOnline == true && _turnManager.CurrentPlayer.HasValue)
+        // In online mode as client, tell the host to skip on our behalf
+        if (_networkManager?.IsOnline == true && !_networkManager.IsHost && _turnManager.CurrentPlayer.HasValue)
         {
             _syncManager?.SendSkipTurn(_turnManager.CurrentPlayer.Value);
+            return; // Client waits for host's TurnAdvance broadcast
         }
 
-        _turnManager.SkipTurn(Settings.TurnTimeSeconds);
+        AdvanceTurnAuthoritative();
     }
 
     /// <summary>
@@ -6718,7 +6767,7 @@ public partial class GameManager : Node
             {
                 if (CurrentPhase != GamePhase.Combat || _turnManager?.CurrentPlayer != skipSlot)
                     return;
-                _turnManager.SkipTurn(Settings.TurnTimeSeconds);
+                AdvanceTurnAuthoritative();
             };
             return;
         }
@@ -6963,7 +7012,7 @@ public partial class GameManager : Node
 
         if (_aimingSystem == null || _voxelWorld == null)
         {
-            _turnManager?.AdvanceTurn(Settings.TurnTimeSeconds);
+            AdvanceTurnAuthoritative();
             return;
         }
 
@@ -6985,7 +7034,7 @@ public partial class GameManager : Node
             _armyManager?.BotMoveTroops(botSlot);
             TryBotPowerupActivation(botSlot, rng);
             GD.Print($"[Bot] {botSlot} has no weapons ready — troops moved, skipping fire.");
-            _turnManager?.AdvanceTurn(Settings.TurnTimeSeconds);
+            AdvanceTurnAuthoritative();
             return;
         }
 
@@ -7008,7 +7057,7 @@ public partial class GameManager : Node
         if (enemies.Count == 0)
         {
             GD.Print($"[Bot] {botSlot} found no enemies — skipping turn.");
-            _turnManager.AdvanceTurn(Settings.TurnTimeSeconds);
+            AdvanceTurnAuthoritative();
             return;
         }
 
@@ -7052,7 +7101,7 @@ public partial class GameManager : Node
         if (!_buildZones.TryGetValue(enemy.Slot, out BuildZone enemyZone))
         {
             GD.Print($"[Bot] {botSlot} can't find enemy build zone — skipping turn.");
-            _turnManager.AdvanceTurn(Settings.TurnTimeSeconds);
+            AdvanceTurnAuthoritative();
             return;
         }
 
@@ -7198,7 +7247,7 @@ public partial class GameManager : Node
 
                 if (CurrentPhase == GamePhase.Combat && _turnManager?.CurrentPlayer == botSlot)
                 {
-                    _turnManager.AdvanceTurn(Settings.TurnTimeSeconds);
+                    AdvanceTurnAuthoritative();
                 }
             };
         }
@@ -7367,7 +7416,7 @@ public partial class GameManager : Node
 
                 if (CurrentPhase == GamePhase.Combat && _turnManager?.CurrentPlayer == botSlot)
                 {
-                    _turnManager.AdvanceTurn(Settings.TurnTimeSeconds);
+                    AdvanceTurnAuthoritative();
                 }
             };
         }
@@ -7881,7 +7930,7 @@ public partial class GameManager : Node
                 if (_artilleryDominanceActive || !AnyPlayerHasUsableWeapons())
                 {
                     GD.Print($"[TroopSeq] CinematicFinished — skipping troops (backup imminent)");
-                    _turnManager?.AdvanceTurn(Settings.TurnTimeSeconds);
+                    AdvanceTurnAuthoritative();
                     return;
                 }
 
@@ -7910,7 +7959,7 @@ public partial class GameManager : Node
                 }
                 // No attack targets — advance turn now and return camera
                 GD.Print("[TroopSeq] No attack targets, advancing turn immediately");
-                _turnManager?.AdvanceTurn(Settings.TurnTimeSeconds);
+                AdvanceTurnAuthoritative();
             }
 
             // If a troop sequence is active (started by WaitForProjectileThenAdvance
@@ -7923,7 +7972,7 @@ public partial class GameManager : Node
             if (_advanceTurnAfterKillCam)
             {
                 _advanceTurnAfterKillCam = false;
-                _turnManager?.AdvanceTurn(Settings.TurnTimeSeconds);
+                AdvanceTurnAuthoritative();
                 return;
             }
 
@@ -8055,7 +8104,7 @@ public partial class GameManager : Node
             return;
 
         // Advance the turn (was deferred for the troop sequence)
-        _turnManager?.AdvanceTurn(Settings.TurnTimeSeconds);
+        AdvanceTurnAuthoritative();
 
         // Camera positioning is handled by OnTurnChanged (triggered by AdvanceTurn above).
         // No additional positioning needed here.

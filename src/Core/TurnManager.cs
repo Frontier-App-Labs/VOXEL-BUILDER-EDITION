@@ -18,6 +18,18 @@ public partial class TurnManager : Node
     public float RemainingTurnTime => _remainingTurnTime;
     public bool IsRunning => _isRunning;
 
+    /// <summary>
+    /// When false, the turn timer in _Process() will NOT auto-advance turns.
+    /// Set to false on clients in multiplayer so only the host drives turn timing.
+    /// </summary>
+    public bool IsAuthoritative { get; set; } = true;
+
+    /// <summary>
+    /// Fired when the turn timer expires. GameManager should handle this
+    /// via AdvanceTurnAuthoritative() to ensure proper network sync.
+    /// </summary>
+    public event Action? TurnTimedOut;
+
     public void Configure(IEnumerable<PlayerSlot> alivePlayers, float turnTimeSeconds, RandomNumberGenerator? rng = null)
     {
         _turnOrder.Clear();
@@ -176,6 +188,26 @@ public partial class TurnManager : Node
         }
     }
 
+    /// <summary>
+    /// Force-syncs the turn state to match the host's broadcast.
+    /// Used by clients receiving TurnAdvance messages.
+    /// </summary>
+    public void SyncToState(PlayerSlot player, int roundNumber, float turnTime)
+    {
+        int idx = _turnOrder.IndexOf(player);
+        if (idx < 0)
+        {
+            GD.PrintErr($"[TurnManager] SyncToState: {player} not in turn order!");
+            return;
+        }
+        _turnIndex = idx;
+        RoundNumber = roundNumber;
+        _remainingTurnTime = turnTime;
+        _isRunning = true;
+        GD.Print($"[TurnManager] Synced to {player}, round {roundNumber}");
+        EmitTurnChanged(turnTime);
+    }
+
     public override void _Process(double delta)
     {
         if (!_isRunning || _turnOrder.Count == 0 || float.IsInfinity(_remainingTurnTime))
@@ -186,7 +218,15 @@ public partial class TurnManager : Node
         _remainingTurnTime = Math.Max(0f, _remainingTurnTime - (float)delta);
         if (_remainingTurnTime <= 0f)
         {
-            AdvanceTurn(GameConfig.DefaultTurnTime);
+            if (!IsAuthoritative) return; // Client: wait for host broadcast
+            // Fire event so GameManager can advance through the authoritative path
+            // (which broadcasts to clients in multiplayer)
+            TurnTimedOut?.Invoke();
+            if (_remainingTurnTime <= 0f)
+            {
+                // Fallback if nobody handled the event
+                AdvanceTurn(GameConfig.DefaultTurnTime);
+            }
         }
     }
 
