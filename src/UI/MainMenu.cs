@@ -1504,14 +1504,18 @@ public partial class MainMenu : Control
 
         if (netManager == null) return;
 
-        // Set display name
+        // Set display name: prefer entered name, then Steam name, then fallback
         string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
-        netManager.LocalDisplayName = string.IsNullOrWhiteSpace(enteredName) ? "Host" : enteredName;
+        string steamName = GetSteamManager()?.PlayerName ?? string.Empty;
+        string displayName = !string.IsNullOrWhiteSpace(enteredName) ? enteredName
+            : !string.IsNullOrWhiteSpace(steamName) ? steamName
+            : "Host";
+        netManager.LocalDisplayName = displayName;
 
         // Pass name to GameManager
         if (gameManager != null)
         {
-            gameManager.HumanPlayerName = string.IsNullOrWhiteSpace(enteredName) ? null : enteredName;
+            gameManager.HumanPlayerName = displayName;
         }
 
         string visibilityText = visibility == MatchVisibility.Public ? "OPEN" : "PRIVATE";
@@ -1688,13 +1692,18 @@ public partial class MainMenu : Control
         NetworkManager? netManager = GetTree().Root.GetNodeOrNull<NetworkManager>("Main/NetworkManager");
         if (netManager == null) return;
 
+        // Set display name: prefer entered name, then Steam name, then fallback
         string enteredName = _commanderNameInput?.Text?.Trim() ?? string.Empty;
-        netManager.LocalDisplayName = string.IsNullOrWhiteSpace(enteredName) ? "Player" : enteredName;
+        string steamName = GetSteamManager()?.PlayerName ?? string.Empty;
+        string displayName = !string.IsNullOrWhiteSpace(enteredName) ? enteredName
+            : !string.IsNullOrWhiteSpace(steamName) ? steamName
+            : "Player";
+        netManager.LocalDisplayName = displayName;
 
         GameManager? gameManager = GetTree().Root.GetNodeOrNull<GameManager>("Main");
         if (gameManager != null)
         {
-            gameManager.HumanPlayerName = string.IsNullOrWhiteSpace(enteredName) ? null : enteredName;
+            gameManager.HumanPlayerName = displayName;
         }
 
         // Try Steam first — search for a lobby matching this game code

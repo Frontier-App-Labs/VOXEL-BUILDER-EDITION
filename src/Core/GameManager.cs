@@ -1776,7 +1776,8 @@ public partial class GameManager : Node
     public void StartPrototypeMatch()
     {
         // Guard: don't start a new match if one is already in progress or loading
-        if (CurrentPhase != GamePhase.Menu && CurrentPhase != GamePhase.GameOver)
+        if (CurrentPhase != GamePhase.Menu && CurrentPhase != GamePhase.GameOver
+            && CurrentPhase != GamePhase.Lobby)
         {
             GD.Print("[GameManager] StartPrototypeMatch ignored: match already in progress.");
             return;
