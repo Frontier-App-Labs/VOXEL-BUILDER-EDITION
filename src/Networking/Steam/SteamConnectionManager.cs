@@ -15,9 +15,10 @@ public class SteamConnectionManager : ConnectionManager
     private readonly Queue<SteamNetworkingMessage> _pendingMessages = new();
 
     /// <summary>
-    /// With relay connections, OnConnected/OnConnecting/OnDisconnected are never
-    /// called (Facepunch.Steamworks issue #568). Only OnConnectionChanged fires.
-    /// We handle all state transitions here.
+    /// With relay connections, OnConnected/OnConnecting/OnDisconnected may never
+    /// be called directly (Facepunch issue #568). Only OnConnectionChanged fires.
+    /// We call the base virtual methods explicitly to ensure Facepunch's internal
+    /// state (Connected property, etc.) is maintained properly.
     /// </summary>
     public override void OnConnectionChanged(ConnectionInfo info)
     {
@@ -27,23 +28,24 @@ public class SteamConnectionManager : ConnectionManager
         {
             case ConnectionState.Connected:
                 GD.Print($"[SteamConnMgr] CONNECTED to {info.Identity.SteamId}");
-                // Set the base class Connected property so _Poll can call Receive()
-                Connected = true;
-                Connecting = false;
+                // base.OnConnected sets Connected=true, Connecting=false
+                base.OnConnected(info);
                 OnConnectionEstablished?.Invoke(info);
                 break;
 
             case ConnectionState.Connecting:
             case ConnectionState.FindingRoute:
                 GD.Print($"[SteamConnMgr] Connecting/FindingRoute to {info.Identity.SteamId}...");
-                Connecting = true;
+                if (info.State == ConnectionState.Connecting)
+                {
+                    base.OnConnecting(info);
+                }
                 break;
 
             case ConnectionState.ClosedByPeer:
             case ConnectionState.ProblemDetectedLocally:
                 GD.Print($"[SteamConnMgr] DISCONNECTED from {info.Identity.SteamId}, state={info.State}, endReason={info.EndReason}");
-                Connected = false;
-                Connecting = false;
+                base.OnDisconnected(info);
                 OnConnectionLost?.Invoke(info);
                 break;
 
@@ -51,25 +53,6 @@ public class SteamConnectionManager : ConnectionManager
                 GD.Print($"[SteamConnMgr] Unhandled state: {info.State}");
                 break;
         }
-    }
-
-    // Keep these as no-ops — they won't fire with relay, but just in case:
-    public override void OnConnected(ConnectionInfo info)
-    {
-        GD.Print($"[SteamConnMgr] OnConnected callback (unexpected with relay): {info.Identity.SteamId}");
-        base.OnConnected(info);
-    }
-
-    public override void OnConnecting(ConnectionInfo info)
-    {
-        GD.Print($"[SteamConnMgr] OnConnecting callback (unexpected with relay): {info.Identity.SteamId}");
-        base.OnConnecting(info);
-    }
-
-    public override void OnDisconnected(ConnectionInfo info)
-    {
-        GD.Print($"[SteamConnMgr] OnDisconnected callback (unexpected with relay): {info.Identity.SteamId}");
-        base.OnDisconnected(info);
     }
 
     public override void OnMessage(IntPtr data, int size, long recvTime, long messageNum, int channel)
