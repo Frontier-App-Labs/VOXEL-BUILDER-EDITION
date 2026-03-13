@@ -65,6 +65,9 @@ public partial class SyncManager : Node
     /// <summary>Fired when a peer disconnect mid-game is received.</summary>
     public event Action<DisconnectSyncPayload>? DisconnectReceived;
 
+    /// <summary>Fired when the host broadcasts authoritative voxel damage changes.</summary>
+    public event Action<byte[]>? VoxelDamageReceived;
+
     public override void _Ready()
     {
         _netManager = GetNodeOrNull<NetworkManager>("../NetworkManager");
@@ -402,6 +405,27 @@ public partial class SyncManager : Node
         var payload = JsonSerializer.Deserialize<GameOverSyncPayload>(data);
         GD.Print($"[Sync] Received game over: winner slot {payload.WinnerSlotIndex}");
         GameOverReceived?.Invoke(payload);
+    }
+
+    // ─────────────────────────────────────────────────
+    //  VOXEL DAMAGE SYNC (host → clients)
+    // ─────────────────────────────────────────────────
+
+    /// <summary>
+    /// Host broadcasts authoritative voxel damage (explosion + structural collapse) to clients.
+    /// Uses the same VoxelDeltaPayload format as build phase sync.
+    /// </summary>
+    public void SendVoxelDamage(byte[] data)
+    {
+        GD.Print($"[Sync] Sending voxel damage ({data.Length} bytes)");
+        Rpc(nameof(ReceiveVoxelDamage), data);
+    }
+
+    [Rpc(MultiplayerApi.RpcMode.AnyPeer, CallLocal = false, TransferMode = MultiplayerPeer.TransferModeEnum.Reliable)]
+    private void ReceiveVoxelDamage(byte[] data)
+    {
+        GD.Print($"[Sync] Received voxel damage ({data.Length} bytes)");
+        VoxelDamageReceived?.Invoke(data);
     }
 
     // ─────────────────────────────────────────────────

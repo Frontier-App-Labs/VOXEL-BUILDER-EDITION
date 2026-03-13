@@ -1,4 +1,5 @@
 using Godot;
+using System.Collections.Generic;
 using VoxelSiege.Art;
 using VoxelSiege.Core;
 using VoxelSiege.FX;
@@ -40,6 +41,7 @@ public partial class ProjectileBase : Node3D
     private int _drillBlocksBored;
     private bool _drillInsideSolid;
     private bool _drillHasBored;
+    private List<(Vector3I Position, VoxelValue NewVoxel)>? _drillBoreChanges;
 
     // --- Launch immunity: skip voxel collision for the first few frames ---
     // This prevents projectiles from detonating on their own launcher's structure.
@@ -108,6 +110,7 @@ public partial class ProjectileBase : Node3D
         _drillBlocksBored = 0;
         _drillInsideSolid = false;
         _drillHasBored = false;
+        _drillBoreChanges = new List<(Vector3I Position, VoxelValue NewVoxel)>();
     }
 
     public override void _PhysicsProcess(double delta)
@@ -467,6 +470,7 @@ public partial class ProjectileBase : Node3D
 
                         // Destroy the voxel
                         _world.SetVoxel(borePos, VoxelValue.Air, _owner);
+                        _drillBoreChanges?.Add((borePos, VoxelValue.Air));
                     }
                 }
 
@@ -535,6 +539,10 @@ public partial class ProjectileBase : Node3D
                 trailFx.Detach();
             }
         }
+
+        // Broadcast drill bore voxel changes before the explosion (which broadcasts its own)
+        if (_drillBoreChanges != null && _drillBoreChanges.Count > 0)
+            Explosion.NotifyVoxelDamage(_drillBoreChanges);
 
         Explosion.Trigger(GetParent() ?? _world, _world, point, _baseDamage, _blastRadiusMicrovoxels, _owner);
         QueueFree();

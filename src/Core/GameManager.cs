@@ -355,7 +355,11 @@ public partial class GameManager : Node
             _syncManager.CommanderDeathReceived += OnRemoteCommanderDeath;
             _syncManager.GameOverReceived += OnRemoteGameOver;
             _syncManager.DisconnectReceived += OnRemoteDisconnect;
+            _syncManager.VoxelDamageReceived += OnRemoteVoxelDamage;
         }
+
+        // Host broadcasts authoritative voxel damage from explosions to clients
+        Explosion.VoxelDamageApplied += OnExplosionVoxelDamage;
 
         // Look for splash screen — if present, hide main menu and let splash play first
         _splashScreen = GetNodeOrNull<SplashScreen>("SplashScreen");
@@ -863,6 +867,8 @@ public partial class GameManager : Node
             _powerupExecutor.PowerupActivated -= OnPowerupActivated;
             _powerupExecutor.PowerupExpired -= OnPowerupExpired;
         }
+
+        Explosion.VoxelDamageApplied -= OnExplosionVoxelDamage;
     }
 
     public override void _Process(double delta)
@@ -2520,7 +2526,10 @@ public partial class GameManager : Node
 
         Vector3 launchVelocity = new Vector3(payload.VelocityX, payload.VelocityY, payload.VelocityZ);
         int round = _turnManager?.RoundNumber ?? 0;
-        ProjectileBase? projectile = weapon.FireRemote(launchVelocity, _voxelWorld, round);
+        // Use sender's weapon position so the projectile starts at the exact same
+        // world position on both peers — prevents trajectory divergence even if
+        // local weapon positions have drifted slightly.
+        ProjectileBase? projectile = weapon.FireRemote(launchVelocity, _voxelWorld, round, senderWeaponPos);
 
         GD.Print($"[Online] Replayed weapon fire from {slot}: {weapon.WeaponId} at {weapon.GlobalPosition}, velocity={launchVelocity}");
 
@@ -2869,6 +2878,32 @@ public partial class GameManager : Node
             EventBus.Instance?.EmitCommanderKilled(
                 new CommanderKilledEvent(victim, killerSlot, deathPos));
         }
+    }
+
+    /// <summary>
+    /// Called on both peers when an explosion applies voxel damage.
+    /// The host serializes the changes and broadcasts them to clients so both
+    /// peers have identical voxel world state after each explosion.
+    /// </summary>
+    private void OnExplosionVoxelDamage(List<(Vector3I Position, VoxelSiege.Voxel.Voxel NewVoxel)> changes)
+    {
+        if (_networkManager?.IsOnline != true || !_networkManager.IsHost) return;
+        if (_syncManager == null || changes.Count == 0) return;
+
+        byte[] data = _syncManager.SerializeVoxelDelta(changes);
+        _syncManager.SendVoxelDamage(data);
+    }
+
+    /// <summary>
+    /// Client receives authoritative voxel damage from the host and applies it,
+    /// overwriting any local discrepancies so both peers see identical destruction.
+    /// </summary>
+    private void OnRemoteVoxelDamage(byte[] data)
+    {
+        if (_networkManager?.IsHost == true) return; // Host already applied
+        if (_voxelWorld == null || _syncManager == null) return;
+
+        _syncManager.ApplyVoxelDelta(_voxelWorld, data);
     }
 
     /// <summary>

@@ -242,7 +242,7 @@ public abstract partial class WeaponBase : Node3D
     /// Fires this weapon with an explicit launch velocity (no AimingSystem required).
     /// Used to replay a remote player's weapon fire during multiplayer.
     /// </summary>
-    public ProjectileBase? FireRemote(Vector3 launchVelocity, VoxelWorld world, int currentRound)
+    public ProjectileBase? FireRemote(Vector3 launchVelocity, VoxelWorld world, int currentRound, Vector3? spawnPosition = null)
     {
         if (!CanFire(currentRound))
         {
@@ -251,7 +251,7 @@ public abstract partial class WeaponBase : Node3D
 
         ProjectileBase projectile = CreateProjectile();
         GetTree().CurrentScene.AddChild(projectile);
-        projectile.GlobalPosition = GlobalPosition;
+        projectile.GlobalPosition = spawnPosition ?? GlobalPosition;
         projectile.Initialize(world, OwnerSlot, launchVelocity, BaseDamage, BlastRadiusMicrovoxels);
         LastFiredRound = currentRound;
 

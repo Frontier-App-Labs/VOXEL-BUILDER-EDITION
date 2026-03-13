@@ -38,6 +38,21 @@ public partial class Explosion : Node3D
     /// </summary>
     public static Func<Vector3I, float>? ShieldMultiplierCallback;
 
+    /// <summary>
+    /// Fired after all voxel modifications from an explosion (including structural collapse)
+    /// have been applied. The host uses this to broadcast authoritative voxel changes to clients.
+    /// </summary>
+    public static event Action<List<(Vector3I Position, VoxelValue NewVoxel)>>? VoxelDamageApplied;
+
+    /// <summary>
+    /// Fires VoxelDamageApplied from external code (e.g. drill bore changes in ProjectileBase).
+    /// </summary>
+    public static void NotifyVoxelDamage(List<(Vector3I Position, VoxelValue NewVoxel)> changes)
+    {
+        if (changes.Count > 0)
+            VoxelDamageApplied?.Invoke(changes);
+    }
+
     private static readonly Vector3[] DecalDirections =
     {
         Vector3.Up, Vector3.Down,
@@ -167,6 +182,18 @@ public partial class Explosion : Node3D
             {
                 FallingChunk.Create(component, world, worldPosition);
             }
+        }
+
+        // Broadcast all voxel changes (explosion damage + structural collapse) so the
+        // host can send authoritative state to clients, preventing voxel world drift.
+        if (VoxelDamageApplied != null && (bulkChanges.Count > 0 || disconnected.Count > 0))
+        {
+            var allChanges = new List<(Vector3I Position, VoxelValue NewVoxel)>(bulkChanges.Count + disconnected.Count);
+            allChanges.AddRange(bulkChanges);
+            // Structural collapse: disconnected voxels were set to Air by FallingChunk.Create
+            foreach (Vector3I pos in disconnected)
+                allChanges.Add((pos, VoxelValue.Air));
+            VoxelDamageApplied.Invoke(allChanges);
         }
 
         world.ReturnList(disconnected);
