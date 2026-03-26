@@ -82,6 +82,7 @@ public partial class CombatUI : Control
     private float _turnTimer;
     private int _roundNumber;
     private PlayerSlot _currentPlayer;
+    private PlayerSlot _localPlayerSlot = PlayerSlot.Player1;
     private string _commanderText = string.Empty;
     private readonly Dictionary<PlayerSlot, Label> _playerHealthLabels = new Dictionary<PlayerSlot, Label>();
     private readonly Dictionary<PlayerSlot, ColorRect> _playerHealthBars = new Dictionary<PlayerSlot, ColorRect>();
@@ -159,6 +160,15 @@ public partial class CombatUI : Control
             EventBus.Instance.TurnChanged -= OnTurnChanged;
             EventBus.Instance.CommanderDamaged -= OnCommanderDamaged;
         }
+    }
+
+    /// <summary>
+    /// Sets the local player slot so the UI knows which player is "you" in online mode.
+    /// Must be called before combat starts.
+    /// </summary>
+    public void SetLocalPlayerSlot(PlayerSlot slot)
+    {
+        _localPlayerSlot = slot;
     }
 
     public override void _Process(double delta)
@@ -1459,12 +1469,14 @@ public partial class CombatUI : Control
             return;
         }
 
-        // Free existing buttons immediately
+        // Remove from layout immediately but defer destruction to avoid
+        // "Object freed while signal emitted" errors during button callbacks
         _weaponButtons.Clear();
         var oldChildren = _weaponRow.GetChildren();
         for (int i = oldChildren.Count - 1; i >= 0; i--)
         {
-            oldChildren[i].Free();
+            _weaponRow.RemoveChild(oldChildren[i]);
+            oldChildren[i].QueueFree();
         }
 
         if (_weaponGroups.Count == 0)
@@ -1837,7 +1849,7 @@ public partial class CombatUI : Control
             string displayName = payload.CurrentPlayer.ToString().ToUpper();
             if (gm != null && gm.Players.TryGetValue(payload.CurrentPlayer, out var pData))
                 displayName = pData.DisplayName.ToUpper();
-            bool isLocal = payload.CurrentPlayer == PlayerSlot.Player1;
+            bool isLocal = payload.CurrentPlayer == _localPlayerSlot;
             _turnPlayerLabel.Text = isLocal ? $"\u25b6 YOUR TURN" : $"\u25b6 {displayName}'S TURN";
             _turnPlayerLabel.AddThemeFontSizeOverride("font_size", 14);
             int idx = (int)payload.CurrentPlayer;
@@ -1850,9 +1862,9 @@ public partial class CombatUI : Control
             _roundLabel.Text = $"ROUND {payload.RoundNumber}";
         }
 
-        // Only show weapon bar and powerup panel on the local player's turn (Player1).
-        // During bot turns these should be hidden since the human can't use them.
-        bool isLocalTurn = payload.CurrentPlayer == PlayerSlot.Player1;
+        // Only show weapon bar and powerup panel on the local player's turn.
+        // During bot/remote turns these should be hidden since the human can't use them.
+        bool isLocalTurn = payload.CurrentPlayer == _localPlayerSlot;
         if (_weaponBarPanel != null) _weaponBarPanel.Visible = isLocalTurn;
         if (_powerupBarPanel != null)
         {

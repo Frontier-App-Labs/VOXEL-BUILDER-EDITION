@@ -172,6 +172,9 @@ public partial class GameManager : Node
     // Set when a commander kill cancels an active troop sequence — tells
     // OnCombatCameraCinematicFinished to advance the turn after the kill cam.
     private bool _advanceTurnAfterKillCam;
+    // Set while processing a host-authoritative commander death broadcast so that
+    // OnCommanderKilled knows to proceed. Client ignores locally-computed kills.
+    private bool _processingHostCommanderDeath;
 
     // Sandbox mode: build freely with no opponents, save/load builds
     private bool _isSandbox;
@@ -989,6 +992,12 @@ public partial class GameManager : Node
     public void OnWeaponSelectedFromUI(int weaponIndex, bool cycleOnly = false)
     {
         if (CurrentPhase != GamePhase.Combat || _turnManager?.CurrentPlayer is not PlayerSlot currentPlayer)
+        {
+            return;
+        }
+
+        // Only allow weapon interaction on the local player's turn
+        if (!IsLocalPlayer(currentPlayer))
         {
             return;
         }
@@ -2874,9 +2883,11 @@ public partial class GameManager : Node
             PlayerSlot? killerSlot = payload.KillerSlotIndex >= 0 ? (PlayerSlot)payload.KillerSlotIndex : null;
             Vector3 deathPos = new Vector3(payload.PosX, payload.PosY, payload.PosZ);
 
-            // Emit the same event locally so all the death handling logic runs
+            // Set flag so OnCommanderKilled processes this host-authoritative kill
+            _processingHostCommanderDeath = true;
             EventBus.Instance?.EmitCommanderKilled(
                 new CommanderKilledEvent(victim, killerSlot, deathPos));
+            _processingHostCommanderDeath = false;
         }
     }
 
@@ -3461,10 +3472,13 @@ public partial class GameManager : Node
                 _combatIntroTimer = 0f;
                 _turnManager?.StopTurnClock(); // Don't tick turns during intro
 
-                // Populate CombatUI with actual placed weapons for the first player
-                if (_turnManager?.CurrentPlayer is PlayerSlot firstPlayer)
+                // Populate CombatUI with the local player's weapons and set local slot
                 {
-                    RefreshCombatUIWeapons(firstPlayer);
+                    PlayerSlot localCombatSlot = GetLocalPlayerSlot();
+                    CombatUI? combatUISetup = GetNodeOrNull<CombatUI>("%CombatUI")
+                        ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
+                    combatUISetup?.SetLocalPlayerSlot(localCombatSlot);
+                    RefreshCombatUIWeapons(localCombatSlot);
                 }
                 break;
 
@@ -5443,10 +5457,13 @@ public partial class GameManager : Node
         if (_skipTurnButton != null) _skipTurnButton.Visible = true;
         if (_readyButton != null) _readyButton.Visible = false;
 
-        // Populate CombatUI with actual placed weapons for the first player
-        if (_turnManager?.CurrentPlayer is PlayerSlot firstPlayer)
+        // Populate CombatUI with the local player's weapons and set local slot
         {
-            RefreshCombatUIWeapons(firstPlayer);
+            PlayerSlot localCombatSlot2 = GetLocalPlayerSlot();
+            CombatUI? combatUISetup2 = GetNodeOrNull<CombatUI>("%CombatUI")
+                ?? GetTree().Root.FindChild("CombatUI", true, false) as CombatUI;
+            combatUISetup2?.SetLocalPlayerSlot(localCombatSlot2);
+            RefreshCombatUIWeapons(localCombatSlot2);
         }
 
         // Start the turn clock now that the countdown is done
@@ -6646,6 +6663,16 @@ public partial class GameManager : Node
 
     private void OnCommanderKilled(CommanderKilledEvent payload)
     {
+        // In online multiplayer, clients must only process commander deaths from the
+        // host's authoritative broadcast (via OnRemoteCommanderDeath which sets the flag).
+        // Local explosions on the client may compute a kill that the host hasn't confirmed,
+        // causing turn order desync and game over mismatch.
+        if (_networkManager?.IsOnline == true && !_networkManager.IsHost && !_processingHostCommanderDeath)
+        {
+            GD.Print($"[Online] Client detected local commander kill for {payload.Victim} — ignoring, waiting for host authority");
+            return;
+        }
+
         if (_players.TryGetValue(payload.Victim, out PlayerData? player))
         {
             player.IsAlive = false;
@@ -6831,8 +6858,10 @@ public partial class GameManager : Node
             turnPlayer.AirstrikesUsedThisRound = 0;
         }
 
-        // Refresh the CombatUI weapon bar for the new player
-        RefreshCombatUIWeapons(payload.CurrentPlayer);
+        // Refresh the CombatUI weapon bar — always show the LOCAL player's weapons,
+        // not whoever's turn it is, so the client never sees/controls remote weapons.
+        PlayerSlot localSlotForUI = GetLocalPlayerSlot();
+        RefreshCombatUIWeapons(localSlotForUI);
 
         // --- Check if the current player has any usable weapons BEFORE camera animation ---
         // This avoids wasting time animating the camera to a player who can't do anything.
@@ -7650,8 +7679,8 @@ public partial class GameManager : Node
             ownerData.WeaponIds.Remove(payload.WeaponId);
         }
 
-        // Refresh the CombatUI if this is the current player's weapon
-        if (_turnManager?.CurrentPlayer == payload.Owner)
+        // Refresh the CombatUI if the destroyed weapon belongs to the local player
+        if (IsLocalPlayer(payload.Owner))
         {
             RefreshCombatUIWeapons(payload.Owner);
         }
